@@ -55,9 +55,10 @@ class NavigationEnvConfig:
 # Action dispatch
 # ---------------------------------------------------------------------------
 
+
 ACTION_LOOKUP = {
-    "moveahead": 1, "moveback": 2, "moveright": 3, "moveleft": 4,
-    "rotateright": 5, "rotateleft": 6, "lookup": 7, "lookdown": 8,
+    "move_forward": 1, "move_backward": 2, "move_right": 3, "move_left": 4,
+    "turn_right": 5, "turn_left": 6, "look_up": 7, "look_down": 8,
 }
 
 _ACTION_DISPATCH = {
@@ -71,7 +72,10 @@ _ACTION_DISPATCH = {
     8: ("LookDown",    {"degrees": 30}),
 }
 
-VALID_EVAL_SETS = ["base", "common_sense", "complex_instruction", "visual_appearance", "long_horizon"]
+VALID_EVAL_SETS = [
+    "base", "common_sense", "complex_instruction", "visual_appearance", "long_horizon",
+    "base_train", "common_sense_train", "long_horizon_train",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +103,7 @@ class NavigationEnv(GymImageEnv):
         self._info: Dict[str, Any] = {}
 
     def _load_dataset(self) -> List[Dict]:
-        path = os.path.join(os.path.dirname(__file__), "datasets", f"{self.cfg.eval_set}.json")
+        path = os.path.join(os.path.dirname(__file__), "assets", f"{self.cfg.eval_set}.json")
         with open(path) as f:
             tasks = json.load(f)["tasks"]
         if 0 < self.cfg.down_sample_ratio < 1:
@@ -326,7 +330,7 @@ if __name__ == "__main__":
         sep = env.cfg.action_sep
         actions = f" {sep} ".join(ACTION_LOOKUP.keys())
         print(f"\nValid actions: {actions}")
-        print(f"Wrap in format or just type raw actions (e.g. 'moveahead{sep}rotateright')\n")
+        print(f"Wrap in format or just type raw actions (e.g. 'move_forward{sep}turn_right')\n")
 
         while True:
             step += 1
