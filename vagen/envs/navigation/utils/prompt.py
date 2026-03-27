@@ -33,6 +33,11 @@ _FORMAT_INSTRUCTIONS = {
         "You can optionally think first, then give your action. Respond in this format:\n"
         "<think>...</think><action>{action_example}</action>"
     ),
+    "latent_plan": (
+        "Think step-by-step first. When you are ready for environment execution, output ONLY the planning trigger token:\n"
+        "<|action_start|>\n"
+        "The planner will choose concrete actions and append action tokens followed by <|action_end|>."
+    ),
 }
 
 
@@ -70,6 +75,13 @@ The instruction will be provided in the first observation. Look at the image car
 Hints:
 1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call moveahead, moveleft and move right multiple times.
 2. If you find yourself seems to be stuck, you can lookdown to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
+
+_LATENT_ACTION_TOKENS_HINT = """\
+Planner action tokens (for context only):
+<|act_moveahead|> <|act_moveback|> <|act_moveright|> <|act_moveleft|>
+<|act_rotateright|> <|act_rotateleft|> <|act_lookup|> <|act_lookdown|>
+Execution boundary tokens:
+<|action_start|> ... <|action_end|>"""
 
 _EXAMPLES = [
     """\
@@ -109,6 +121,8 @@ def system_prompt(
         example_count: number of examples to include. 0 = no examples.
     """
     parts = [_BASE_SYSTEM_PROMPT]
+    if format_name == "latent_plan":
+        parts.append(_LATENT_ACTION_TOKENS_HINT)
     parts.append(get_format_instruction(format_name, max_actions_per_step, action_sep))
     for ex in _EXAMPLES[:example_count]:
         parts.append(ex.format(sep=action_sep))

@@ -15,7 +15,13 @@ from PIL import Image
 
 from vagen.envs.gym_image_env import GymImageEnv
 from vagen.envs.navigation.utils.prompt import system_prompt, init_observation_template, action_template, get_format_instruction
-from vagen.envs.navigation.utils.parse import parse_response, compute_reward
+from vagen.envs.navigation.utils.parse import (
+    ACTION_END_TOKEN,
+    ACTION_NAME_TO_TOKEN,
+    ACTION_START_TOKEN,
+    parse_response,
+    compute_reward,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +44,7 @@ class NavigationEnvConfig:
     per_turn_format_reward: float = 0.01  # per-step bonus if this turn's format is correct
     success_reward: float = 1.0         # reaching the goal
     gpu_device: int = 0
-    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode
+    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode | latent_plan
     example_count: int = 0             # number of examples in system prompt (0 = none)
     success_threshold: float = 1.0
     step_length: float = 0.3
@@ -177,6 +183,11 @@ class NavigationEnv(GymImageEnv):
         return self._render_obs(init=True), {}
 
     def _sync_step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        if isinstance(action_str, list):
+            # Optional adapter: allow direct list of action names from planner.
+            action_tokens = " ".join(ACTION_NAME_TO_TOKEN.get(a, a) for a in action_str)
+            action_str = f"{ACTION_START_TOKEN}{action_tokens}{ACTION_END_TOKEN}"
+
         parsed = parse_response(
             action_str,
             prompt_format=self.cfg.prompt_format,
@@ -240,6 +251,7 @@ class NavigationEnv(GymImageEnv):
             "task_success": self._is_success(),
             "success": success,
             "last_action_success": self._controller.last_event.metadata["lastActionSuccess"],
+            "planner_triggered": parsed.get("planner_triggered", False),
         })
         info["env_feedback"] = (
             "Last action is executed successfully." if info["last_action_success"]

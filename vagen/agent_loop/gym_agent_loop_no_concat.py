@@ -19,7 +19,13 @@ import traceback
 import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
-from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_text_only_content, _normalize_images
+from .gym_agent_loop import (
+    _adapt_action_for_latent_planner,
+    _flatten_text_only_content,
+    _normalize_images,
+    convert_obs_to_content,
+    extract_success,
+)
 
 class AgentState(Enum):
     PENDING = "pending"
@@ -234,7 +240,20 @@ class GymAgentLoop(AgentLoopBase):
         If terminal (done/success/turn-limit/token-limit), stop WITHOUT appending user suffix,
         so the episode ends on an assistant turn.
         """
-        action_str = agent_data.last_assistant_text or ""
+        original_action_str = agent_data.last_assistant_text or ""
+        action_str = _adapt_action_for_latent_planner(original_action_str)
+        if action_str != original_action_str:
+            injected_suffix = action_str[len(original_action_str) :]
+            injected_ids = await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(injected_suffix, add_special_tokens=False)
+            )
+            if injected_ids:
+                agent_data.turn_response_ids += injected_ids
+                agent_data.turn_prompt_ids += injected_ids
+                agent_data.turn_response_mask += [1] * len(injected_ids)
+                if agent_data.turn_response_logprobs:
+                    agent_data.turn_response_logprobs += [0.0] * len(injected_ids)
+        agent_data.last_assistant_text = action_str
         try:
             obs, reward, done, info = await agent_data.env.step(action_str)
             # traceback

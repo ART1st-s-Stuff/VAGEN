@@ -13,6 +13,22 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+ACTION_START_TOKEN = "<|action_start|>"
+ACTION_END_TOKEN = "<|action_end|>"
+
+ACTION_TOKEN_TO_NAME = {
+    "<|act_moveahead|>": "moveahead",
+    "<|act_moveback|>": "moveback",
+    "<|act_moveright|>": "moveright",
+    "<|act_moveleft|>": "moveleft",
+    "<|act_rotateright|>": "rotateright",
+    "<|act_rotateleft|>": "rotateleft",
+    "<|act_lookup|>": "lookup",
+    "<|act_lookdown|>": "lookdown",
+}
+
+ACTION_NAME_TO_TOKEN = {v: k for k, v in ACTION_TOKEN_TO_NAME.items()}
+
 
 # ---------------------------------------------------------------------------
 # Parse patterns
@@ -28,6 +44,9 @@ _PARSE_PATTERNS = {
     ),
     "no_think": r"^\s*<action>(.*?)</action>\s*$",  # strict: entire response must be <action>...</action>
     "eval_mode": r"<action>(.*?)</action>",  # lenient: first <action> anywhere
+    # Latent planning mode: model emits action-start sentinel to trigger planner.
+    # Action tokens may optionally appear between start and end.
+    "latent_plan": rf"{re.escape(ACTION_START_TOKEN)}(.*?){re.escape(ACTION_END_TOKEN)}",
 }
 
 
@@ -43,7 +62,12 @@ def parse_response(
         llm_raw_response, actions, format_correct,
         and optional think/observation/prediction text.
     """
-    result: Dict[str, Any] = {"llm_raw_response": response, "actions": [], "format_correct": False}
+    result: Dict[str, Any] = {
+        "llm_raw_response": response,
+        "actions": [],
+        "format_correct": False,
+        "planner_triggered": False,
+    }
 
     pattern = _PARSE_PATTERNS.get(prompt_format)
     if pattern is None:
@@ -61,12 +85,28 @@ def parse_response(
         result["think"] = match.group(2).strip()
         action_text = match.group(3).strip()
         result["prediction"] = match.group(4).strip()
-    else:
+    elif prompt_format in ("no_think", "eval_mode"):
         # no_think / eval — single capture group
         action_text = match.group(1).strip()
+    elif prompt_format == "latent_plan":
+        action_text = match.group(1).strip()
+        result["planner_triggered"] = ACTION_START_TOKEN in response
+    else:
+        raise ValueError(f"Unknown prompt_format: {prompt_format}")
 
     result["format_correct"] = True
-    actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()][:max_actions]
+    if prompt_format == "latent_plan":
+        actions = []
+        # Prefer structured action tokens when present.
+        for tok in action_text.split():
+            if tok in ACTION_TOKEN_TO_NAME:
+                actions.append(ACTION_TOKEN_TO_NAME[tok])
+        if not actions:
+            # Backward-compatible fallback to textual actions.
+            actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()]
+    else:
+        actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()]
+    actions = actions[:max_actions]
     result["actions"] = actions
     return result
 

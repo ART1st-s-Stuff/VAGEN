@@ -20,6 +20,35 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
+ACTION_START_TOKEN = "<|action_start|>"
+ACTION_END_TOKEN = "<|action_end|>"
+ACTION_TOKENS = [
+    "<|act_moveahead|>",
+    "<|act_moveback|>",
+    "<|act_moveright|>",
+    "<|act_moveleft|>",
+    "<|act_rotateright|>",
+    "<|act_rotateleft|>",
+    "<|act_lookup|>",
+    "<|act_lookdown|>",
+]
+
+
+def _adapt_action_for_latent_planner(action_str: str) -> str:
+    """
+    If the model emits ACTION_START without concrete action tokens,
+    inject a fallback action token and close with ACTION_END.
+    """
+    if ACTION_START_TOKEN not in action_str:
+        return action_str
+    if ACTION_END_TOKEN in action_str:
+        return action_str
+    has_action_token = any(tok in action_str for tok in ACTION_TOKENS)
+    if not has_action_token:
+        action_str = action_str + ACTION_TOKENS[0]
+    return action_str + ACTION_END_TOKEN
+
+
 def _flatten_text_only_content(msg):
     """
     convert message['content'] from multimodal list to plain text
@@ -353,7 +382,20 @@ class GymAgentLoop(AgentLoopBase):
         If terminal (done/success/turn-limit/token-limit), stop WITHOUT appending user suffix,
         so the episode ends on an assistant turn.
         """
-        action_str = agent_data.last_assistant_text or ""
+        original_action_str = agent_data.last_assistant_text or ""
+        action_str = _adapt_action_for_latent_planner(original_action_str)
+        if action_str != original_action_str:
+            injected_suffix = action_str[len(original_action_str) :]
+            injected_ids = await self.loop.run_in_executor(
+                None, lambda: self.tokenizer.encode(injected_suffix, add_special_tokens=False)
+            )
+            if injected_ids:
+                agent_data.response_ids += injected_ids
+                agent_data.prompt_ids += injected_ids
+                agent_data.response_mask += [1] * len(injected_ids)
+                if agent_data.response_logprobs:
+                    agent_data.response_logprobs += [0.0] * len(injected_ids)
+        agent_data.last_assistant_text = action_str
         try:
             obs, reward, done, info = await agent_data.env.step(action_str)
             # traceback
