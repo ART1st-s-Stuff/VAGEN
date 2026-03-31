@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 import torch
+from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor, ViTImageProcessor, ViTMAEModel
 
 from vagen.envs.navigation.navigation_env import NavigationEnv, NavigationEnvConfig
@@ -140,7 +141,8 @@ async def generate_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
         clip_processor, clip_model, mae_processor, mae_model = build_feature_extractors(args)
 
     try:
-        for ep in range(args.episodes):
+        pbar = tqdm(range(args.episodes), desc="Generating episodes", unit="ep")
+        for ep in pbar:
             obs, _ = await env.reset(seed=args.seed + ep)
             done = False
             step_id = 0
@@ -199,6 +201,7 @@ async def generate_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
 
                 obs = next_obs
                 step_id += 1
+            pbar.set_postfix(samples=len(rows))
     finally:
         await env.close()
 
