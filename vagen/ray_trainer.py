@@ -1441,6 +1441,15 @@ class RayPPOTrainer:
                             metrics.update(old_log_prob_metrics)
                             old_log_prob.batch.pop("entropys")
                             batch = batch.union(old_log_prob)
+                            if "planned_action_ids" in batch.batch:
+                                planned_action_ids = batch.batch["planned_action_ids"].float()
+                                metrics.update(
+                                    {
+                                        "predictor/planned_action_mean": planned_action_ids.mean().item(),
+                                        "predictor/planned_action_min": planned_action_ids.min().item(),
+                                        "predictor/planned_action_max": planned_action_ids.max().item(),
+                                    }
+                                )
                             if "rollout_log_probs" in batch.batch.keys():
                                 # TODO: we may want to add diff of probs too.
                                 from verl.utils.debug.metrics import calculate_debug_metrics

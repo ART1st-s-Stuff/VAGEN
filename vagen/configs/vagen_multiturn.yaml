@@ -32,6 +32,22 @@ data:
 # ============================================================================
 actor_rollout_ref:
   hybrid_engine: True   
+  actor:
+    # Baseline defaults: keep predictor / latent MCTS disabled.
+    num_actions: 0
+    world_state_dim: 0
+    transition_hidden_dim: null
+    state_loss_coef: 1.0
+    reward_loss_coef: 1.0
+    action_head_detach_latent: false
+    action_head_lr: null
+    enable_latent_mcts: false
+    mcts:
+      depth: 1
+      branching: 4
+      c_puct: 1.0
+      rollout_steps: 1
+      discount: 0.99
   rollout:
     name: sglang        
     multi_turn:
