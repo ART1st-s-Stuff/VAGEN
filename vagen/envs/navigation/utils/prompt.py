@@ -9,6 +9,8 @@ Structure:
 
 from __future__ import annotations
 
+from verl.workers.roles.utils.action_schema import ACTION_END_TOKEN, ACTION_START_TOKEN, ACTION_TOKENS
+
 
 # ---------------------------------------------------------------------------
 # Format instructions — the ONLY part that differs per format
@@ -35,8 +37,8 @@ _FORMAT_INSTRUCTIONS = {
     ),
     "latent_plan": (
         "Think step-by-step first. When you are ready for environment execution, output ONLY the planning trigger token:\n"
-        "<|action_start|>\n"
-        "The planner will choose concrete actions and append action tokens followed by <|action_end|>."
+        f"{ACTION_START_TOKEN}\n"
+        f"The planner will choose concrete actions and append action tokens followed by {ACTION_END_TOKEN}."
     ),
 }
 
@@ -76,12 +78,12 @@ Hints:
 1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call move_forward, move_left and move_right multiple times.
 2. If you find yourself seems to be stuck, you can look_down to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
 
-_LATENT_ACTION_TOKENS_HINT = """\
+_ACTION_TOKEN_HINT_TEXT = " ".join(ACTION_TOKENS)
+_LATENT_ACTION_TOKENS_HINT = f"""\
 Planner action tokens (for context only):
-<|act_moveahead|> <|act_moveback|> <|act_moveright|> <|act_moveleft|>
-<|act_rotateright|> <|act_rotateleft|> <|act_lookup|> <|act_lookdown|>
+{_ACTION_TOKEN_HINT_TEXT}
 Execution boundary tokens:
-<|action_start|> ... <|action_end|>"""
+{ACTION_START_TOKEN} ... {ACTION_END_TOKEN}"""
 
 _EXAMPLES = [
     """\

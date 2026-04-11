@@ -6,13 +6,14 @@ import logging
 import os
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from PIL import Image
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
+from verl.workers.roles.utils.action_schema import ACTION_END_TOKEN, ACTION_NAME_TO_ID, ACTION_START_TOKEN, ACTION_TOKENS
 from ..envs.gym_image_env import GymImageEnv
 from omegaconf import OmegaConf
 import traceback
@@ -20,33 +21,28 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
-ACTION_START_TOKEN = "<|action_start|>"
-ACTION_END_TOKEN = "<|action_end|>"
-ACTION_TOKENS = [
-    "<|act_moveahead|>",
-    "<|act_moveback|>",
-    "<|act_moveright|>",
-    "<|act_moveleft|>",
-    "<|act_rotateright|>",
-    "<|act_rotateleft|>",
-    "<|act_lookup|>",
-    "<|act_lookdown|>",
-]
 
-
-def _adapt_action_for_latent_planner(action_str: str) -> str:
+def _adapt_action_for_latent_planner(action_str: str, return_meta: bool = False) -> str | Tuple[str, Dict[str, bool]]:
     """
     If the model emits ACTION_START without concrete action tokens,
     inject a fallback action token and close with ACTION_END.
     """
+    meta = {
+        "planner_triggered": ACTION_START_TOKEN in action_str,
+        "planner_fallback_used": False,
+        "planner_boundary_appended": False,
+    }
     if ACTION_START_TOKEN not in action_str:
-        return action_str
+        return (action_str, meta) if return_meta else action_str
     if ACTION_END_TOKEN in action_str:
-        return action_str
+        return (action_str, meta) if return_meta else action_str
     has_action_token = any(tok in action_str for tok in ACTION_TOKENS)
     if not has_action_token:
         action_str = action_str + ACTION_TOKENS[0]
-    return action_str + ACTION_END_TOKEN
+        meta["planner_fallback_used"] = True
+    action_str = action_str + ACTION_END_TOKEN
+    meta["planner_boundary_appended"] = True
+    return (action_str, meta) if return_meta else action_str
 
 
 def _flatten_text_only_content(msg):
@@ -78,6 +74,17 @@ def _flatten_text_only_content(msg):
     new_msg = dict(msg)
     new_msg["content"] = "".join(texts)
     return new_msg
+
+
+def _extract_first_action_label(info: Dict[str, Any]) -> int:
+    """Extract first action id from env step info."""
+    candidates = info.get("valid_actions")
+    if not isinstance(candidates, list) or not candidates:
+        candidates = info.get("actions")
+    if isinstance(candidates, list) and candidates:
+        action_name = str(candidates[0]).lower().strip()
+        return ACTION_NAME_TO_ID.get(action_name, -1)
+    return -1
 
 
 class AgentState(Enum):
@@ -117,6 +124,12 @@ class AgentData:
         self.env_rewards: List[float] = []
         self.traj_success: bool = False
         self.env_turns: int = 0
+        self.first_action_label: int = -1
+        self.first_step_reward: float = 0.0
+        self.first_supervision_captured: bool = False
+        self.first_planner_triggered: float = 0.0
+        self.first_planner_fallback_used: float = 0.0
+        self.first_planner_parse_failed: float = 0.0
 
 
         # Cached assistant text to step env
@@ -303,7 +316,17 @@ class GymAgentLoop(AgentLoopBase):
             reward_score=sum(agent_data.env_rewards) if agent_data.env_rewards else 0.0,
             num_turns=agent_data.env_turns,
             metrics=agent_data.metrics,
-            extra_fields={ "image_data": agent_data.image_data,"reward_extra_info": {"traj_success": float(agent_data.traj_success)}},
+            extra_fields={
+                "image_data": agent_data.image_data,
+                "reward_extra_info": {
+                    "traj_success": float(agent_data.traj_success),
+                    "action_label": int(agent_data.first_action_label),
+                    "step_reward": float(agent_data.first_step_reward),
+                    "planner_triggered": float(agent_data.first_planner_triggered),
+                    "planner_fallback_used": float(agent_data.first_planner_fallback_used),
+                    "planner_parse_failed": float(agent_data.first_planner_parse_failed),
+                },
+            },
         )
         return output
 
@@ -346,9 +369,14 @@ class GymAgentLoop(AgentLoopBase):
     ) -> AgentState:
         """Generate assistant output and mark generated tokens with mask=1."""
         sampling_params_for_turn = sampling_params.copy()
-        max_new_tokens=sampling_params_for_turn.get("max_new_tokens", None) or agent_data.response_limit
-        max_new_tokens = min(max_new_tokens, agent_data.response_limit)
-        sampling_params_for_turn["max_new_tokens"] = max_new_tokens
+        max_tokens = (
+            sampling_params_for_turn.get("max_tokens")
+            or sampling_params_for_turn.get("max_new_tokens")
+            or agent_data.response_limit
+        )
+        max_tokens = min(max_tokens, agent_data.response_limit)
+        sampling_params_for_turn["max_tokens"] = max_tokens
+        sampling_params_for_turn.pop("max_new_tokens", None)
             
 
         with simple_timer("generate_sequences", agent_data.metrics):
@@ -383,7 +411,7 @@ class GymAgentLoop(AgentLoopBase):
         so the episode ends on an assistant turn.
         """
         original_action_str = agent_data.last_assistant_text or ""
-        action_str = _adapt_action_for_latent_planner(original_action_str)
+        action_str, planner_meta = _adapt_action_for_latent_planner(original_action_str, return_meta=True)
         if action_str != original_action_str:
             injected_suffix = action_str[len(original_action_str) :]
             injected_ids = await self.loop.run_in_executor(
@@ -408,8 +436,19 @@ class GymAgentLoop(AgentLoopBase):
             )
             logger.error("Environment traceback:\n%s", traceback.format_exc())
             obs, reward, done, info = {"obs_str":"Environment Error"}, 0.0, True, {"traj_success": False}
+        info.update(planner_meta)
+        turn_metrics = info.get("metrics", {}).get("turn_metrics")
+        if isinstance(turn_metrics, dict):
+            turn_metrics.update(planner_meta)
 
         agent_data.env_rewards.append(float(reward))
+        if not agent_data.first_supervision_captured:
+            agent_data.first_action_label = _extract_first_action_label(info)
+            agent_data.first_step_reward = float(reward)
+            agent_data.first_planner_triggered = float(bool(info.get("planner_triggered", False)))
+            agent_data.first_planner_fallback_used = float(bool(info.get("planner_fallback_used", False)))
+            agent_data.first_planner_parse_failed = float(bool(info.get("planner_parse_failed", False)))
+            agent_data.first_supervision_captured = True
         agent_data.traj_success = extract_success(info)
         agent_data.env_turns += 1
         # Termination rule #3: env done or success

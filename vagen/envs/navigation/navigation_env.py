@@ -242,6 +242,9 @@ class NavigationEnv(GymImageEnv):
                     "action_is_valid": bool(self._valid_actions),
                     "action_is_effective": cur_pos["x"] != prev_pos["x"] or cur_pos["z"] != prev_pos["z"],
                     "format_correct": parsed["format_correct"],
+                    "planner_triggered": parsed.get("planner_triggered", False),
+                    "planner_fallback_used": parsed.get("planner_fallback_used", False),
+                    "planner_parse_failed": parsed.get("planner_parse_failed", False),
                 },
                 "traj_metrics": {
                     "success": success,
@@ -251,6 +254,7 @@ class NavigationEnv(GymImageEnv):
             "distance": self._distance_to_target(),
             "instruction": self._instruction,
             "env_step": self._step_count,
+            "valid_actions": list(self._valid_actions),
             "episode_elapsed_seconds": time.time() - self._t0,
             "task_success": self._is_success(),
             "success": success,

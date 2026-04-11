@@ -408,6 +408,7 @@ class RayPPOTrainer:
         self._log_image_cfg = self.config.trainer.get("log_image", {})
         self._log_image_enable = self._log_image_cfg.get("enable", False)
         self._max_pending_dumps = self._log_image_cfg.get("max_pending", 2)
+        self._world_model_debug_logged = False
 
         # HuggingFace Hub upload
         self._hf_upload_manager = HFUploadManager(config)
@@ -751,6 +752,148 @@ class RayPPOTrainer:
         batch = batch.union(gen_batch_output)
 
         return batch
+
+    @staticmethod
+    def _is_world_model_enabled(config) -> bool:
+        actor_cfg = config.actor_rollout_ref.actor
+        return actor_cfg.num_actions > 0 and actor_cfg.world_state_dim > 0
+
+    @staticmethod
+    def _to_1d_list(values, cast_fn, default):
+        out = []
+        for value in values:
+            try:
+                out.append(cast_fn(value))
+            except Exception:
+                out.append(default)
+        return out
+
+    def _attach_world_model_supervision_fields(self, batch: DataProto, metrics: dict) -> None:
+        """Attach action/reward/next-latent supervision tensors to batch.
+
+        Scheme A: one supervision target per turn/sample.
+        """
+        if not self._is_world_model_enabled(self.config):
+            return
+
+        action_labels_raw = batch.non_tensor_batch.get("action_label")
+        step_rewards_raw = batch.non_tensor_batch.get("step_reward")
+        if action_labels_raw is None or step_rewards_raw is None:
+            return
+
+        batch_size = len(batch.batch["responses"])
+        if len(action_labels_raw) != batch_size or len(step_rewards_raw) != batch_size:
+            return
+
+        action_labels = torch.tensor(
+            self._to_1d_list(action_labels_raw, int, -1),
+            dtype=torch.long,
+        )
+        step_rewards = torch.tensor(
+            self._to_1d_list(step_rewards_raw, float, 0.0),
+            dtype=torch.float32,
+        )
+        action_label_mask = action_labels >= 0
+
+        batch.batch["action_labels"] = action_labels
+        batch.batch["step_rewards"] = step_rewards
+        batch.batch["action_label_mask"] = action_label_mask
+        metrics["predictor/action_label_coverage"] = action_label_mask.float().mean().item()
+        metrics["predictor/supervision_valid_ratio"] = action_label_mask.float().mean().item()
+        for key in ("planner_triggered", "planner_fallback_used", "planner_parse_failed"):
+            values = batch.non_tensor_batch.get(key)
+            if values is None or len(values) != batch_size:
+                continue
+            try:
+                metric_tensor = torch.tensor(self._to_1d_list(values, float, 0.0), dtype=torch.float32)
+                metrics[f"predictor/{key}_rate"] = metric_tensor.mean().item()
+            except Exception:
+                continue
+
+        # Build next-latent target only in no-concat mode with per-turn indices.
+        if "latent" not in batch.batch:
+            return
+        if "group_idx" not in batch.non_tensor_batch or "traj_idx" not in batch.non_tensor_batch:
+            return
+        if "turn_idx" not in batch.non_tensor_batch:
+            return
+
+        latent = batch.batch["latent"]
+        group_idx = [str(x) for x in batch.non_tensor_batch["group_idx"]]
+        traj_idx = self._to_1d_list(batch.non_tensor_batch["traj_idx"], int, -1)
+        turn_idx = self._to_1d_list(batch.non_tensor_batch["turn_idx"], int, -1)
+        if len(group_idx) != batch_size or len(traj_idx) != batch_size or len(turn_idx) != batch_size:
+            return
+
+        key_to_pos = {}
+        for i in range(batch_size):
+            key_to_pos[(group_idx[i], traj_idx[i], turn_idx[i])] = i
+
+        next_latent = torch.zeros_like(latent)
+        next_latent_mask = torch.zeros(batch_size, dtype=torch.bool, device=latent.device)
+        for i in range(batch_size):
+            next_key = (group_idx[i], traj_idx[i], turn_idx[i] + 1)
+            next_pos = key_to_pos.get(next_key)
+            if next_pos is not None:
+                next_latent[i] = latent[next_pos]
+                next_latent_mask[i] = True
+
+        if next_latent_mask.any():
+            batch.batch["next_latent"] = next_latent
+            batch.batch["next_latent_mask"] = next_latent_mask
+            metrics["predictor/next_latent_coverage"] = next_latent_mask.float().mean().item()
+
+    def _maybe_log_world_model_supervision_debug(self, batch: DataProto) -> None:
+        """One-shot debug dump for world-model supervision fields."""
+        if self._world_model_debug_logged:
+            return
+        if not self._is_world_model_enabled(self.config):
+            return
+
+        required = ("action_labels", "step_rewards", "action_label_mask")
+        if any(key not in batch.batch for key in required):
+            print("[wm_debug] supervision fields are not attached to batch yet.")
+            self._world_model_debug_logged = True
+            return
+
+        action_labels = batch.batch["action_labels"]
+        step_rewards = batch.batch["step_rewards"]
+        action_label_mask = batch.batch["action_label_mask"].to(torch.bool)
+        batch_size = int(action_labels.shape[0])
+        valid_count = int(action_label_mask.sum().item())
+
+        msg = (
+            "[wm_debug] batch supervision summary: "
+            f"batch_size={batch_size}, "
+            f"valid_action_labels={valid_count}/{batch_size}, "
+            f"has_next_latent={'next_latent' in batch.batch}, "
+            f"has_next_latent_mask={'next_latent_mask' in batch.batch}"
+        )
+        print(msg)
+
+        sample_n = min(3, batch_size)
+        for i in range(sample_n):
+            has_next = bool(batch.batch["next_latent_mask"][i].item()) if "next_latent_mask" in batch.batch else False
+            print(
+                "[wm_debug] sample "
+                f"idx={i}, "
+                f"action_label={int(action_labels[i].item())}, "
+                f"step_reward={float(step_rewards[i].item()):.4f}, "
+                f"valid={bool(action_label_mask[i].item())}, "
+                f"next_latent_available={has_next}"
+            )
+
+        if "group_idx" in batch.non_tensor_batch and "traj_idx" in batch.non_tensor_batch and "turn_idx" in batch.non_tensor_batch:
+            print("[wm_debug] first trajectory keys:")
+            for i in range(sample_n):
+                print(
+                    "[wm_debug] key "
+                    f"group_idx={batch.non_tensor_batch['group_idx'][i]}, "
+                    f"traj_idx={batch.non_tensor_batch['traj_idx'][i]}, "
+                    f"turn_idx={batch.non_tensor_batch['turn_idx'][i]}"
+                )
+
+        self._world_model_debug_logged = True
 
     def _validate(self):
         data_source_lst = []
@@ -1430,6 +1573,7 @@ class RayPPOTrainer:
                         )
                     else:  # Recompute old_log_probs
                         with marked_timer("old_log_prob", timing_raw, color="blue"):
+                            batch.meta_info["extract_latent"] = self._is_world_model_enabled(self.config)
                             old_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
                             entropys = old_log_prob.batch["entropys"]
                             response_masks = batch.batch["response_mask"]
@@ -1482,6 +1626,8 @@ class RayPPOTrainer:
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                        self._attach_world_model_supervision_fields(batch, metrics)
+                        self._maybe_log_world_model_supervision_debug(batch)
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:

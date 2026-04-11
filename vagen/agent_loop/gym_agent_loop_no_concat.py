@@ -21,6 +21,7 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import (
     _adapt_action_for_latent_planner,
+    _extract_first_action_label,
     _flatten_text_only_content,
     _normalize_images,
     convert_obs_to_content,
@@ -207,9 +208,14 @@ class GymAgentLoop(AgentLoopBase):
     ) -> AgentState:
         """Generate assistant output and mark generated tokens with mask=1."""
         sampling_params_for_turn = sampling_params.copy()
-        max_new_tokens=sampling_params_for_turn.get("max_new_tokens", None) or agent_data.response_limit
-        max_new_tokens = min(max_new_tokens, agent_data.response_limit)
-        sampling_params_for_turn["max_new_tokens"] = max_new_tokens
+        max_tokens = (
+            sampling_params_for_turn.get("max_tokens")
+            or sampling_params_for_turn.get("max_new_tokens")
+            or agent_data.response_limit
+        )
+        max_tokens = min(max_tokens, agent_data.response_limit)
+        sampling_params_for_turn["max_tokens"] = max_tokens
+        sampling_params_for_turn.pop("max_new_tokens", None)
         image_data = agent_data.sys_images + agent_data.cur_images
 
         with simple_timer("generate_sequences", agent_data.metrics):
@@ -241,7 +247,7 @@ class GymAgentLoop(AgentLoopBase):
         so the episode ends on an assistant turn.
         """
         original_action_str = agent_data.last_assistant_text or ""
-        action_str = _adapt_action_for_latent_planner(original_action_str)
+        action_str, planner_meta = _adapt_action_for_latent_planner(original_action_str, return_meta=True)
         if action_str != original_action_str:
             injected_suffix = action_str[len(original_action_str) :]
             injected_ids = await self.loop.run_in_executor(
@@ -266,6 +272,10 @@ class GymAgentLoop(AgentLoopBase):
             )
             logger.error("Environment traceback:\n%s", traceback.format_exc())
             obs, reward, done, info = {"obs_str":"Environment Error"}, 0.0, True, {"traj_success": False}
+        info.update(planner_meta)
+        turn_metrics = info.get("metrics", {}).get("turn_metrics")
+        if isinstance(turn_metrics, dict):
+            turn_metrics.update(planner_meta)
 
         traj_success = extract_success(info)
         agent_data.env_turns += 1
@@ -301,7 +311,13 @@ class GymAgentLoop(AgentLoopBase):
             num_turns=1,
             metrics=agent_data.metrics,
             extra_fields={"reward_extra_info": {
-                "traj_success": float(traj_success)},
+                "traj_success": float(traj_success),
+                "action_label": int(_extract_first_action_label(info)),
+                "step_reward": float(reward),
+                "planner_triggered": float(bool(info.get("planner_triggered", False))),
+                "planner_fallback_used": float(bool(info.get("planner_fallback_used", False))),
+                "planner_parse_failed": float(bool(info.get("planner_parse_failed", False))),
+            },
                 "image_data": turn_images,
                 "last_turn": last_turn,
                 "group_idx": agent_data.group_idx,

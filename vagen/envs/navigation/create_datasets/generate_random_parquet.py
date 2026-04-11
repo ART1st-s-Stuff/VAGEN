@@ -35,28 +35,12 @@ from tqdm import tqdm
 from transformers import CLIPModel, CLIPProcessor, ViTImageProcessor, ViTMAEModel
 
 from vagen.envs.navigation.navigation_env import NavigationEnv, NavigationEnvConfig
-
-VALID_ACTIONS = [
-    "moveahead",
-    "moveback",
-    "moveright",
-    "moveleft",
-    "rotateright",
-    "rotateleft",
-    "lookup",
-    "lookdown",
-]
-
-ACTION_TOKEN_MAP = {
-    "moveahead": "<|act_moveahead|>",
-    "moveback": "<|act_moveback|>",
-    "moveright": "<|act_moveright|>",
-    "moveleft": "<|act_moveleft|>",
-    "rotateright": "<|act_rotateright|>",
-    "rotateleft": "<|act_rotateleft|>",
-    "lookup": "<|act_lookup|>",
-    "lookdown": "<|act_lookdown|>",
-}
+from verl.workers.roles.utils.action_schema import (
+    ACTION_END_TOKEN,
+    ACTION_NAME_TO_TOKEN,
+    ACTION_NAMES,
+    ACTION_START_TOKEN,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,10 +63,10 @@ def parse_args() -> argparse.Namespace:
 
 def random_action_str(prompt_format: str, max_actions_per_step: int, action_sep: str) -> str:
     n = random.randint(1, max_actions_per_step)
-    actions = [random.choice(VALID_ACTIONS) for _ in range(n)]
+    actions = [random.choice(ACTION_NAMES) for _ in range(n)]
     if prompt_format == "latent_plan":
-        tokens = " ".join(ACTION_TOKEN_MAP[a] for a in actions)
-        return f"<|action_start|>{tokens}<|action_end|>"
+        tokens = " ".join(ACTION_NAME_TO_TOKEN[a] for a in actions)
+        return f"{ACTION_START_TOKEN}{tokens}{ACTION_END_TOKEN}"
     action_text = action_sep.join(actions)
     return f"<think>random explore</think><action>{action_text}</action>"
 

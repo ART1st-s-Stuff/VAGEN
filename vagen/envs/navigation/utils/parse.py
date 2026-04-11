@@ -13,21 +13,12 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-ACTION_START_TOKEN = "<|action_start|>"
-ACTION_END_TOKEN = "<|action_end|>"
-
-ACTION_TOKEN_TO_NAME = {
-    "<|act_moveahead|>": "moveahead",
-    "<|act_moveback|>": "moveback",
-    "<|act_moveright|>": "moveright",
-    "<|act_moveleft|>": "moveleft",
-    "<|act_rotateright|>": "rotateright",
-    "<|act_rotateleft|>": "rotateleft",
-    "<|act_lookup|>": "lookup",
-    "<|act_lookdown|>": "lookdown",
-}
-
-ACTION_NAME_TO_TOKEN = {v: k for k, v in ACTION_TOKEN_TO_NAME.items()}
+from verl.workers.roles.utils.action_schema import (
+    ACTION_END_TOKEN,
+    ACTION_NAME_TO_TOKEN,
+    ACTION_START_TOKEN,
+    ACTION_TOKEN_TO_NAME,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -67,13 +58,19 @@ def parse_response(
         "actions": [],
         "format_correct": False,
         "planner_triggered": False,
+        "planner_fallback_used": False,
+        "planner_parse_failed": False,
     }
+    if prompt_format == "latent_plan":
+        result["planner_triggered"] = ACTION_START_TOKEN in response
 
     pattern = _PARSE_PATTERNS.get(prompt_format)
     if pattern is None:
         raise ValueError(f"Unknown prompt_format: {prompt_format}")
     match = re.search(pattern, response, re.DOTALL)
     if not match:
+        if prompt_format == "latent_plan" and result["planner_triggered"]:
+            result["planner_parse_failed"] = True
         return result
 
     # Extract named sections based on format
@@ -90,7 +87,6 @@ def parse_response(
         action_text = match.group(1).strip()
     elif prompt_format == "latent_plan":
         action_text = match.group(1).strip()
-        result["planner_triggered"] = ACTION_START_TOKEN in response
     else:
         raise ValueError(f"Unknown prompt_format: {prompt_format}")
 
