@@ -18,6 +18,7 @@ from verl.workers.roles.utils.action_schema import (
     ACTION_NAME_TO_TOKEN,
     ACTION_START_TOKEN,
     ACTION_TOKEN_TO_NAME,
+    normalize_action_name,
 )
 
 
@@ -99,9 +100,9 @@ def parse_response(
                 actions.append(ACTION_TOKEN_TO_NAME[tok])
         if not actions:
             # Backward-compatible fallback to textual actions.
-            actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()]
+            actions = [normalize_action_name(a) for a in action_text.split(action_sep) if a.strip()]
     else:
-        actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()]
+        actions = [normalize_action_name(a) for a in action_text.split(action_sep) if a.strip()]
     actions = actions[:max_actions]
     result["actions"] = actions
     return result

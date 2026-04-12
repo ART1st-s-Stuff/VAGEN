@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import List
 
 import fire
+from verl.workers.roles.utils.action_schema import ACTION_NAMES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,10 +36,7 @@ LOGGER = logging.getLogger("benchmark")
 # ---------------------------------------------------------------------------
 # Valid actions in free_think format (guaranteed to be parseable)
 # ---------------------------------------------------------------------------
-VALID_ACTIONS = [
-    "moveahead", "moveback", "moveright", "moveleft",
-    "rotateright", "rotateleft", "lookup", "lookdown",
-]
+VALID_ACTIONS = list(ACTION_NAMES)
 
 
 def random_action_str(max_actions: int = 3, action_sep: str = "|") -> str:

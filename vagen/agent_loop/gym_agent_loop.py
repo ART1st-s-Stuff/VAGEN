@@ -13,7 +13,13 @@ from PIL import Image
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, register
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
-from verl.workers.roles.utils.action_schema import ACTION_END_TOKEN, ACTION_NAME_TO_ID, ACTION_START_TOKEN, ACTION_TOKENS
+from verl.workers.roles.utils.action_schema import (
+    ACTION_END_TOKEN,
+    ACTION_NAME_TO_ID,
+    ACTION_START_TOKEN,
+    ACTION_TOKENS,
+    normalize_action_name,
+)
 from ..envs.gym_image_env import GymImageEnv
 from omegaconf import OmegaConf
 import traceback
@@ -82,7 +88,7 @@ def _extract_first_action_label(info: Dict[str, Any]) -> int:
     if not isinstance(candidates, list) or not candidates:
         candidates = info.get("actions")
     if isinstance(candidates, list) and candidates:
-        action_name = str(candidates[0]).lower().strip()
+        action_name = normalize_action_name(candidates[0])
         return ACTION_NAME_TO_ID.get(action_name, -1)
     return -1
 
