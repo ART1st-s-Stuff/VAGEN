@@ -1597,6 +1597,17 @@ class RayPPOTrainer:
                                         "predictor/planned_action_max": planned_action_ids.max().item(),
                                     }
                                 )
+                            if "action_prior_probs" in batch.batch:
+                                action_prior_probs = batch.batch["action_prior_probs"].float()
+                                action_prior_entropy = -(action_prior_probs.clamp_min(1e-12) * action_prior_probs.clamp_min(1e-12).log()).sum(dim=-1)
+                                top1_prob, top1_action = action_prior_probs.max(dim=-1)
+                                metrics.update(
+                                    {
+                                        "prior/entropy": action_prior_entropy.mean().item(),
+                                        "prior/top1_prob_mean": top1_prob.mean().item(),
+                                        "prior/top1_action_mean": top1_action.float().mean().item(),
+                                    }
+                                )
                             if "rollout_log_probs" in batch.batch.keys():
                                 # TODO: we may want to add diff of probs too.
                                 from verl.utils.debug.metrics import calculate_debug_metrics
