@@ -800,6 +800,7 @@ class RayPPOTrainer:
         batch.batch["action_label_mask"] = action_label_mask
         metrics["predictor/action_label_coverage"] = action_label_mask.float().mean().item()
         metrics["predictor/supervision_valid_ratio"] = action_label_mask.float().mean().item()
+        metrics["predictor/next_latent_coverage"] = 0.0
         for key in ("planner_triggered", "planner_fallback_used", "planner_parse_failed"):
             values = batch.non_tensor_batch.get(key)
             if values is None or len(values) != batch_size:
@@ -866,6 +867,8 @@ class RayPPOTrainer:
             "[wm_debug] batch supervision summary: "
             f"batch_size={batch_size}, "
             f"valid_action_labels={valid_count}/{batch_size}, "
+            f"next_latent_valid="
+            f"{int(batch.batch['next_latent_mask'].sum().item()) if 'next_latent_mask' in batch.batch else 0}/{batch_size}, "
             f"has_next_latent={'next_latent' in batch.batch}, "
             f"has_next_latent_mask={'next_latent_mask' in batch.batch}"
         )
