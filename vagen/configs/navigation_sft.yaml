@@ -1,0 +1,46 @@
+hydra:
+  searchpath:
+    - file:../../verl/verl/trainer/config
+
+defaults:
+  - sft_trainer_engine
+  - _self_
+
+data:
+  train_batch_size: 32
+  micro_batch_size_per_gpu: 1
+  max_token_len_per_gpu: 8192
+  train_files: null
+  val_files: null
+  train_max_samples: -1
+  val_max_samples: -1
+  pad_mode: no_padding
+  max_length: 8192
+  truncation: error
+  custom_cls:
+    path: "vagen/datasets/navigation_multimodal_sft_dataset.py"
+    name: NavigationMultimodalSFTDataset
+  apply_chat_template_kwargs: {}
+  builder:
+    single_step_file: null
+    multi_step_file: null
+    image_root: null
+    include_sources: both
+    history_mode: no_history
+    only_successful_actions: false
+
+model:
+  path: ~/models/Qwen/Qwen2.5-VL-3B-Instruct
+  tokenizer_path: ${model.path}
+  trust_remote_code: true
+  lora_rank: 64
+  lora_alpha: 16
+  target_modules: all-linear
+  use_remove_padding: false
+
+trainer:
+  project_name: navigation-phase1-sft
+  experiment_name: no_history_lora
+  total_epochs: 1
+  save_freq: -1
+  test_freq: -1
