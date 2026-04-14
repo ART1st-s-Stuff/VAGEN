@@ -123,6 +123,33 @@ class NavigationMultimodalSFTDataset(Dataset):
             **self.apply_chat_template_kwargs,
         )
 
+    def _tokenize_messages(
+        self, messages: list[dict[str, Any]], enable_thinking: Optional[bool], add_generation_prompt: bool
+    ) -> list[int]:
+        applied_text = self._apply_chat_template(
+            messages, enable_thinking=enable_thinking, add_generation_prompt=add_generation_prompt
+        )
+        images = self._collect_images(messages)
+        tokenized = self.processor(text=[applied_text], images=images or None, return_tensors="pt")
+        return tokenized["input_ids"][0].tolist()
+
+    def _get_common_prefix_length(self, left_tokens: list[int], right_tokens: list[int], context: str) -> int:
+        common_prefix_len = 0
+        max_prefix_len = min(len(left_tokens), len(right_tokens))
+        while common_prefix_len < max_prefix_len and left_tokens[common_prefix_len] == right_tokens[common_prefix_len]:
+            common_prefix_len += 1
+
+        expected_prefix_len = len(right_tokens)
+        if common_prefix_len != expected_prefix_len:
+            logger.warning(
+                "Token prefix mismatch while processing %s. "
+                "Using common prefix length %d/%d for reconciliation.",
+                context,
+                common_prefix_len,
+                expected_prefix_len,
+            )
+        return common_prefix_len
+
     def _process_message_tokens(
         self,
         messages: list[dict[str, Any]],
@@ -132,29 +159,31 @@ class NavigationMultimodalSFTDataset(Dataset):
         enable_thinking: Optional[bool] = None,
     ) -> tuple[list[int], list[int], list[int]]:
         if start_idx > 0:
-            prev_applied_text = self._apply_chat_template(
+            prev_tokens = self._tokenize_messages(
                 messages[:start_idx], enable_thinking=enable_thinking, add_generation_prompt=False
             )
             if is_assistant:
-                prev_applied_text_w_generation_prompt = self._apply_chat_template(
+                prev_tokens_w_generation_prompt = self._tokenize_messages(
                     messages[:start_idx], enable_thinking=enable_thinking, add_generation_prompt=True
                 )
         else:
-            prev_applied_text = ""
+            prev_tokens = []
 
-        cur_applied_text = self._apply_chat_template(
+        cur_tokens = self._tokenize_messages(
             messages[:end_idx], enable_thinking=enable_thinking, add_generation_prompt=False
         )
+        prev_prefix_len = self._get_common_prefix_length(cur_tokens, prev_tokens, context="message prefix")
         if is_assistant:
-            generation_prompt_text = prev_applied_text_w_generation_prompt[len(prev_applied_text) :]
-            generation_prompt_tokens = self.tokenizer.encode(generation_prompt_text, add_special_tokens=False)
-            message_tokens_only = self.tokenizer.encode(
-                cur_applied_text[len(prev_applied_text_w_generation_prompt) :], add_special_tokens=False
+            generation_prefix_len = self._get_common_prefix_length(
+                cur_tokens, prev_tokens_w_generation_prompt, context="assistant generation prompt"
             )
-            message_tokens = generation_prompt_tokens + message_tokens_only
-            loss_mask = [0] * len(generation_prompt_tokens) + [1] * len(message_tokens_only)
+            generation_prefix_len = max(generation_prefix_len, prev_prefix_len)
+            message_tokens = cur_tokens[prev_prefix_len:]
+            generation_prompt_length = generation_prefix_len - prev_prefix_len
+            message_tokens_only = cur_tokens[generation_prefix_len:]
+            loss_mask = [0] * generation_prompt_length + [1] * len(message_tokens_only)
         else:
-            message_tokens = self.tokenizer.encode(cur_applied_text[len(prev_applied_text) :], add_special_tokens=False)
+            message_tokens = cur_tokens[prev_prefix_len:]
             loss_mask = [0] * len(message_tokens)
 
         attention_mask = [1] * len(message_tokens)
@@ -293,6 +322,12 @@ class NavigationMultimodalSFTDataset(Dataset):
             concat_loss_mask,
             concat_attention_mask,
         )
+        if attention_mask.shape[0] != input_ids.shape[0]:
+            logger.warning(
+                "Processor attention mask no longer matches input_ids after token reconciliation; "
+                "using token-derived attention mask for position ids."
+            )
+            attention_mask = attention_mask_from_tokens
         position_ids = self._compute_position_ids(
             input_ids=input_ids,
             attention_mask=attention_mask,
