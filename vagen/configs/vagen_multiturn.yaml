@@ -37,6 +37,8 @@ actor_rollout_ref:
     num_actions: 0
     world_state_dim: 0
     transition_hidden_dim: null
+    predictor_mode: world_state_mlp
+    predictor_multi_step_horizon: 1
     state_loss_coef: 1.0
     reward_loss_coef: 1.0
     action_head_detach_latent: false

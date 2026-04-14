@@ -1,6 +1,6 @@
 """Build Phase1 navigation SFT data from EB-Nav trajectories.
 
-This script converts successful EB-Nav episodes into step-level multimodal
+This script converts EB-Nav episodes into step-level multimodal
 conversation samples for SFT. It supports both the curated single-step file and
 the original multi-step file.
 """
@@ -218,9 +218,6 @@ def build_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for episode in episodes:
-        if not bool(episode.get("success", False)):
-            continue
-
         step_records = _expand_episode_steps(
             episode=episode,
             source=source,

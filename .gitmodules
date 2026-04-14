@@ -2,3 +2,6 @@
 	path = verl
 	url = https://github.com/JamesKrW/verl.git
 	branch = vagen-lite
+[submodule "lewm"]
+	path = lewm
+	url = https://github.com/ART1st-s-Stuff/le-wm.git
