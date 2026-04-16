@@ -1,27 +1,42 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-PROJECT_ROOT="${PROJECT_ROOT:-/project}"
-PYTHON_BIN="${PYTHON_BIN:-$PROJECT_ROOT/.venv/bin/python}"
+REPO_ROOT="${REPO_ROOT:-.}"
 
-DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/ELEN/datasets/navigation}"
+DATA_ROOT="${DATA_ROOT:-datasets/navigation}"
 SINGLE_STEP_FILE="${SINGLE_STEP_FILE:-$DATA_ROOT/eb-nav_dataset_single_step.json}"
 MULTI_STEP_FILE="${MULTI_STEP_FILE:-$DATA_ROOT/eb-nav_dataset_multi_step.json}"
-IMAGE_ROOT="${IMAGE_ROOT:-$DATA_ROOT}"
+IMAGE_ROOT="${IMAGE_ROOT:-$DATA_ROOT/images}"
+DATASET_REPO_ID="${DATASET_REPO_ID:-EmbodiedBench/EB-Nav_trajectory_dataset}"
 
-OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/outputs/phase1_debug}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/datasets/phase1_debug}"
 OUTPUT_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/ebnav_small.json}"
 HISTORY_MODE="${HISTORY_MODE:-no_history}"
 INCLUDE_SOURCES="${INCLUDE_SOURCES:-single_step}"
 MAX_SAMPLES="${MAX_SAMPLES:-8}"
 ONLY_SUCCESSFUL_ACTIONS="${ONLY_SUCCESSFUL_ACTIONS:-false}"
 
-if [[ -n "${PYTHONPATH:-}" ]]; then
-  export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/verl:$PYTHONPATH"
-else
-  export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/verl"
+if [[ ! -f "$SINGLE_STEP_FILE" || ! -f "$MULTI_STEP_FILE" ]]; then
+  echo "dataset json not found, downloading from ${DATASET_REPO_ID} ..."
+  mkdir -p "$DATA_ROOT"
+  DATASET_REPO_ID="$DATASET_REPO_ID" DATA_ROOT="$DATA_ROOT" python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id=os.environ["DATASET_REPO_ID"],
+    repo_type="dataset",
+    local_dir=os.environ["DATA_ROOT"],
+    local_dir_use_symlinks=False,
+)
+print(f"dataset ready: {os.environ['DATA_ROOT']}")
+PY
+fi
+
+if [[ -f "$DATA_ROOT/images.zip" && ! -d "$DATA_ROOT/images" ]]; then
+  echo "extracting images.zip ..."
+  mkdir -p "$DATA_ROOT"
+  unzip -oq "$DATA_ROOT/images.zip" -d "$DATA_ROOT"
 fi
 
 mkdir -p "$OUTPUT_DIR"
@@ -41,5 +56,5 @@ if [[ "$ONLY_SUCCESSFUL_ACTIONS" == "true" ]]; then
 fi
 
 cd "$REPO_ROOT"
-"$PYTHON_BIN" -m vagen.envs.navigation.create_datasets.build_ebnav_sft "${builder_args[@]}"
+python -m vagen.envs.navigation.create_datasets.build_ebnav_sft "${builder_args[@]}"
 echo "data ready: $OUTPUT_FILE"

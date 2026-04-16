@@ -36,3 +36,6 @@ room_data/
 rollouts/
 
 models/
+.venv/
+datasets/
+checkpoints/

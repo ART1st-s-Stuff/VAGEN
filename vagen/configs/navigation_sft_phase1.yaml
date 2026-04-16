@@ -1,0 +1,72 @@
+hydra:
+  searchpath:
+    - file:../../verl/verl/trainer/config
+
+defaults:
+  - sft_trainer_engine
+  - _self_
+
+data:
+  train_batch_size: 64
+  micro_batch_size_per_gpu: 2
+  max_token_len_per_gpu: 16384
+  pin_memory: false
+  train_files: null
+  val_files: null
+  train_max_samples: -1
+  val_max_samples: -1
+  num_workers: 0
+  pad_mode: no_padding
+  max_length: 4096
+  truncation: error
+  custom_cls:
+    path: "vagen/datasets/navigation_multimodal_sft_dataset.py"
+    name: NavigationMultimodalSFTDataset
+  apply_chat_template_kwargs: {}
+  builder:
+    single_step_file: null
+    multi_step_file: null
+    image_root: null
+    include_sources: both
+    history_mode: no_history
+    only_successful_actions: false
+
+model:
+  path: ./models/Qwen2.5-VL-3B-Instruct
+  tokenizer_path: ${model.path}
+  trust_remote_code: true
+  lora_rank: 64
+  lora_alpha: 16
+  target_modules: all-linear
+  use_remove_padding: true
+
+optim:
+  # Phase1 VLM LoRA SFT is sensitive to optimizer aggressiveness.
+  # Use a conservative LR setup to reduce early output collapse.
+  lr: 1e-5
+  lr_scheduler_type: cosine
+  lr_warmup_steps_ratio: 0.05
+  betas: [0.9, 0.95]
+  weight_decay: 0.01
+  clip_grad: 1.0
+
+trainer:
+  project_name: navigation-phase1-sft
+
+  experiment_name: phase1_default
+
+  total_epochs: 1
+
+  # Save under checkpoints/${trainer.project_name}/${trainer.experiment_name}/global_step_<step>/
+  # Set to "after_each_epoch" to save once per epoch instead.
+  save_freq: 100
+
+  test_freq: -1
+
+  # Keep only the N most recent step checkpoints (null = keep all).
+  max_ckpt_to_keep: 5
+
+  # auto: on startup, load latest checkpoint in default_local_dir if present (model, optimizer, dataloader).
+  resume_mode: auto
+
+  resume_from_path: null

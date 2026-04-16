@@ -90,7 +90,14 @@ def _resolve_image_path(image_path: str | None, image_root: str) -> str | None:
     if os.path.isabs(image_path):
         return image_path
     if image_root:
-        return os.path.abspath(os.path.join(image_root, image_path))
+        primary = os.path.abspath(os.path.join(image_root, image_path))
+        if os.path.exists(primary):
+            return primary
+        # Some archives are extracted to `<root>/images/...`; keep compatibility.
+        fallback = os.path.abspath(os.path.join(image_root, "images", image_path))
+        if os.path.exists(fallback):
+            return fallback
+        return primary
     return image_path
 
 
@@ -109,12 +116,16 @@ def _build_assistant_text(cot: str, action_token: str, close_action: bool) -> st
     return response
 
 
-def _build_assistant_message(cot: str, action_token: str, close_action: bool, loss_mask: int) -> dict[str, Any]:
-    return {
+def _build_assistant_message(cot: str, action_token: str, close_action: bool, loss_mask: int | None) -> dict[str, Any]:
+    assistant_text = _build_assistant_text(cot=cot, action_token=action_token, close_action=close_action)
+    message = {
         "role": "assistant",
-        "content": _build_assistant_text(cot=cot, action_token=action_token, close_action=close_action),
-        "loss_mask": loss_mask,
+        # Keep `content` shape aligned with user multimodal messages for parquet stability.
+        "content": [{"type": "text", "text": assistant_text}],
     }
+    if loss_mask is not None:
+        message["loss_mask"] = loss_mask
+    return message
 
 
 def _load_json(path: str | None) -> list[dict[str, Any]]:
@@ -187,7 +198,7 @@ def _build_messages(step_records: list[dict[str, Any]], current_index: int, hist
                 cot=current_step["cot"],
                 action_token=current_step["gt_action_token"],
                 close_action=False,
-                loss_mask=1,
+                loss_mask=None,
             ),
         ]
 

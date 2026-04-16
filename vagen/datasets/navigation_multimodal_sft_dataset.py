@@ -29,6 +29,49 @@ def _convert_nested_value_to_list_recursive(data_item):
     return data_item
 
 
+def _normalize_message_content_schema(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize multimodal message content items to strict schemas.
+
+    Parquet round-trips can merge struct keys (e.g. text items may contain
+    ``image: None``). Qwen VL chat templates treat presence of the ``image`` key
+    as an image placeholder, so we strip irrelevant keys to avoid mismatched
+    image token counts.
+    """
+    normalized_messages: list[dict[str, Any]] = []
+    for message in messages:
+        normalized_message = dict(message)
+        content = normalized_message.get("content")
+        if not isinstance(content, list):
+            normalized_messages.append(normalized_message)
+            continue
+
+        normalized_content: list[dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type")
+            if item_type == "image":
+                image_value = item.get("image")
+                if image_value is None:
+                    continue
+                normalized_content.append({"type": "image", "image": image_value})
+                continue
+            if item_type == "video":
+                video_value = item.get("video")
+                if video_value is None:
+                    continue
+                normalized_content.append({"type": "video", "video": video_value})
+                continue
+
+            text_value = item.get("text")
+            if text_value is not None:
+                normalized_content.append({"type": "text", "text": text_value})
+
+        normalized_message["content"] = normalized_content
+        normalized_messages.append(normalized_message)
+    return normalized_messages
+
+
 class NavigationMultimodalSFTDataset(Dataset):
     def __init__(
         self,
@@ -275,7 +318,7 @@ class NavigationMultimodalSFTDataset(Dataset):
         return tensor[..., -max_length:] if keep == "right" else tensor[..., :max_length]
 
     def __getitem__(self, item):
-        messages = self.messages[item]
+        messages = _normalize_message_content_schema(self.messages[item])
         enable_thinking = self.enable_thinking[item]
         images = self._collect_images(messages)
 
@@ -309,8 +352,14 @@ class NavigationMultimodalSFTDataset(Dataset):
             if override_loss_mask is not None:
                 if isinstance(override_loss_mask, np.ndarray):
                     override_loss_mask = override_loss_mask.item()
-                assert int(override_loss_mask) in (0, 1), f"loss_mask should be 0 or 1, got {override_loss_mask}"
-                loss_mask = [int(override_loss_mask)] * len(tokens)
+                override_loss_mask = int(override_loss_mask)
+                assert override_loss_mask in (0, 1), f"loss_mask should be 0 or 1, got {override_loss_mask}"
+                # Keep assistant fine-grained supervision by default:
+                # - allow explicit 0 to mute historical assistant turns
+                # - do not override assistant 1 (it would force full-span supervision)
+                should_apply_override = role != "assistant" or override_loss_mask == 0
+                if should_apply_override:
+                    loss_mask = [override_loss_mask] * len(tokens)
 
             concat_tokens.extend(tokens)
             concat_loss_mask.extend(loss_mask)
