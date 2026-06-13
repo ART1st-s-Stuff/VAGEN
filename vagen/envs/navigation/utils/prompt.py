@@ -44,11 +44,20 @@ def get_format_instruction(
     """Return the format-specific instruction string."""
     if format_name not in _FORMAT_INSTRUCTIONS:
         raise ValueError(f"Unknown format {format_name!r}. Available: {sorted(_FORMAT_INSTRUCTIONS)}")
-    action_example = f"action1{action_sep} action2{action_sep} ..."
-    return (
-        f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.\n"
-        + _FORMAT_INSTRUCTIONS[format_name].format(action_example=action_example)
-    )
+
+    if max_actions_per_step <= 1:
+        action_example = "some_action"
+        action_count_instruction = (
+            "You must take exactly one action in each response. "
+            "Do not output multiple actions and do not use '|'.\n"
+        )
+    else:
+        action_example = f"action1{action_sep} action2{action_sep} ..."
+        action_count_instruction = (
+            f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.\n"
+        )
+
+    return action_count_instruction + _FORMAT_INSTRUCTIONS[format_name].format(action_example=action_example)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +75,16 @@ turn_right: Rotate to the right by 90 degrees
 turn_left: Rotate to the left by 90 degrees
 look_up: Tilt the camera upward by 30 degrees
 look_down: Tilt the camera downward by 30 degrees
-The instruction will be provided in the first observation. Look at the image carefully and navigate to complete the instruction.
+The instruction will be provided in the first observation. Look at the image carefully and navigate to complete the instruction."""
+
+_SINGLE_ACTION_HINTS = """\
+Hints:
+1. Choose exactly one valid action for the current step. Do not combine actions.
+2. If the target object is far away, move toward it one step at a time across multiple turns.
+3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
+4. Output the action only inside the required <action>...</action> XML tag."""
+
+_MULTI_ACTION_HINTS = """\
 Hints:
 1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call move_forward, move_left and move_right multiple times.
 2. If you find yourself seems to be stuck, you can look_down to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
@@ -109,6 +127,7 @@ def system_prompt(
         example_count: number of examples to include. 0 = no examples.
     """
     parts = [_BASE_SYSTEM_PROMPT]
+    parts.append(_SINGLE_ACTION_HINTS if max_actions_per_step <= 1 else _MULTI_ACTION_HINTS)
     parts.append(get_format_instruction(format_name, max_actions_per_step, action_sep))
     for ex in _EXAMPLES[:example_count]:
         parts.append(ex.format(sep=action_sep))
