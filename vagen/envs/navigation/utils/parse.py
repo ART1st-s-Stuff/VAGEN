@@ -6,6 +6,7 @@ Formats:
   - wm: <observation>...</observation><think>...</think><action>...</action><prediction>...</prediction>
   - no_think: <action>...</action>
   - eval_mode: only requires <action>...</action> (everything else optional, lenient)
+  - nimloth: <|action_(idx)|> between <|action_start|> and <|action_end|> (lenient)
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from vagen.envs.navigation.utils.nimloth_format import IDX_TO_ACTION
 
 # ---------------------------------------------------------------------------
 # Parse patterns
@@ -30,6 +32,31 @@ _PARSE_PATTERNS = {
     "eval_mode": r"<action>(.*?)</action>",  # lenient: first <action> anywhere
 }
 
+_NIMLOTH_ACTION_RE = re.compile(r"<\|action_\((\d+)\)\|>")
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+
+
+def _parse_nimloth_response(response: str, max_actions: int) -> Dict[str, Any]:
+    result: Dict[str, Any] = {"llm_raw_response": response, "actions": [], "format_correct": False}
+    think_match = _THINK_RE.search(response)
+    if think_match:
+        result["think"] = think_match.group(1).strip()
+
+    indices = [int(m.group(1)) for m in _NIMLOTH_ACTION_RE.finditer(response)]
+    if not indices:
+        return result
+
+    actions: List[str] = []
+    for idx in indices[:max_actions]:
+        action = IDX_TO_ACTION.get(idx)
+        if action is None:
+            return result
+        actions.append(action)
+
+    result["format_correct"] = True
+    result["actions"] = actions
+    return result
+
 
 def parse_response(
     response: str,
@@ -44,6 +71,9 @@ def parse_response(
         and optional think/observation/prediction text.
     """
     result: Dict[str, Any] = {"llm_raw_response": response, "actions": [], "format_correct": False}
+
+    if prompt_format == "nimloth":
+        return _parse_nimloth_response(response, max_actions)
 
     pattern = _PARSE_PATTERNS.get(prompt_format)
     if pattern is None:

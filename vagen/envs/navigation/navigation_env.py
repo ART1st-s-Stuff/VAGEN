@@ -38,7 +38,7 @@ class NavigationEnvConfig:
     per_turn_format_reward: float = 0.01  # per-step bonus if this turn's format is correct
     success_reward: float = 1.0         # reaching the goal
     gpu_device: int = 0
-    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode
+    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode | nimloth
     example_count: int = 0             # number of examples in system prompt (0 = none)
     success_threshold: float = 1.0
     step_length: float = 0.3

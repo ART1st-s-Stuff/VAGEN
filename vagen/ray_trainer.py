@@ -972,10 +972,11 @@ class RayPPOTrainer:
         # create actor and rollout
         if self.hybrid_engine:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
+            actor_role = "actor" if self.config.trainer.get("actor_only_convert", False) else str(Role.ActorRollout)
             actor_rollout_cls = RayClassWithInitArgs(
                 cls=self.role_worker_mapping[Role.ActorRollout],
                 config=self.config.actor_rollout_ref,
-                role=str(Role.ActorRollout),
+                role=actor_role,
             )
             self.resource_pool_to_cls[resource_pool][str(Role.ActorRollout)] = actor_rollout_cls
         else:
@@ -1058,7 +1059,7 @@ class RayPPOTrainer:
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
         self.concat_multi_turn = True # whether to concat history in async rollout --> if not, one traj has multiple prompt-response pairs
-        if self.config.actor_rollout_ref.rollout.mode == "async":
+        if (not self.config.trainer.get("actor_only_convert", False)) and self.config.actor_rollout_ref.rollout.mode == "async":
             self.async_rollout_mode = True
             if self.config.trainer.get("concat_multi_turn", True):
                 from verl.experimental.agent_loop import AgentLoopManager

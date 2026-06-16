@@ -9,6 +9,7 @@ Structure:
 
 from __future__ import annotations
 
+from vagen.envs.navigation.utils.nimloth_format import NIMLOTH_EVAL_FORMAT_INSTRUCTION
 
 # ---------------------------------------------------------------------------
 # Format instructions — the ONLY part that differs per format
@@ -33,6 +34,7 @@ _FORMAT_INSTRUCTIONS = {
         "You can optionally think first, then give your action. Respond in this format:\n"
         "<think>...</think><action>{action_example}</action>"
     ),
+    "nimloth": NIMLOTH_EVAL_FORMAT_INSTRUCTION,
 }
 
 
@@ -44,6 +46,15 @@ def get_format_instruction(
     """Return the format-specific instruction string."""
     if format_name not in _FORMAT_INSTRUCTIONS:
         raise ValueError(f"Unknown format {format_name!r}. Available: {sorted(_FORMAT_INSTRUCTIONS)}")
+
+    if format_name == "nimloth":
+        if max_actions_per_step > 1:
+            raise ValueError("prompt_format=nimloth only supports max_actions_per_step=1")
+        action_count_instruction = (
+            "You must take exactly one action in each response. "
+            "Do not output multiple actions and do not use '|'.\n"
+        )
+        return action_count_instruction + _FORMAT_INSTRUCTIONS["nimloth"]
 
     if max_actions_per_step <= 1:
         action_example = "some_action"
@@ -83,6 +94,13 @@ Hints:
 2. If the target object is far away, move toward it one step at a time across multiple turns.
 3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
 4. Output the action only inside the required <action>...</action> XML tag."""
+
+_NIMLOTH_SINGLE_ACTION_HINTS = """\
+Hints:
+1. Choose exactly one valid action for the current step. Do not combine actions.
+2. If the target object is far away, move toward it one step at a time across multiple turns.
+3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
+4. Output exactly one action index token between <|action_start|> and <|action_end|>."""
 
 _MULTI_ACTION_HINTS = """\
 Hints:
@@ -127,7 +145,10 @@ def system_prompt(
         example_count: number of examples to include. 0 = no examples.
     """
     parts = [_BASE_SYSTEM_PROMPT]
-    parts.append(_SINGLE_ACTION_HINTS if max_actions_per_step <= 1 else _MULTI_ACTION_HINTS)
+    if format_name == "nimloth":
+        parts.append(_NIMLOTH_SINGLE_ACTION_HINTS)
+    else:
+        parts.append(_SINGLE_ACTION_HINTS if max_actions_per_step <= 1 else _MULTI_ACTION_HINTS)
     parts.append(get_format_instruction(format_name, max_actions_per_step, action_sep))
     for ex in _EXAMPLES[:example_count]:
         parts.append(ex.format(sep=action_sep))
