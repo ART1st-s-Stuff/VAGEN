@@ -223,7 +223,7 @@ class GymAgentLoop(AgentLoopBase):
 
         # Cache assistant text and add assistant message (text-only)
         assistant_message = await self.loop.run_in_executor(
-            None, lambda: self.tokenizer.decode(agent_data.turn_response_ids, skip_special_tokens=True)
+            None, lambda: self.tokenizer.decode(agent_data.turn_response_ids, skip_special_tokens=False)
         )
         agent_data.last_assistant_text = assistant_message
         return AgentState.INTERACTING

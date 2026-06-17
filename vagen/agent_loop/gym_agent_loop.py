@@ -339,9 +339,10 @@ class GymAgentLoop(AgentLoopBase):
         if output.log_probs:
             agent_data.response_logprobs += output.log_probs
 
-        # Cache assistant text and add assistant message (text-only)
+        # Nimloth action/latent tokens are additional_special_tokens; decoding with
+        # skip_special_tokens=True strips them and breaks navigation parse.
         assistant_message = await self.loop.run_in_executor(
-            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=True)
+            None, lambda: self.tokenizer.decode(agent_data.response_ids, skip_special_tokens=False)
         )
         agent_data.last_assistant_text = assistant_message
         agent_data.messages.append({"role": "assistant", "content": assistant_message})
