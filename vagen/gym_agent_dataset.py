@@ -195,6 +195,9 @@ class AgenticDataset(Dataset):
             for env_seed in seeds:
                 # Each record contains env metadata and the resolved RNG seed
                 data_source = getattr(spec, "data_source", "default")
+                eval_set = None
+                if isinstance(spec.config, dict):
+                    eval_set = spec.config.get("eval_set")
                 self.items.append(
                     {
                         "env_name": spec.name,
@@ -203,6 +206,7 @@ class AgenticDataset(Dataset):
                         "max_turns": spec.max_turns,
                         "response_length_per_turn": spec.response_length_per_turn,
                         "data_source": data_source,
+                        "eval_set": eval_set,
                         "agent_name":"gym_agent",
                         "input_ids": torch.tensor([0]),  # dummy
                         "attention_mask": torch.tensor([0]),  # dummy

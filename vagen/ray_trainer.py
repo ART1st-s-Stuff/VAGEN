@@ -507,6 +507,123 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
+
+    @staticmethod
+    def _eval_set_from_config(config) -> Optional[str]:
+        if config is None:
+            return None
+        if isinstance(config, dict):
+            return config.get("eval_set")
+        return getattr(config, "eval_set", None)
+
+    @staticmethod
+    def _stable_env_uid(data_source, env_seed, eval_set=None) -> str:
+        if env_seed is None or data_source is None:
+            return str(uuid.uuid4())
+        eval_part = eval_set or ""
+        return f"{data_source}:{int(env_seed)}:{eval_part}"
+
+    def _assign_batch_uids(self, batch: DataProto) -> None:
+        """Use env identity as trajectory uid for reproducible train/val alignment."""
+        batch_size = len(batch.batch)
+        seeds = batch.non_tensor_batch.get("seed")
+        sources = batch.non_tensor_batch.get("data_source")
+        eval_sets = batch.non_tensor_batch.get("eval_set")
+        configs = batch.non_tensor_batch.get("config")
+        if eval_sets is None and configs is not None:
+            eval_sets = [self._eval_set_from_config(c) for c in configs]
+        uids = []
+        for i in range(batch_size):
+            seed = seeds[i] if seeds is not None else None
+            source = sources[i] if sources is not None else None
+            eval_set = eval_sets[i] if eval_sets is not None else None
+            uids.append(self._stable_env_uid(source, seed, eval_set))
+        batch.non_tensor_batch["uid"] = np.array(uids, dtype=object)
+
+    def _env_metadata_lists(self, batch: DataProto) -> dict[str, list]:
+        batch_size = len(batch.batch)
+        seeds = batch.non_tensor_batch.get("seed")
+        sources = batch.non_tensor_batch.get("data_source")
+        names = batch.non_tensor_batch.get("env_name")
+        eval_sets = batch.non_tensor_batch.get("eval_set")
+        configs = batch.non_tensor_batch.get("config")
+        if eval_sets is None and configs is not None:
+            eval_sets = [self._eval_set_from_config(c) for c in configs]
+        uids = batch.non_tensor_batch.get("uid")
+        return {
+            "env_seed": [int(seeds[i]) if seeds is not None else None for i in range(batch_size)],
+            "data_source": [sources[i] if sources is not None else None for i in range(batch_size)],
+            "env_name": [names[i] if names is not None else None for i in range(batch_size)],
+            "eval_set": [eval_sets[i] if eval_sets is not None else None for i in range(batch_size)],
+            "uid": [str(uids[i]) if uids is not None else None for i in range(batch_size)],
+        }
+
+    @staticmethod
+    def _extend_metadata_lists(target: dict[str, list], chunk: dict[str, list]) -> None:
+        for key, values in chunk.items():
+            target.setdefault(key, []).extend(values)
+
+    @staticmethod
+    def _sort_dump_payload(payload: dict[str, list]) -> dict[str, list]:
+        env_seeds = payload.get("env_seed")
+        if not env_seeds:
+            return payload
+        n = len(env_seeds)
+        if any(len(v) != n for v in payload.values()):
+            return payload
+
+        def sort_key(i: int):
+            return (
+                str(payload.get("data_source", [""] * n)[i] or ""),
+                int(payload["env_seed"][i]) if payload["env_seed"][i] is not None else -1,
+                str(payload.get("eval_set", [""] * n)[i] or ""),
+            )
+
+        order = sorted(range(n), key=sort_key)
+        return {key: [values[i] for i in order] for key, values in payload.items()}
+
+    def _log_train_rollout_env_stats(self, metadata: dict[str, list]) -> None:
+        env_seeds = metadata.get("env_seed") or []
+        if not env_seeds:
+            return
+        sources = metadata.get("data_source") or [None] * len(env_seeds)
+        pairs = list(zip(sources, env_seeds, strict=False))
+        unique_pairs = len(set(pairs))
+        print(
+            f"Train rollout env coverage: {unique_pairs}/{len(env_seeds)} unique (data_source, env_seed) pairs"
+        )
+        dup = len(env_seeds) - unique_pairs
+        if dup:
+            print(f"WARNING: train batch contains {dup} duplicate (data_source, env_seed) rollouts")
+
+    def _assert_val_env_composition(self, metadata: dict[str, list]) -> None:
+        if not self.config.trainer.get("assert_val_env_composition", True):
+            return
+        sources = metadata.get("data_source") or []
+        if not sources:
+            return
+        counts = defaultdict(int)
+        for src in sources:
+            counts[str(src)] += 1
+        expected = self.config.trainer.get("val_env_composition")
+        if expected is None and len(sources) == 120:
+            expected = {"navigation_base": 60, "navigation_common": 60}
+        if expected is not None:
+            for src, exp in expected.items():
+                got = counts.get(src, 0)
+                if got != exp:
+                    raise ValueError(
+                        f"Validation env composition mismatch for {src}: expected {exp}, got {got}. "
+                        f"Full breakdown: {dict(counts)}"
+                    )
+        pairs = list(zip(sources, metadata.get("env_seed") or [None] * len(sources), strict=False))
+        if len(set(pairs)) != len(pairs):
+            raise ValueError(
+                f"Validation contains duplicate (data_source, env_seed) pairs: "
+                f"{len(pairs) - len(set(pairs))} duplicates in {len(pairs)} samples"
+            )
+        print(f"Validation env composition OK: {dict(counts)}; {len(set(pairs))} unique env instances")
+
     def _dump_generations(self, inputs, outputs, images, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
         os.makedirs(dump_path, exist_ok=True)
@@ -609,6 +726,11 @@ class RayPPOTrainer:
                     "request_id",
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
+            env_metadata = self._env_metadata_lists(batch)
+            self._log_train_rollout_env_stats(env_metadata)
+            for key, values in env_metadata.items():
+                if len(values) == len(outputs):
+                    reward_extra_infos_to_dump[key] = values
 
             self._dump_generations(
                 inputs=inputs,
@@ -651,7 +773,7 @@ class RayPPOTrainer:
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:
-        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid"}) & batch.non_tensor_batch.keys()
+        reward_model_keys = set({"data_source", "reward_model", "extra_info", "uid", "seed", "env_name", "config", "eval_set"}) & batch.non_tensor_batch.keys()
 
         # pop those keys for generation
         batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
@@ -765,6 +887,7 @@ class RayPPOTrainer:
         sample_turns = []
         sample_uids = []
         sample_images = []
+        sample_metadata: dict[str, list] = defaultdict(list)
 
         pad_token_id = self.tokenizer.pad_token_id
         skip_pad_tokens = self.config.trainer.get("skip_pad_tokens", True)
@@ -773,9 +896,7 @@ class RayPPOTrainer:
             test_batch = DataProto.from_single_dict(test_data)
 
             if "uid" not in test_batch.non_tensor_batch:
-                test_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
-                )
+                self._assign_batch_uids(test_batch)
 
             # repeat test batch
             test_batch = test_batch.repeat(
@@ -902,7 +1023,10 @@ class RayPPOTrainer:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
-        
+            self._extend_metadata_lists(sample_metadata, self._env_metadata_lists(test_batch))
+
+        self._assert_val_env_composition(sample_metadata)
+
         if self.config.trainer.get("replace_image_tokens_for_logging", False):
             sample_inputs = replace_image_tokens_for_logging(sample_inputs, processor=self.processor, tokenizer=self.tokenizer)
             sample_outputs = replace_image_tokens_for_logging(sample_outputs, processor=self.processor, tokenizer=self.tokenizer)
@@ -911,6 +1035,27 @@ class RayPPOTrainer:
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            dump_payload = {
+                "input": sample_inputs,
+                "output": sample_outputs,
+                "gts": sample_gts,
+                "score": sample_scores,
+            }
+            if sample_images and len(sample_images) == len(sample_scores):
+                dump_payload["images"] = sample_images
+            for key, values in sample_metadata.items():
+                if len(values) == len(sample_scores):
+                    dump_payload[key] = values
+            for key, values in reward_extra_infos_dict.items():
+                if len(values) == len(sample_scores):
+                    dump_payload[key] = values
+            dump_payload = self._sort_dump_payload(dump_payload)
+            sample_inputs = dump_payload.pop("input")
+            sample_outputs = dump_payload.pop("output")
+            sample_gts = dump_payload.pop("gts")
+            sample_scores = dump_payload.pop("score")
+            sample_images = dump_payload.pop("images", sample_images)
+            reward_extra_infos_dict = defaultdict(list, {k: v for k, v in dump_payload.items()})
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
@@ -1316,10 +1461,8 @@ class RayPPOTrainer:
                     )
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
-                # add uid to batch
-                batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
-                )
+                # bind uid to env identity for reproducible async alignment
+                self._assign_batch_uids(batch)
 
                 gen_batch = self._get_gen_batch(batch)
 
