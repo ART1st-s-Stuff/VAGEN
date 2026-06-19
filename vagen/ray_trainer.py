@@ -596,33 +596,90 @@ class RayPPOTrainer:
         if dup:
             print(f"WARNING: train batch contains {dup} duplicate (data_source, env_seed) rollouts")
 
+    def _resolve_val_env_composition_spec(self, n_samples: int) -> dict[str, dict] | None:
+        """Return per-data_source validation rules, or None to skip checks."""
+        if not self.config.trainer.get("assert_val_env_composition", False):
+            return None
+
+        expected = self.config.trainer.get("val_env_composition")
+        if expected is None:
+            if n_samples == 120:
+                return {
+                    "navigation_base": {"count": 60, "eval_set": "base"},
+                    "navigation_common": {"count": 60, "eval_set": "common_sense"},
+                }
+            return None
+
+        normalized: dict[str, dict] = {}
+        for src, spec in expected.items():
+            src_key = str(src)
+            if isinstance(spec, (int, float)):
+                normalized[src_key] = {"count": int(spec), "eval_set": None}
+                continue
+            if hasattr(spec, "items"):
+                count = spec.get("count", spec.get("n"))
+                if count is None:
+                    raise ValueError(f"val_env_composition.{src_key} missing count")
+                normalized[src_key] = {
+                    "count": int(count),
+                    "eval_set": spec.get("eval_set"),
+                }
+                continue
+            raise TypeError(f"Unsupported val_env_composition entry for {src_key}: {spec!r}")
+        return normalized
+
     def _assert_val_env_composition(self, metadata: dict[str, list]) -> None:
-        if not self.config.trainer.get("assert_val_env_composition", True):
-            return
         sources = metadata.get("data_source") or []
         if not sources:
             return
-        counts = defaultdict(int)
-        for src in sources:
-            counts[str(src)] += 1
-        expected = self.config.trainer.get("val_env_composition")
-        if expected is None and len(sources) == 120:
-            expected = {"navigation_base": 60, "navigation_common": 60}
-        if expected is not None:
-            for src, exp in expected.items():
-                got = counts.get(src, 0)
-                if got != exp:
+
+        spec = self._resolve_val_env_composition_spec(len(sources))
+        if spec is None:
+            return
+
+        eval_sets = metadata.get("eval_set") or [None] * len(sources)
+        env_seeds = metadata.get("env_seed") or [None] * len(sources)
+        counts: dict[str, int] = defaultdict(int)
+        eval_set_by_source: dict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+        pair_counts: defaultdict[tuple[str, object], int] = defaultdict(int)
+
+        for src, seed, eval_set in zip(sources, env_seeds, eval_sets, strict=False):
+            src_key = str(src)
+            counts[src_key] += 1
+            eval_set_by_source[src_key][str(eval_set)] += 1
+            pair_counts[(src_key, seed)] += 1
+
+        for src_key, rule in spec.items():
+            exp_count = rule["count"]
+            exp_eval_set = rule.get("eval_set")
+            got = counts.get(src_key, 0)
+            if got != exp_count:
+                raise ValueError(
+                    f"Validation env composition mismatch for {src_key}: expected count {exp_count}, got {got}. "
+                    f"Full breakdown: {dict(counts)}"
+                )
+            if exp_eval_set is not None:
+                allowed = {str(exp_eval_set)}
+                observed = set(eval_set_by_source[src_key])
+                if observed != allowed:
                     raise ValueError(
-                        f"Validation env composition mismatch for {src}: expected {exp}, got {got}. "
-                        f"Full breakdown: {dict(counts)}"
+                        f"Validation eval_set mismatch for {src_key}: expected {exp_eval_set!r}, "
+                        f"observed {dict(eval_set_by_source[src_key])}"
                     )
-        pairs = list(zip(sources, metadata.get("env_seed") or [None] * len(sources), strict=False))
-        if len(set(pairs)) != len(pairs):
+
+        val_repeat = int(self.config.actor_rollout_ref.rollout.val_kwargs.get("n", 1))
+        overflow = {pair: count for pair, count in pair_counts.items() if count > val_repeat}
+        if overflow:
             raise ValueError(
-                f"Validation contains duplicate (data_source, env_seed) pairs: "
-                f"{len(pairs) - len(set(pairs))} duplicates in {len(pairs)} samples"
+                f"Validation contains duplicate (data_source, env_seed) pairs above val_kwargs.n={val_repeat}: "
+                f"{overflow}"
             )
-        print(f"Validation env composition OK: {dict(counts)}; {len(set(pairs))} unique env instances")
+
+        print(
+            "Validation env composition OK: "
+            f"counts={dict(counts)} eval_sets={{k: dict(v) for k, v in eval_set_by_source.items()}} "
+            f"unique_env_instances={len(pair_counts)} val_repeat={val_repeat}"
+        )
 
     def _dump_generations(self, inputs, outputs, images, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
