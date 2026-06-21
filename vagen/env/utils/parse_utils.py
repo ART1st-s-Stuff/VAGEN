@@ -386,6 +386,7 @@ PARSE_FUNC_MAP = {
     "no_think": parse_no_think,
     "grounding": parse_grounding,
     "worldmodeling": parse_worldmodeling,
+    "wm": parse_worldmodeling,
     "grounding_worldmodeling": parse_grounding_worldmodeling,
     "nimloth": parse_nimloth,
     "nimloth_wm": parse_nimloth_wm,

@@ -240,6 +240,8 @@ format_prompt = {
     ft: format_prompt_generator(ft) 
     for ft in FORMAT_CONFIGS  # Iterate directly over keys in FORMAT_CONFIGS
 }
+# Nimloth baseline config uses the short alias `wm` for world modeling.
+format_prompt["wm"] = format_prompt["worldmodeling"]
 
 
 if __name__ == "__main__":
