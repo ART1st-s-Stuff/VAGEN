@@ -1,3 +1,4 @@
-# [submodule "verl"]
-# 	path = verl
-# 	url = https://github.com/JamesKrW/verl.git
+[submodule "verl"]
+	path = verl
+	url = ssh://git@ssh.github.com:443/ART1st-s-Stuff/verl.git
+	branch = nimloth/main

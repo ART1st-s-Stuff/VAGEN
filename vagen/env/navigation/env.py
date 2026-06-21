@@ -20,13 +20,21 @@ class NavigationEnv(BaseEnv):
     # Available actions
     ACTION_LOOKUP = {
         "moveahead": 1,
+        "move_forward": 1,
         "moveback": 2,
+        "move_backward": 2,
         "moveright": 3,
+        "move_right": 3,
         "moveleft": 4,
+        "move_left": 4,
         "rotateright": 5,
+        "turn_right": 5,
         "rotateleft": 6,
+        "turn_left": 6,
         "lookup": 7,
-        "lookdown": 8
+        "look_up": 7,
+        "lookdown": 8,
+        "look_down": 8
     }
 
     # Action descriptions

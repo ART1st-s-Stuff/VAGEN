@@ -1,5 +1,10 @@
 # This FORMAT_CONFIGS is for the robot navigation task,
 # structured like the FORMAT_CONFIGS in your first (FrozenLake) example.
+from vagen.env.navigation.nimloth_format import (
+    NIMLOTH_EVAL_FORMAT_INSTRUCTION,
+    NIMLOTH_WM_FORMAT_INSTRUCTION,
+)
+
 FORMAT_CONFIGS = {
     "free_think": {
         "description": "You should first give your thought process, and then your answer.",
@@ -25,6 +30,16 @@ FORMAT_CONFIGS = {
         "description": "You should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
         "example": """<think><observation>I am at the entrance of a bedroom. There is a bed to the left, a desk with a lamp on the right, and a closet straight ahead. The target object, a book, appears to be on the desk.</observation><reasoning>I need to move toward the desk to reach the book. I'll turn right and move forward.</reasoning><prediction>I am now standing in front of the desk. The desk has a lamp, a computer, and several books on it. The target book is within reach on the right side of the desk.</prediction></think><answer>rotateright{action_sep}moveahead{action_sep}moveahead</answer>"""
+    },
+    "nimloth": {
+        "description": "You must take exactly one action in each response. Do not output multiple actions and do not use '|'.\n" + NIMLOTH_EVAL_FORMAT_INSTRUCTION,
+        "format": "<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
+        "example": """<think>I should move one step toward the visible target.</think><|latent_state|><|action_start|><|action_(0)|><|action_end|>"""
+    },
+    "nimloth_wm": {
+        "description": "You must take exactly one action in each response. Do not output multiple actions and do not use '|'.\n" + NIMLOTH_WM_FORMAT_INSTRUCTION,
+        "format": "<observation>...</observation><think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|><prediction>...</prediction>",
+        "example": """<observation>The target is ahead-left.</observation><think>I should move forward one step and reassess.</think><|latent_state|><|action_start|><|action_(0)|><|action_end|><prediction>I expect to be closer to the target.</prediction>"""
     }
 }
 
@@ -189,11 +204,19 @@ def format_prompt_generator(format_type):
         action_sep = kwargs.get("action_sep", ",")
         add_example = kwargs.get("add_example", True) # Default to True as per robot examples
         
+        if format_type in ("nimloth", "nimloth_wm") and max_actions_per_step > 1:
+            raise ValueError(f"prompt_format={format_type} only supports max_actions_per_step=1")
+
         if format_type not in FORMAT_CONFIGS:
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
+
+        if max_actions_per_step <= 1:
+            action_count_instruction = "You must take exactly one action in each response. Do not output multiple actions and do not use '|'."
+        else:
+            action_count_instruction = f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'."
         
-        base_prompt = f"""You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.
+        base_prompt = f"""{action_count_instruction}
 {config["description"]}"""
         
         if "additional_info" in config: # In case it's added to FORMAT_CONFIGS later

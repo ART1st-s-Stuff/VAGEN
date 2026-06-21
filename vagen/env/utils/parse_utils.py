@@ -2,6 +2,110 @@ import re
 from typing import Dict, List
 import json
 
+from vagen.env.navigation.nimloth_format import IDX_TO_ACTION
+
+
+_NIMLOTH_ACTION_RE = re.compile(r"<\|action_\((\d+)\)\|>")
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+_OBS_RE = re.compile(r"<observation>(.*?)</observation>", re.DOTALL)
+_PRED_RE = re.compile(r"<prediction>(.*?)</prediction>", re.DOTALL)
+_LATENT_STATE_TOKEN = "<|latent_state|>"
+_ACTION_START_TOKEN = "<|action_start|>"
+_ACTION_END_TOKEN = "<|action_end|>"
+
+
+def _extract_nimloth_actions(block: str, max_actions: int) -> List[str]:
+    indices = [int(m.group(1)) for m in _NIMLOTH_ACTION_RE.finditer(block)]
+    if not indices:
+        return []
+
+    actions: List[str] = []
+    for idx in indices[:max_actions]:
+        action = IDX_TO_ACTION.get(idx)
+        if action is None:
+            return []
+        actions.append(action)
+    return actions
+
+
+def parse_nimloth(response: str, special_token_list=None, action_sep=',', max_actions=1) -> Dict:
+    """Parse Nimloth latent/action-token navigation responses.
+
+    Expected action block:
+    ``<|latent_state|><|action_start|><|action_(idx)|><|action_end|>``.
+    ``action_sep`` and ``special_token_list`` are accepted for API compatibility
+    with the legacy parser map.
+    """
+    response = response.replace("<image>", "")
+    result = {
+        "llm_raw_response": response,
+        "llm_response": "",
+        "think_content": "",
+        "action_content": "",
+        "actions": [],
+        "format_correct": False,
+    }
+
+    think_match = _THINK_RE.search(response)
+    if think_match:
+        result["think_content"] = think_match.group(1).strip()
+
+    action_start_idx = response.find(_ACTION_START_TOKEN)
+    action_end_idx = response.find(_ACTION_END_TOKEN)
+    if action_start_idx < 0 or action_end_idx < 0 or action_start_idx >= action_end_idx:
+        return result
+
+    latent_idx = response.rfind(_LATENT_STATE_TOKEN, 0, action_start_idx)
+    if latent_idx < 0:
+        return result
+
+    block = response[action_start_idx + len(_ACTION_START_TOKEN):action_end_idx]
+    actions = _extract_nimloth_actions(block, max_actions)
+    if not actions:
+        return result
+
+    result["actions"] = actions
+    result["action_content"] = block.strip()
+    result["format_correct"] = True
+    result["llm_response"] = (
+        f"<think>{result['think_content']}</think>"
+        f"{_LATENT_STATE_TOKEN}{_ACTION_START_TOKEN}{result['action_content']}{_ACTION_END_TOKEN}"
+    )
+    return result
+
+
+def parse_nimloth_wm(response: str, special_token_list=None, action_sep=',', max_actions=1) -> Dict:
+    """Parse strict Nimloth world-modeling navigation responses."""
+    response = response.replace("<image>", "")
+    result = parse_nimloth(response, special_token_list=special_token_list, action_sep=action_sep, max_actions=max_actions)
+    if not result["format_correct"]:
+        result.update({
+            "observation_content": "",
+            "prediction_content": "",
+        })
+        return result
+
+    obs_match = _OBS_RE.search(response)
+    think_match = _THINK_RE.search(response)
+    pred_match = _PRED_RE.search(response)
+    action_start_idx = response.find(_ACTION_START_TOKEN)
+    action_end_idx = response.find(_ACTION_END_TOKEN)
+    latent_idx = response.rfind(_LATENT_STATE_TOKEN, 0, action_start_idx)
+
+    if not (obs_match and think_match and pred_match):
+        result["format_correct"] = False
+        result["actions"] = []
+        return result
+    if not (obs_match.start() < think_match.start() < latent_idx < action_start_idx < action_end_idx < pred_match.start()):
+        result["format_correct"] = False
+        result["actions"] = []
+        return result
+
+    result["observation_content"] = obs_match.group(1).strip()
+    result["think_content"] = think_match.group(1).strip()
+    result["prediction_content"] = pred_match.group(1).strip()
+    result["llm_response"] = response.strip()
+    return result
 
 
 def parse_freethink(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
@@ -283,6 +387,8 @@ PARSE_FUNC_MAP = {
     "grounding": parse_grounding,
     "worldmodeling": parse_worldmodeling,
     "grounding_worldmodeling": parse_grounding_worldmodeling,
+    "nimloth": parse_nimloth,
+    "nimloth_wm": parse_nimloth_wm,
     "grounding_structured": parse_grounding,
     "worldmodeling_structured": parse_worldmodeling,
     "grounding_worldmodeling_structured": parse_grounding_worldmodeling,

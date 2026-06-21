@@ -22,9 +22,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pprint import pprint
-from typing import Type, Dict,List,Any
+from typing import Type, Dict,List,Any, Optional
 from copy import deepcopy
 from collections import defaultdict
+import json
 import numpy as np
 from codetiming import Timer
 from omegaconf import OmegaConf, open_dict
@@ -755,6 +756,128 @@ class RayPPOTrainer(object):
         wandb.log({"val/generations": new_table}, step=self.global_steps)
         self.validation_table = new_table
     
+    @staticmethod
+    def _eval_set_from_extra_info(extra_info) -> Optional[str]:
+        if not isinstance(extra_info, dict):
+            return None
+        env_config = extra_info.get("env_config") or extra_info.get("config")
+        if isinstance(env_config, dict):
+            return env_config.get("eval_set")
+        return None
+
+    @staticmethod
+    def _stable_env_uid(data_source, env_seed, eval_set=None) -> str:
+        if data_source is None or env_seed is None:
+            return str(uuid.uuid4())
+        return f"{data_source}:{int(env_seed)}:{eval_set or ''}"
+
+    def _assign_batch_uids(self, batch: DataProto) -> None:
+        extra_infos = batch.non_tensor_batch.get("extra_info")
+        sources = batch.non_tensor_batch.get("data_source")
+        uids = []
+        for i in range(len(batch.batch)):
+            extra = extra_infos[i] if extra_infos is not None else {}
+            seed = extra.get("seed") if isinstance(extra, dict) else None
+            source = sources[i] if sources is not None else None
+            eval_set = self._eval_set_from_extra_info(extra)
+            uids.append(self._stable_env_uid(source, seed, eval_set))
+        batch.non_tensor_batch["uid"] = np.array(uids, dtype=object)
+
+    def _record_metadata(self, env_config: dict, uid: str, data_source=None) -> dict:
+        extra = env_config if isinstance(env_config, dict) else {}
+        return {
+            "uid": uid,
+            "data_source": data_source if data_source is not None else extra.get("data_source"),
+            "env_name": extra.get("env_name"),
+            "env_seed": int(extra["seed"]) if extra.get("seed") is not None else None,
+            "eval_set": self._eval_set_from_extra_info(extra),
+        }
+
+    @staticmethod
+    def _sort_validation_records(records: list[dict]) -> list[dict]:
+        def sort_key(item: dict):
+            return (
+                str(item.get("data_source") or ""),
+                int(item.get("env_seed")) if item.get("env_seed") is not None else -1,
+                str(item.get("eval_set") or ""),
+                str(item.get("env_id") or ""),
+            )
+        return sorted(records, key=sort_key)
+
+    def _resolve_val_env_composition_spec(self, n_samples: int) -> dict[str, dict] | None:
+        if not self.config.trainer.get("assert_val_env_composition", False):
+            return None
+        expected = self.config.trainer.get("val_env_composition")
+        if expected is None:
+            if n_samples == 120:
+                return {
+                    "navigation_base": {"count": 60, "eval_set": "base"},
+                    "navigation_common": {"count": 60, "eval_set": "common_sense"},
+                }
+            return None
+        normalized: dict[str, dict] = {}
+        for src, spec in expected.items():
+            src_key = str(src)
+            if isinstance(spec, (int, float)):
+                normalized[src_key] = {"count": int(spec), "eval_set": None}
+            elif hasattr(spec, "items"):
+                count = spec.get("count", spec.get("n"))
+                if count is None:
+                    raise ValueError(f"val_env_composition.{src_key} missing count")
+                normalized[src_key] = {"count": int(count), "eval_set": spec.get("eval_set")}
+            else:
+                raise TypeError(f"Unsupported val_env_composition entry for {src_key}: {spec!r}")
+        return normalized
+
+    def _assert_val_env_composition(self, records: list[dict]) -> None:
+        spec = self._resolve_val_env_composition_spec(len(records))
+        if spec is None:
+            return
+        counts: dict[str, int] = defaultdict(int)
+        eval_set_by_source: dict[str, defaultdict[str, int]] = defaultdict(lambda: defaultdict(int))
+        pair_counts: defaultdict[tuple[str, object], int] = defaultdict(int)
+        for item in records:
+            src_key = str(item.get("data_source"))
+            counts[src_key] += 1
+            eval_set_by_source[src_key][str(item.get("eval_set"))] += 1
+            pair_counts[(src_key, item.get("env_seed"))] += 1
+        for src_key, rule in spec.items():
+            got = counts.get(src_key, 0)
+            if got != rule["count"]:
+                raise ValueError(
+                    f"Validation env composition mismatch for {src_key}: expected count {rule['count']}, got {got}. "
+                    f"Full breakdown: {dict(counts)}"
+                )
+            exp_eval_set = rule.get("eval_set")
+            if exp_eval_set is not None and set(eval_set_by_source[src_key]) != {str(exp_eval_set)}:
+                raise ValueError(
+                    f"Validation eval_set mismatch for {src_key}: expected {exp_eval_set!r}, "
+                    f"observed {dict(eval_set_by_source[src_key])}"
+                )
+        val_repeat = int(self.config.actor_rollout_ref.rollout.val_kwargs.get("n", 1))
+        overflow = {pair: count for pair, count in pair_counts.items() if count > val_repeat}
+        if overflow:
+            raise ValueError(
+                f"Validation contains duplicate (data_source, env_seed) pairs above val_kwargs.n={val_repeat}: {overflow}"
+            )
+        print(
+            "Validation env composition OK: "
+            f"counts={dict(counts)} eval_sets={{k: dict(v) for k, v in eval_set_by_source.items()}} "
+            f"unique_env_instances={len(pair_counts)} val_repeat={val_repeat}"
+        )
+
+    def _dump_validation_records(self, records: list[dict]) -> None:
+        val_data_dir = self.config.trainer.get("validation_data_dir", None)
+        if not val_data_dir:
+            return
+        os.makedirs(val_data_dir, exist_ok=True)
+        dump_path = os.path.join(val_data_dir, f"{self.global_steps}.jsonl")
+        with open(dump_path, "w", encoding="utf-8") as f:
+            for item in self._sort_validation_records(records):
+                serializable = {k: v for k, v in item.items() if k != "image_data"}
+                f.write(json.dumps(serializable, ensure_ascii=False) + "\n")
+        print(f"Dumped {len(records)} validation records to {dump_path}")
+
     def _validate(self):
         print(f"[DEBUG] validation at global step {self.global_steps} begins")
         # Lists to collect samples for the table
@@ -798,12 +921,21 @@ class RayPPOTrainer(object):
                     batch.non_tensor_batch['extra_info'][i]
                     for i in range(len(batch))
                 ]
+            uids = []
+            for i, env_config in enumerate(env_configs):
+                source = batch.non_tensor_batch['data_source'][i] if 'data_source' in batch.non_tensor_batch else env_config.get('data_source')
+                uids.append(self._stable_env_uid(source, env_config.get('seed'), self._eval_set_from_extra_info(env_config)))
             
             self.test_rollout_manager.reset(env_configs)
             self.test_rollout_manager.rollout_loop()
             micro_validation_rst = self.test_rollout_manager.recording_to_log() # data source == inputs in our current setting, outputs=whole trjecotry
+            for i, (item, env_config, uid) in enumerate(zip(micro_validation_rst, env_configs, uids, strict=False)):
+                source = batch.non_tensor_batch['data_source'][i] if 'data_source' in batch.non_tensor_batch else env_config.get('data_source')
+                item.update(self._record_metadata(env_config, uid, source))
             validation_rst.extend(micro_validation_rst)
         
+        self._assert_val_env_composition(validation_rst)
+        self._dump_validation_records(validation_rst)
         self._maybe_log_val_generations_to_wandb(validation_rst)
         metric_dict = self.log_rst_to_metrics_dict(validation_rst,mode='val')
         print(f"[DEBUG] validation at global step {self.global_steps} ends")
@@ -1113,7 +1245,8 @@ class RayPPOTrainer(object):
 
                 
                 # We control vanilla-grpo sampling param here (start from init state s0, sample n_trajectory)
-                batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],dtype=object)
+                # Bind uid to env identity for reproducible async alignment.
+                self._assign_batch_uids(batch)
                 batch = batch.repeat(repeat_times=self.config.rollout_manager.n_trajectory, interleave=True)
                 
                     
