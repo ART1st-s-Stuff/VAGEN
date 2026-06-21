@@ -14,8 +14,6 @@
 from typing import List, Dict, Any
 import asyncio
 import time
-from vagen.server.llm_as_judge import run_llm_judge
-from vagen.server.llm_as_judge_sokoban_frozenlake import run_llm_judge as run_llm_judge_new
 
 def env_state_reward_wrapper(step_func):
     def wrapped_step(self, action_str):
@@ -84,6 +82,8 @@ def service_state_reward_wrapper(step_batch_func):
                     
         if len(input_to_llm) > 0:
             # Use synchronous batch processing
+            from vagen.server.llm_as_judge import run_llm_judge
+
             results = run_llm_judge(input_to_llm)
         else:
             return step_batch_results
@@ -142,6 +142,8 @@ def service_state_reward_wrapper_v2(step_batch_func):
                     
         if len(input_to_llm) > 0:
             # Use synchronous batch processing
+            from vagen.server.llm_as_judge_sokoban_frozenlake import run_llm_judge as run_llm_judge_new
+
             results = run_llm_judge_new(input_to_llm) # a dict containing a set of metrics
         else:
             return step_batch_results
@@ -206,6 +208,8 @@ def service_state_reward_wrapper_v3(step_batch_func):
                     
         if len(input_to_llm) > 0:
             # Use synchronous batch processing
+            from vagen.server.llm_as_judge_sokoban_frozenlake import run_llm_judge as run_llm_judge_new
+
             results = run_llm_judge_new(input_to_llm) # a dict containing a set of metrics
         else:
             return step_batch_results

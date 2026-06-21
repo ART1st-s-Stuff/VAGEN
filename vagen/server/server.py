@@ -8,7 +8,6 @@ from vagen.env.base.base_service import BaseService
 from vagen.env.base.base_service_config import BaseServiceConfig
 import hydra
 from omegaconf import DictConfig
-from vagen.server.llm_as_judge import wandb_run_context
 
 class BatchEnvServer:
     """
@@ -404,6 +403,8 @@ class BatchEnvServer:
             return
         
         if self.config.get("use_state_reward", False):
+            from vagen.server.llm_as_judge import wandb_run_context
+
             self.wandb_context = wandb_run_context()
             self.wandb_context.__enter__()
             print("Initialized wandb for LLM Judge")

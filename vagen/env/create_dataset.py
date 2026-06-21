@@ -138,17 +138,20 @@ if __name__ == "__main__":
     train_path, test_path = create_dataset_from_yaml(args.yaml_path, args.force_gen, args.seed, args.train_path, args.test_path)
     
     # Optionally load the dataset and print examples
-    train_dataset = load_dataset('parquet', data_files={"train": train_path}, split="train")
-    test_dataset = load_dataset('parquet', data_files={"test": test_path}, split="test")
-    for i in range(2):
-        print(train_dataset[i])
-        env_name = train_dataset[i]["extra_info"]["env_name"]
-        env_config_cls = REGISTERED_ENV[env_name]["config_cls"]
-        env_config= env_config_cls(**train_dataset[i]["extra_info"]["env_config"])
-        print(env_config.config_id())
-    for i in range(2):
-        print(train_dataset[i])
-        env_name = test_dataset[i]["extra_info"]["env_name"]
-        env_config_cls = REGISTERED_ENV[env_name]["config_cls"]
-        env_config= env_config_cls(**test_dataset[i]["extra_info"]["env_config"])
-        print(env_config.config_id())
+    if os.path.exists(train_path):
+        train_dataset = load_dataset('parquet', data_files={"train": train_path}, split="train")
+        for i in range(min(2, len(train_dataset))):
+            print(train_dataset[i])
+            env_name = train_dataset[i]["extra_info"]["env_name"]
+            env_config_cls = REGISTERED_ENV[env_name]["config_cls"]
+            env_config = env_config_cls(**train_dataset[i]["extra_info"]["env_config"])
+            print(env_config.config_id())
+
+    if os.path.exists(test_path):
+        test_dataset = load_dataset('parquet', data_files={"test": test_path}, split="test")
+        for i in range(min(2, len(test_dataset))):
+            print(test_dataset[i])
+            env_name = test_dataset[i]["extra_info"]["env_name"]
+            env_config_cls = REGISTERED_ENV[env_name]["config_cls"]
+            env_config = env_config_cls(**test_dataset[i]["extra_info"]["env_config"])
+            print(env_config.config_id())
