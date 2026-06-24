@@ -94,7 +94,9 @@ actor_rollout_ref:
     do_sample: True
     # number of responses (i.e. num sample times)
     n: 1 # > 1 for grpo
-    limit_mm_per_prompt: 5 # for image limits in vllm rollout (default to 1, now we increase it to 5)
+    limit_mm_per_prompt: 20 # for image limits in vllm rollout (default to 1; navigation can carry up to 20 step images)
+    # Cap one agent turn so invalid long generations do not dominate validation time or context length.
+    max_response_per_turn: 2048
 
 critic:
   strategy: fsdp
