@@ -1,0 +1,11 @@
+# VAGEN qwen-bug-repro smoke: navigation validation dataset (3 samples).
+nav_base:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: worldmodeling
+    use_state_reward: false
+    eval_set: base
+    max_actions_per_step: 5
+  train_size: 0
+  test_size: 3

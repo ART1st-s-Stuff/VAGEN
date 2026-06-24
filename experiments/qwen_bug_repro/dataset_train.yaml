@@ -1,0 +1,14 @@
+# VAGEN qwen-bug-repro smoke: navigation training dataset (3 samples).
+# prompt_format=worldmodeling is the VAGEN-original WM prompt
+# (equivalent to nimloth's `wm` alias, which does not exist on upstream/vagen-legacy).
+# Paper-style multi-action: max_actions_per_step=5.
+nav_base:
+  env_name: navigation
+  env_config:
+    render_mode: vision
+    prompt_format: worldmodeling
+    use_state_reward: false
+    eval_set: base
+    max_actions_per_step: 5
+  train_size: 3
+  test_size: 0
