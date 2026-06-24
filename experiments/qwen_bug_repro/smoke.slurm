@@ -50,8 +50,7 @@ mkdir -p "${RUN_DIR}" "${DATA_DIR}" "${SAVE_CHECKPOINT_DIR}" \
          "${REPO}/outputs/experiments/training/baseline/slurm" \
          "${RUN_DIR}/vision_probe"
 
-# common_env.sh sets PYTHONPATH to ${REPO}/external/VAGEN/verl; we override to
-# the side legacy verl worktree + stubs below.
+# common_env.sh sets PYTHONPATH to ${REPO}/external/VAGEN/verl; we override below.
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 export PYTHONPATH="${REPO}/src:${VAGEN_DIR}:${VERL_DIR}:${PYTHONPATH}"
@@ -59,6 +58,9 @@ export PYTHONPATH="${REPO}/src:${VAGEN_DIR}:${VERL_DIR}:${PYTHONPATH}"
 # caller to have activated).
 # shellcheck disable=SC1091
 source "${VENV}/bin/activate"
+
+# Install together (LLM-as-judge dep, needed for vagen imports; computed node DNS works)
+pip install together 2>&1 | tail -3
 
 cd "${VAGEN_DIR}"
 
