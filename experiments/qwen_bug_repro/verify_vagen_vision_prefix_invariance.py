@@ -138,13 +138,13 @@ def main():
         s_pv = s_inp["pixel_values"].to(device, dtype=model.dtype)
         s_grid = s_inp["image_grid_thw"].to(device)
         with torch.no_grad():
-            s_feats = model.model.get_image_features(pixel_values=s_pv, image_grid_thw=s_grid)
+            s_feats = model.model.get_image_features(pixel_values=s_pv, image_grid_thw=s_grid)[0]
         N_k = s_feats.shape[0]
         p_inp = processor.image_processor(imgs[:k + 1], return_tensors="pt")
         p_pv = p_inp["pixel_values"].to(device, dtype=model.dtype)
         p_grid = p_inp["image_grid_thw"].to(device)
         with torch.no_grad():
-            p_feats = model.model.get_image_features(pixel_values=p_pv, image_grid_thw=p_grid)
+            p_feats = model.model.get_image_features(pixel_values=p_pv, image_grid_thw=p_grid)[0]
         diff = (p_feats[-N_k:].float() - s_feats.float()).abs().max().item()
         per_image_diff.append(diff)
         print(f"[probe] image {k}: N={N_k} tail_vs_single_max_diff={diff}", flush=True)
