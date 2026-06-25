@@ -181,37 +181,32 @@ def main():
     n_imgs = sum(1 for r in recording if r.get("image_data"))
     print(f"[probe] collected {len(recording)} turns, {n_imgs} images", flush=True)
 
-    # --- vision tower non-invariance: single vs batched get_image_features ---
-    print("[probe] measuring vision tower single-vs-batched features", flush=True)
-    merge_size = processor.image_processor.merge_size
-    per_image_diff = []
-    # batched pixel_values + grid for all images
+    # --- vision tower non-invariance: prefix-batched vs single get_image_features ---
+    print("[probe] measuring vision tower prefix-batched-vs-single features", flush=True)
     all_imgs = [r["image_data"][0] for r in recording if r.get("image_data")]
-    batched_inputs = processor.image_processor(all_imgs, return_tensors="pt")
-    batched_pv = batched_inputs["pixel_values"].to(device, dtype=model.dtype)
-    batched_grid = batched_inputs["image_grid_thw"].to(device)
-    with torch.no_grad():
-        batched_feats = model.model.get_image_features(pixel_values=batched_pv,
-                                                       image_grid_thw=batched_grid)
-    if isinstance(batched_feats, tuple):
-        batched_feats = batched_feats[0]  # newer HF returns (features,)
-    # offsets within batched_feats (merged tokens per image)
-    offsets = [0]
-    for g in batched_grid:
-        offsets.append(offsets[-1] + int(g.prod().item()) // (merge_size ** 2))
-    for k, img in enumerate(all_imgs):
-        single_inputs = processor.image_processor([img], return_tensors="pt")
-        single_pv = single_inputs["pixel_values"].to(device, dtype=model.dtype)
-        single_grid = single_inputs["image_grid_thw"].to(device)
+    per_image_diff = []
+    for k in range(len(all_imgs)):
+        # single image k
+        s_in = processor.image_processor([all_imgs[k]], return_tensors="pt")
         with torch.no_grad():
-            single_feats = model.model.get_image_features(pixel_values=single_pv,
-                                                          image_grid_thw=single_grid)
-        if isinstance(single_feats, tuple):
-            single_feats = single_feats[0]
-        sl = slice(offsets[k], offsets[k + 1])
-        diff = (batched_feats[sl].float() - single_feats.float()).abs().max().item()
+            sf = model.model.get_image_features(
+                pixel_values=s_in["pixel_values"].to(device, dtype=model.dtype),
+                image_grid_thw=s_in["image_grid_thw"].to(device))
+        if isinstance(sf, tuple):
+            sf = sf[0]  # newer HF: (features, vision_hidden)
+        # prefix-batched images 0..k
+        b_in = processor.image_processor(all_imgs[:k+1], return_tensors="pt")
+        with torch.no_grad():
+            bf = model.model.get_image_features(
+                pixel_values=b_in["pixel_values"].to(device, dtype=model.dtype),
+                image_grid_thw=b_in["image_grid_thw"].to(device))
+        if isinstance(bf, tuple):
+            bf = bf[0]
+        # image k's features are the tail of the prefix-batched output
+        prefix_feats_k = bf[-sf.shape[0]:]
+        diff = (prefix_feats_k.float() - sf.float()).abs().max().item()
         per_image_diff.append(diff)
-        print(f"[probe] image {k}: features_prefix_max_diff={diff}", flush=True)
+        print(f"[probe] image {k}: prefix_batched_vs_single_max_diff={diff}", flush=True)
 
     # --- build VAGEN inputs (Path A full, Path B prefix per step) ---
     cfg = SimpleNamespace(special_token_for_loss_mask=["<|box_start|>", "<|box_end|>"],
@@ -244,23 +239,37 @@ def main():
     print(f"[probe] last-step prefix len={b_ids.numel()} common_prefix={common} "
           f"input_ids_prefix_match={input_ids_prefix_match}", flush=True)
 
-    # --- downstream hidden/logits prefix diff (Path A vs Path B at last step) ---
+    # --- downstream hidden/logits prefix diff: Path A vs Path B per step ---
     hook = NormHook(model)
-    hidden_diff = None
-    logits_diff = None
+    pathA_row = pathA  # from build_full_input
+    per_step_hidden_diff = []
+    per_step_logits_diff = []
+    per_step_common_len = []
     try:
-        hA, logitsA = forward_hidden(model, pathA, device, hook)
-        hB, logitsB = forward_hidden(model, lastB, device, hook)
-        # compare on the overlapping prefix token positions
-        L = min(hA.shape[1], hB.shape[1])
-        hA_p = hA[0, :L].float()
-        hB_p = hB[0, :L].float()
-        hidden_diff = (hA_p - hB_p).abs().max().item()
-        lA_p = logitsA[0, :L].float()
-        lB_p = logitsB[0, :L].float()
-        logits_diff = (lA_p - lB_p).abs().max().item()
-        print(f"[probe] overlap_len={L} hidden_max_abs_diff={hidden_diff} "
-              f"logits_max_abs_diff={logits_diff}", flush=True)
+        hA, logitsA = forward_hidden(model, pathA_row, device, hook)
+        for k, pathB_row in enumerate(pathB_list):
+            # align by longest common input_ids prefix
+            a_ids = pathA_row["input_ids"]
+            b_ids = pathB_row["input_ids"]
+            common = 0
+            for i in range(min(a_ids.numel(), b_ids.numel())):
+                if a_ids[i].item() == b_ids[i].item():
+                    common += 1
+                else:
+                    break
+            per_step_common_len.append(common)
+            if common == 0:
+                per_step_hidden_diff.append(None)
+                per_step_logits_diff.append(None)
+                print(f"[probe] step {k}: no common prefix, skipping", flush=True)
+                continue
+            hB, logitsB = forward_hidden(model, pathB_row, device, hook)
+            hd = (hA[0, :common].float() - hB[0, :common].float()).abs().max().item()
+            ld = (logitsA[0, :common].float() - logitsB[0, :common].float()).abs().max().item()
+            per_step_hidden_diff.append(hd)
+            per_step_logits_diff.append(ld)
+            print(f"[probe] step {k}: common_prefix={common} "
+                  f"hidden_max_abs_diff={hd} logits_max_abs_diff={ld}", flush=True)
     finally:
         hook.remove()
 
@@ -269,15 +278,17 @@ def main():
         "attn_implementation": args.attn_implementation,
         "n_turns": len(recording),
         "n_images": n_imgs,
-        "vision_features_per_image_max_diff": per_image_diff,
+        "vision_features_prefix_batched_vs_single_per_image_diff": per_image_diff,
         "vision_features_batch_max_diff": max(per_image_diff) if per_image_diff else 0.0,
-        "input_ids_prefix_match": input_ids_prefix_match,
-        "common_prefix_len": common,
-        "prefix_len": b_ids.numel(),
-        "hidden_max_abs_diff": hidden_diff,
-        "logits_max_abs_diff": logits_diff,
-        "verdict": "vision_encoder_not_prefix_invariant" if
-                   (per_image_diff and max(per_image_diff) > 1e-3) else "vision_features_within_noise",
+        "per_step_common_prefix_len": per_step_common_len,
+        "per_step_hidden_max_abs_diff": per_step_hidden_diff,
+        "per_step_logits_max_abs_diff": per_step_logits_diff,
+        "verdict_vision": "vision_encoder_not_prefix_invariant" if
+                          (per_image_diff and max(per_image_diff) > 1e-3) else "vision_features_within_noise",
+        "verdict_forward": "full_vs_prefix_not_equivalent" if
+                           (per_step_hidden_diff and any(
+                               d is not None and d > 1e-3 for d in per_step_hidden_diff))
+                           else "full_vs_prefix_hidden_within_noise",
     }
     out = os.path.join(args.out_dir, "report.json")
     with open(out, "w") as f:
