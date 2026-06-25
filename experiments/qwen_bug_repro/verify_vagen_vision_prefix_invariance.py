@@ -64,9 +64,9 @@ class NormHook:
 # -- input builders (matching VAGEN) ------------------------------------------
 
 def build_full(mgr, recording, max_len):
-    """Path A: _generate_final_input_for_rollout (all images, do_embedding=True)."""
-    return mgr._generate_final_input_for_rollout(recording, step=len(recording) - 1,
-                                                window_size=len(recording))
+    """Path A: _generate_input_for_uptate (all images, do_embedding=True)."""
+    return mgr._generate_input_for_uptate(recording, step=len(recording) - 1,
+                                          window_size=len(recording))
 
 def build_prefix(mgr, recording, step, window_size, max_len):
     """Path B: _generate_input_for_rollout (prefix up to step)."""
