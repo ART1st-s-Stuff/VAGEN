@@ -153,6 +153,7 @@ def main():
     print("[probe] building VAGEN inputs", flush=True)
     cfg = SimpleNamespace(special_token_for_loss_mask=["<|box_start|>", "<|box_end|>"],
                           max_trajectory_length=args.max_length,
+                          truncation="left",
                           use_multi_turn_reward=True, use_loss_mask=True,
                           use_gae_mask=True, n_gpus_per_node=1)
     env_shim = SimpleNamespace(system_prompt=lambda: sys_prompt,
