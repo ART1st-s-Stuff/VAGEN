@@ -51,14 +51,6 @@ def drive_trajectory(client, env_id, env_config, seed, max_turns, action_str):
     return sys_prompt, recording
 
 
-class NormHook:
-    def __init__(self, model):
-        self.captured = None
-        self.h = model.model.norm.register_forward_hook(self._hook)
-    def _hook(self, module, inp, out):
-        self.captured = inp[0].detach()
-    def remove(self):
-        self.h.remove()
 
 
 # -- input builders (matching VAGEN) ------------------------------------------
@@ -73,8 +65,8 @@ def build_prefix(mgr, recording, step, window_size, max_len):
     return mgr._generate_input_for_rollout(recording, step=step, window_size=window_size)
 
 
-def _forward(model, mm, device, hook):
-    """Run model on batched(1) input, return (last_hidden(pre-norm), logits)."""
+def _forward(model, mm, device):
+    """Forward, return (last_hidden, logits) using output_hidden_states."""
     pv = grid = None
     if mm.get("pixel_values") is not None:
         pv = mm["pixel_values"].to(device, dtype=model.dtype)
@@ -87,8 +79,9 @@ def _forward(model, mm, device, hook):
         pos = pos.unsqueeze(1)
     with torch.no_grad():
         out = model(input_ids=ids, attention_mask=attn, position_ids=pos,
-                    pixel_values=pv, image_grid_thw=grid, use_cache=False)
-    return hook.captured, out.logits
+                    pixel_values=pv, image_grid_thw=grid, use_cache=False,
+                    output_hidden_states=True)
+    return out.hidden_states[-1], out.logits
 
 
 # -- main ---------------------------------------------------------------------
@@ -164,14 +157,13 @@ def main():
     mgr.recorder = None
 
     pathA = build_full(mgr, recording, args.max_length)
-    hook = NormHook(model)
     prefix_results = []
     for k in range(len(recording)):
         print(f"[probe] step {k} prefix vs full overlay", flush=True)
         pathB = build_prefix(mgr, recording, k, args.window_size, args.max_length)
         try:
-            hA, logitsA = _forward(model, pathA, device, hook)
-            hB, logitsB = _forward(model, pathB, device, hook)
+            hA, logitsA = _forward(model, pathA, device)
+            hB, logitsB = _forward(model, pathB, device)
             L = min(hA.shape[1], hB.shape[1])
             hdiff = (hA[0, :L].float() - hB[0, :L].float()).abs().max().item()
             ldiff = (logitsA[0, :L].float() - logitsB[0, :L].float()).abs().max().item()
@@ -182,7 +174,6 @@ def main():
         except Exception as e:
             print(f"[probe] step={k} error: {e}", flush=True)
             prefix_results.append({"step": k, "error": str(e)})
-    hook.remove()
 
     report = {
         "model": args.model_path,
