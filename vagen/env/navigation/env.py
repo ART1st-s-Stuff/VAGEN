@@ -14,7 +14,8 @@ class NavigationEnv(BaseEnv):
     """Navigation environment from embodied bench. """   
 
     ValidEvalSets = [
-        'base', 'common_sense', 'complex_instruction', 'visual_appearance', 'long_horizon'
+        'base', 'common_sense', 'complex_instruction', 'visual_appearance', 'long_horizon',
+        'base_train', 'common_sense_train', 'long_horizon_train',
     ]
 
     # Available actions
