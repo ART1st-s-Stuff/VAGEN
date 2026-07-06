@@ -16,6 +16,11 @@ FORMAT_CONFIGS = {
         "format": "<answer>...</answer>",
         "example": """<answer>moveahead{action_sep}moveahead{action_sep}moveahead{action_sep}moveleft{action_sep}moveleft</answer>"""
     },
+    "eval_mode": {
+        "description": "You can optionally think first, then give your action.",
+        "format": "<think>...</think><action>...</action>",
+        "example": """<think>I should move one step toward the target.</think><action>moveahead</action>"""
+    },
     "grounding": {
         "description": "You should first give your thought process with your observation and reasoning, and finally your answer.\nThe observation should be described in detail about what you see in the environment.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning></think><answer>...</answer>",
