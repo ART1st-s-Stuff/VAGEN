@@ -14,7 +14,8 @@ class NavigationEnv(BaseEnv):
     """Navigation environment from embodied bench. """   
 
     ValidEvalSets = [
-        'base', 'common_sense', 'complex_instruction', 'visual_appearance', 'long_horizon'
+        'base', 'common_sense', 'complex_instruction', 'visual_appearance', 'long_horizon',
+        'base_train', 'common_sense_train', 'long_horizon_train'
     ]
 
     # Available actions
@@ -374,9 +375,8 @@ class NavigationEnv(BaseEnv):
                 observation=img_placeholder,
                 reward=self.reward,
                 done=self.measure_success()[0],
-                instruction=self.episode_language_instruction,
                 env_feedback=self.info["env_feedback"]
-            ) + "\n" + format_prompt_text
+            )
         
         return {
             "obs_str": obs_str,
@@ -400,7 +400,11 @@ class NavigationEnv(BaseEnv):
         )
         
     
-        return system_prompt(format=self.config.prompt_format) + '\n' + format_prompt_text
+        return system_prompt(
+            format=self.config.prompt_format,
+            max_actions_per_step=self.config.max_actions_per_step,
+            action_sep=self.config.action_sep,
+        ) + '\n' + format_prompt_text
     
     def close(self):
         """Close the environment."""

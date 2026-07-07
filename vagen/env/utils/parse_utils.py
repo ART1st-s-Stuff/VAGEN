@@ -154,6 +154,42 @@ def parse_freethink(response: str, special_token_list=None, action_sep=',', max_
         "format_correct": format_correct
     }
 
+def parse_eval_mode(response: str, special_token_list=None, action_sep=',', max_actions=1) -> Dict:
+    """Parse lenient eval-mode responses with an <action>...</action> block."""
+    response = response.replace("<image>", "")
+    result = {
+        "llm_raw_response": response,
+        "llm_response": "",
+        "think_content": "",
+        "action_content": "",
+        "actions": [],
+        "format_correct": False,
+    }
+    think_match = re.search(r"<think>(.*?)</think>", response, re.DOTALL)
+    action_match = re.search(r"<action>(.*?)</action>", response, re.DOTALL)
+    if think_match:
+        result["think_content"] = think_match.group(1).strip()
+    if not action_match:
+        return result
+    action_content = action_match.group(1)
+    if special_token_list is not None:
+        for special_token in special_token_list:
+            action_content = action_content.replace(special_token, "").strip()
+            result["think_content"] = result["think_content"].replace(special_token, "").strip()
+    actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
+    if len(actions) > max_actions:
+        actions = actions[:max_actions]
+        action_content = (" " + action_sep + " ").join(actions)
+    result["actions"] = actions
+    result["action_content"] = action_content.strip()
+    result["format_correct"] = bool(actions)
+    if result["think_content"]:
+        result["llm_response"] = f"<think>{result['think_content']}</think><action>{result['action_content']}</action>"
+    else:
+        result["llm_response"] = f"<action>{result['action_content']}</action>"
+    return result
+
+
 def parse_no_think(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
     """
     Parse response in format: <answer>...</answer>
@@ -383,6 +419,7 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
     
 PARSE_FUNC_MAP = {
     "free_think": parse_freethink,
+    "eval_mode": parse_eval_mode,
     "no_think": parse_no_think,
     "grounding": parse_grounding,
     "worldmodeling": parse_worldmodeling,
