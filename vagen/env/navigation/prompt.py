@@ -101,7 +101,7 @@ def init_observation_template(**kwargs):
     return f"""[Initial Observation]:
 {observation}
 Human Instruction: {instruction}
-Decide your next action(s)."""
+Decide your next action."""
 
 
 def action_template(**kwargs):
@@ -116,7 +116,7 @@ reward: {reward}
 done: {done}
 After that, the observation is:
 {observation}
-Decide your next action(s)."""
+Decide your next action."""
 
 
 def format_prompt_generator(format_type):
