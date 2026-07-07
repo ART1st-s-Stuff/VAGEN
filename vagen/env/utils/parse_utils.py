@@ -189,6 +189,7 @@ def parse_eval_mode(response: str, special_token_list=None, action_sep=',', max_
         result["llm_response"] = f"<action>{result['action_content']}</action>"
     return result
 
+
 def parse_no_think(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
     """
     Parse response in format: <answer>...</answer>
@@ -418,8 +419,8 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
     
 PARSE_FUNC_MAP = {
     "free_think": parse_freethink,
-    "no_think": parse_no_think,
     "eval_mode": parse_eval_mode,
+    "no_think": parse_no_think,
     "grounding": parse_grounding,
     "worldmodeling": parse_worldmodeling,
     "wm": parse_worldmodeling,
