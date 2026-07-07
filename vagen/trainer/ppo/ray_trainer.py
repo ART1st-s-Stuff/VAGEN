@@ -866,15 +866,47 @@ class RayPPOTrainer(object):
             f"unique_env_instances={len(pair_counts)} val_repeat={val_repeat}"
         )
 
+    @staticmethod
+    def _save_validation_images(val_data_dir: str, step: int, record_idx: int, images) -> list[str]:
+        if not images:
+            return []
+        img_list = images if isinstance(images, (list, tuple)) else [images]
+        img_list = [img for img in img_list if img is not None]
+        if not img_list:
+            return []
+        image_dir = os.path.join(val_data_dir, f"image_{step}", f"images_{record_idx}")
+        os.makedirs(image_dir, exist_ok=True)
+        paths: list[str] = []
+        for img_idx, img in enumerate(img_list):
+            img_path = os.path.join(image_dir, f"{img_idx}.png")
+            if hasattr(img, "save"):
+                img.save(img_path)
+            elif isinstance(img, np.ndarray):
+                from PIL import Image
+                Image.fromarray(img).save(img_path)
+            else:
+                raise TypeError(f"Unsupported validation image type: {type(img)!r}")
+            paths.append(os.path.abspath(img_path))
+        return paths
+
     def _dump_validation_records(self, records: list[dict]) -> None:
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if not val_data_dir:
             return
         os.makedirs(val_data_dir, exist_ok=True)
         dump_path = os.path.join(val_data_dir, f"{self.global_steps}.jsonl")
+        sorted_records = self._sort_validation_records(records)
         with open(dump_path, "w", encoding="utf-8") as f:
-            for item in self._sort_validation_records(records):
+            for record_idx, item in enumerate(sorted_records):
                 serializable = {k: v for k, v in item.items() if k != "image_data"}
+                image_paths = self._save_validation_images(
+                    val_data_dir,
+                    self.global_steps,
+                    record_idx,
+                    item.get("image_data"),
+                )
+                if image_paths:
+                    serializable["image_paths"] = image_paths
                 f.write(json.dumps(serializable, ensure_ascii=False) + "\n")
         print(f"Dumped {len(records)} validation records to {dump_path}")
 
