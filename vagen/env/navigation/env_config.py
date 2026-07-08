@@ -18,6 +18,11 @@ class NavigationEnvConfig(BaseEnvConfig):
     prompt_format: str = "grounding_worldmodeling" 
     # Supported: free_think, no_think, eval_mode, grounding, worldmodeling,
     # grounding_worldmodeling, nimloth, nimloth_wm.
+    action_extraction_mode: str = "strict"
+    # strict: execute only parser-format-correct actions.
+    # answer_fallback: legacy VAGEN rollout mode; extract <answer>/<action>
+    # actions even when thought/world-model tags are malformed, but do not
+    # award format reward unless the parser says format_correct=True.
     success_threshold: float = 1.5
     step_length: float = 0.5
     # "free_think", "no_think", "grounding", "worldmodeling", "grounding_worldmodeling"

@@ -3,6 +3,7 @@ import ai2thor.controller
 import numpy as np
 import time
 import math
+import re
 from ai2thor.platform import CloudRendering
 from vagen.env.utils.context_utils import convert_numpy_to_PIL
 from vagen.env.utils.parse_utils import PARSE_FUNC_MAP
@@ -195,6 +196,36 @@ class NavigationEnv(BaseEnv):
         
         return self._render(init_obs=True), {}
     
+    def _extract_answer_fallback_actions(self, response: str) -> tuple[list[str], str]:
+        """Extract legacy VAGEN action text from <answer>/<action> blocks.
+
+        This is intentionally action-only. It preserves parser strictness for
+        format rewards while allowing old VAGEN policies with malformed
+        thought/world-model tags to still drive the environment during rollout
+        collection.
+        """
+        text = response.replace("<image>", "")
+        match = None
+        for tag in ("answer", "action"):
+            match = re.search(rf"<{tag}>\s*(.*?)\s*</{tag}>", text, re.DOTALL)
+            if match:
+                break
+        if not match:
+            return [], ""
+
+        action_content = match.group(1)
+        special_token_list = self.config.get('special_token_list', None)
+        if special_token_list is not None:
+            for special_token in special_token_list:
+                action_content = action_content.replace(special_token, "").strip()
+        action_sep = self.config.get('action_sep', ',')
+        max_actions = self.config.get('max_actions_per_step', 1)
+        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
+        if len(actions) > max_actions:
+            actions = actions[:max_actions]
+            action_content = (" " + action_sep + " ").join(actions)
+        return actions, action_content.strip()
+
     @env_state_reward_wrapper
     def step(self, action_str: str):
         """Execute an action in the environment.
@@ -218,6 +249,19 @@ class NavigationEnv(BaseEnv):
             action_sep=self.config.get('action_sep', ','),
             max_actions=self.config.get('max_actions_per_step', 1)
         )
+
+        action_extraction_mode = self.config.get('action_extraction_mode', 'strict')
+        if action_extraction_mode not in ('strict', 'answer_fallback'):
+            raise ValueError(f"Unknown action_extraction_mode: {action_extraction_mode}")
+        if action_extraction_mode == 'answer_fallback' and not rst.get('actions'):
+            fallback_actions, fallback_content = self._extract_answer_fallback_actions(action_str)
+            if fallback_actions:
+                rst['actions'] = fallback_actions
+                rst['action_content'] = fallback_content
+                rst['llm_response'] = "<answer>" + fallback_content + "</answer>"
+                rst['action_extraction_fallback'] = 'answer_fallback'
+                rst['format_correct'] = False
+        format_ok_for_action = rst.get("format_correct", True) or action_extraction_mode == 'answer_fallback'
         
         action_list = rst['actions']
         prev_pos = self.env.last_event.metadata["agent"]["position"]
@@ -237,10 +281,12 @@ class NavigationEnv(BaseEnv):
         done = False
         info = {}
         info.update(rst)
+        info["action_extraction_mode"] = action_extraction_mode
+        info["format_ok_for_action"] = format_ok_for_action
             
             
         # Execute valid actions
-        if metrics["turn_metrics"]["action_is_valid"] and rst.get("format_correct", True):
+        if metrics["turn_metrics"]["action_is_valid"] and format_ok_for_action:
             
             for action in action_list:
                 action_lower = action.lower()
