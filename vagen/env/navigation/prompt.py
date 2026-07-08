@@ -82,6 +82,12 @@ Hints:
 3. If you seem to be stuck, use one action such as lookdown, rotateleft, or rotateright to inspect another view.
 4. Output exactly one action index token between <|action_start|> and <|action_end|>."""
 
+_NIMLOTH_MULTI_ACTION_HINTS = """\
+Hints:
+1. You can take multiple actions at a time. If the target object is far away, you may output repeated action index tokens such as move_forward multiple times.
+2. Output 1 to the configured maximum number of action index tokens between <|action_start|> and <|action_end|>; the actions will be executed in order.
+3. If you seem to be stuck, use actions such as look_down, turn_left, or turn_right to inspect another view."""
+
 _MULTI_ACTION_HINTS = """\
 Hints:
 1. You can take multiple actions at a time. If the target object is far away, you may call actions such as moveahead or moveleft multiple times.
@@ -94,7 +100,7 @@ def system_prompt(**kwargs):
 
     parts = [_BASE_SYSTEM_PROMPT]
     if selected_format in ("nimloth", "nimloth_wm"):
-        parts.append(_NIMLOTH_SINGLE_ACTION_HINTS)
+        parts.append(_NIMLOTH_SINGLE_ACTION_HINTS if max_actions_per_step <= 1 else _NIMLOTH_MULTI_ACTION_HINTS)
     else:
         parts.append(_SINGLE_ACTION_HINTS if max_actions_per_step <= 1 else _MULTI_ACTION_HINTS)
     return "\n\n".join(parts)
@@ -132,25 +138,40 @@ def format_prompt_generator(format_type):
         action_sep = kwargs.get("action_sep", ",")
         add_example = kwargs.get("add_example", True)
 
-        if format_type in ("nimloth", "nimloth_wm") and max_actions_per_step > 1:
-            raise ValueError(f"prompt_format={format_type} only supports max_actions_per_step=1")
-
         if format_type not in FORMAT_CONFIGS:
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
+        response_format = config["format"]
+        description = config["description"]
 
-        if max_actions_per_step <= 1:
+        if format_type in ("nimloth", "nimloth_wm"):
+            if max_actions_per_step <= 1:
+                action_count_instruction = "You must take exactly one action in each response. Output exactly one action index token between <|action_start|> and <|action_end|>."
+            else:
+                action_count_instruction = f"You can take up to {max_actions_per_step} action(s) at a time. Output 1 to {max_actions_per_step} action index token(s) between <|action_start|> and <|action_end|>; no separator is required."
+                if format_type == "nimloth":
+                    description = "You can optionally think first, then give your ordered action token(s)."
+                    response_format = "<think>...</think><|latent_state|><|action_start|><|action_(idx)|>[<|action_(idx)|>...]<|action_end|>"
+                else:
+                    description = "You need to describe your observation, think, give your ordered action token(s), then predict what you will see next."
+                    response_format = "<observation>...</observation><think>...</think><|latent_state|><|action_start|><|action_(idx)|>[<|action_(idx)|>...]<|action_end|><prediction>...</prediction>"
+        elif max_actions_per_step <= 1:
             action_count_instruction = "You must take exactly one action in each response. Do not output multiple actions and do not use '|'."
         else:
             action_count_instruction = f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'."
 
         base_prompt = f"""{action_count_instruction}
-{config["description"]}
+{description}
 Your response should be in the format of:
-{config["format"]}"""
+{response_format}"""
 
         if add_example:
-            example_text = config["example"].format(action_sep=action_sep)
+            if max_actions_per_step > 1 and format_type == "nimloth":
+                example_text = "<think>I should move forward twice and then reassess.</think><|latent_state|><|action_start|><|action_(0)|><|action_(0)|><|action_end|>"
+            elif max_actions_per_step > 1 and format_type == "nimloth_wm":
+                example_text = "<observation>The target is ahead.</observation><think>I should move forward twice.</think><|latent_state|><|action_start|><|action_(0)|><|action_(0)|><|action_end|><prediction>I expect to be closer to the target.</prediction>"
+            else:
+                example_text = config["example"].format(action_sep=action_sep)
             return base_prompt + "\n" + f"e.g. {example_text}"
 
         return base_prompt
