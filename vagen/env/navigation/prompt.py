@@ -5,6 +5,9 @@ from vagen.env.navigation.nimloth_format import (
     NIMLOTH_WM_FORMAT_INSTRUCTION,
 )
 
+SOURCE_EVAL_MODE = "source_eval_mode"
+
+
 FORMAT_CONFIGS = {
     "free_think": {
         "description": "You should first give your thought process, and then your answer.",
@@ -20,6 +23,11 @@ FORMAT_CONFIGS = {
         "description": "You can optionally think first, then give your action.",
         "format": "<think>...</think><action>...</action>",
         "example": """<think>I should move one step toward the target.</think><action>moveahead</action>""",
+    },
+    SOURCE_EVAL_MODE: {
+        "description": "You can optionally think first, then give your action. Respond in this format:",
+        "format": "<think>...</think><action>some_action</action>",
+        "example": "",
     },
     "grounding": {
         "description": "You should first give your thought process with your observation and reasoning, and finally your answer.\nThe observation should be described in detail about what you see in the environment.",
@@ -71,6 +79,26 @@ Hints:
 3. If you seem to be stuck, use one action such as lookdown, rotateleft, or rotateright to inspect another view.
 4. Output the action only inside the required action field for the selected format."""
 
+_SOURCE_EVAL_BASE_SYSTEM_PROMPT = """\
+You are a home robot and perform navigation tasks according to instructions.
+Actions you can take: move_forward, move_backward, move_right, move_left, turn_right, turn_left, look_up, look_down.
+move_forward: Move forward by some distance
+move_backward: Move backward by some distance
+move_right: Move rightward by some distance
+move_left: Move leftward by some distance
+turn_right: Rotate to the right by 90 degrees
+turn_left: Rotate to the left by 90 degrees
+look_up: Tilt the camera upward by 30 degrees
+look_down: Tilt the camera downward by 30 degrees
+The instruction will be provided in the first observation. Look at the image carefully and navigate to complete the instruction."""
+
+_SOURCE_EVAL_SINGLE_ACTION_HINTS = """\
+Hints:
+1. Choose exactly one valid action for the current step. Do not combine actions.
+2. If the target object is far away, move toward it one step at a time across multiple turns.
+3. If you seem to be stuck, use one action such as look_down, turn_left, or turn_right to inspect another view.
+4. Output the action only inside the required <action>...</action> XML tag."""
+
 _NIMLOTH_SINGLE_ACTION_HINTS = """\
 Hints:
 1. Choose exactly one valid action for the current step. Do not combine actions.
@@ -88,6 +116,9 @@ def system_prompt(**kwargs):
     selected_format = kwargs.get("format", kwargs.get("format_name", "default"))
     max_actions_per_step = kwargs.get("max_actions_per_step", 5)
 
+    if selected_format == SOURCE_EVAL_MODE:
+        return "\n\n".join([_SOURCE_EVAL_BASE_SYSTEM_PROMPT, _SOURCE_EVAL_SINGLE_ACTION_HINTS])
+
     parts = [_BASE_SYSTEM_PROMPT]
     if selected_format in ("nimloth", "nimloth_wm"):
         parts.append(_NIMLOTH_SINGLE_ACTION_HINTS)
@@ -99,10 +130,11 @@ def system_prompt(**kwargs):
 def init_observation_template(**kwargs):
     observation = kwargs.get("observation", "No observation provided.")
     instruction = kwargs.get("instruction", "No instruction provided.")
+    suffix = "Decide your next action(s)." if kwargs.get("format") == SOURCE_EVAL_MODE else "Decide your next action."
     return f"""[Initial Observation]:
 {observation}
 Human Instruction: {instruction}
-Decide your next action."""
+{suffix}"""
 
 
 def action_template(**kwargs):
@@ -111,6 +143,14 @@ def action_template(**kwargs):
     env_feedback = kwargs.get("env_feedback", "No environment feedback provided.")
     reward = kwargs.get("reward", "No reward provided.")
     done = kwargs.get("done", "No done status provided.")
+    if kwargs.get("format") == SOURCE_EVAL_MODE:
+        return f"""After your action, the extracted valid action is {valid_action}.
+The environment feedback is: {env_feedback}
+reward: {reward}
+done: {done}
+After that, the observation is:
+{observation}
+Decide your next action(s)."""
     return f"""After your answer, the extracted valid action is {valid_action}.
 The environment feedback is: {env_feedback}
 reward: {reward}
@@ -134,6 +174,19 @@ def format_prompt_generator(format_type):
         if format_type not in FORMAT_CONFIGS:
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
+
+        if format_type == SOURCE_EVAL_MODE:
+            if max_actions_per_step <= 1:
+                action_count_instruction = "You must take exactly one action in each response. Do not output multiple actions and do not use '|'."
+                action_example = "some_action"
+            else:
+                action_count_instruction = f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'."
+                action_example = f"action1{action_sep} action2{action_sep} ..."
+            return (
+                f"{action_count_instruction}\n"
+                "You can optionally think first, then give your action. Respond in this format:\n"
+                f"<think>...</think><action>{action_example}</action>"
+            )
 
         if max_actions_per_step <= 1:
             action_count_instruction = "You must take exactly one action in each response. Do not output multiple actions and do not use '|'."

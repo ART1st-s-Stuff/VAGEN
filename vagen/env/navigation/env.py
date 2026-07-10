@@ -7,7 +7,7 @@ from ai2thor.platform import CloudRendering
 from vagen.env.utils.context_utils import convert_numpy_to_PIL
 from vagen.env.utils.parse_utils import PARSE_FUNC_MAP
 from .env_config import NavigationEnvConfig
-from .prompt import system_prompt,init_observation_template, action_template, format_prompt
+from .prompt import SOURCE_EVAL_MODE, system_prompt, init_observation_template, action_template, format_prompt
 from vagen.env.utils.state_reward_text_utils import env_state_reward_wrapper
 
 class NavigationEnv(BaseEnv):
@@ -38,6 +38,17 @@ class NavigationEnv(BaseEnv):
         "look_down": 8
     }
 
+    SOURCE_ACTION_LOOKUP = {
+        "move_forward": 1,
+        "move_backward": 2,
+        "move_right": 3,
+        "move_left": 4,
+        "turn_right": 5,
+        "turn_left": 6,
+        "look_up": 7,
+        "look_down": 8,
+    }
+
     # Action descriptions
     DISCRETE_SKILLSET = [
         "Move forward by 0.5 meter",
@@ -61,6 +72,8 @@ class NavigationEnv(BaseEnv):
         self.config = config
         self.success_threshold = self.config.success_threshold
         self.step_length = self.config.step_length
+        self.source_eval_compat = self.config.prompt_format == SOURCE_EVAL_MODE
+        self.action_lookup = self.SOURCE_ACTION_LOOKUP if self.source_eval_compat else self.ACTION_LOOKUP
         # Environment setup
         self.resolution = config.resolution
         self.thor_config = {
@@ -244,14 +257,14 @@ class NavigationEnv(BaseEnv):
             
             for action in action_list:
                 action_lower = action.lower()
-                if action_lower in self.ACTION_LOOKUP:
-                    action_int = self.ACTION_LOOKUP[action_lower]
+                if action_lower in self.action_lookup:
+                    action_int = self.action_lookup[action_lower]
                     self._execute_action(action_int)
                     success, distance = self.measure_success()
                     
                     # Update reward based on success
                     if success:
-                        self.reward += 10.0  # Success reward
+                        self.reward += self.config.success_reward
                         done = True
                         metrics['traj_metrics']['success'] = True
                     
@@ -269,7 +282,8 @@ class NavigationEnv(BaseEnv):
                     break
         
         if metrics['turn_metrics']['action_is_valid'] and rst.get("format_correct", True):
-            self.reward += self.config.format_reward
+            reward_key = "per_turn_format_reward" if self.source_eval_compat else "format_reward"
+            self.reward += self.config.get(reward_key, 0.0)
             info["is_format_rewarded"] = True
         else:
             info["is_format_rewarded"] = False
@@ -368,14 +382,16 @@ class NavigationEnv(BaseEnv):
             obs_str = init_observation_template(
                 observation=img_placeholder,
                 instruction=self.episode_language_instruction,
+                format=self.config.prompt_format,
             ) + "\n" + format_prompt_text
         else:
             obs_str = action_template(
                 valid_action=self.valid_actions,
                 observation=img_placeholder,
                 reward=self.reward,
-                done=self.measure_success()[0],
-                env_feedback=self.info["env_feedback"]
+                done=bool(self.measure_success()[0]) if self.source_eval_compat else self.measure_success()[0],
+                env_feedback=self.info["env_feedback"],
+                format=self.config.prompt_format,
             )
         
         return {
@@ -400,11 +416,12 @@ class NavigationEnv(BaseEnv):
         )
         
     
+        separator = "\n\n" if self.source_eval_compat else "\n"
         return system_prompt(
             format=self.config.prompt_format,
             max_actions_per_step=self.config.max_actions_per_step,
             action_sep=self.config.action_sep,
-        ) + '\n' + format_prompt_text
+        ) + separator + format_prompt_text
     
     def close(self):
         """Close the environment."""

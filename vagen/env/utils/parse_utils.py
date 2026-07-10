@@ -191,6 +191,18 @@ def parse_eval_mode(response: str, special_token_list=None, action_sep=',', max_
     return result
 
 
+def parse_source_eval_mode(response: str, special_token_list=None, action_sep='|', max_actions=1) -> Dict:
+    """Parse the source step60 eval format with canonical lowercase actions."""
+    result = parse_eval_mode(
+        response,
+        special_token_list=special_token_list,
+        action_sep=action_sep,
+        max_actions=max_actions,
+    )
+    result["actions"] = [action.lower() for action in result["actions"]]
+    return result
+
+
 def parse_no_think(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
     """
     Parse response in format: <answer>...</answer>
@@ -421,6 +433,7 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
 PARSE_FUNC_MAP = {
     "free_think": parse_freethink,
     "eval_mode": parse_eval_mode,
+    "source_eval_mode": parse_source_eval_mode,
     "no_think": parse_no_think,
     "grounding": parse_grounding,
     "worldmodeling": parse_worldmodeling,
