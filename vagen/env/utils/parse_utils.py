@@ -32,7 +32,7 @@ def parse_nimloth(response: str, special_token_list=None, action_sep=',', max_ac
     """Parse Nimloth latent/action-token navigation responses.
 
     Expected action block:
-    ``<|latent_state|><|action_start|><|action_(idx)|><|action_end|>``.
+    ``<|latent_state|>[extra latent query tokens]<|action_start|><|action_(idx)|><|action_end|>``.
     ``action_sep`` and ``special_token_list`` are accepted for API compatibility
     with the legacy parser map.
     """
@@ -59,6 +59,7 @@ def parse_nimloth(response: str, special_token_list=None, action_sep=',', max_ac
     if latent_idx < 0:
         return result
 
+    latent_block = response[latent_idx:action_start_idx]
     block = response[action_start_idx + len(_ACTION_START_TOKEN):action_end_idx]
     actions = _extract_nimloth_actions(block, max_actions)
     if not actions:
@@ -69,7 +70,7 @@ def parse_nimloth(response: str, special_token_list=None, action_sep=',', max_ac
     result["format_correct"] = True
     result["llm_response"] = (
         f"<think>{result['think_content']}</think>"
-        f"{_LATENT_STATE_TOKEN}{_ACTION_START_TOKEN}{result['action_content']}{_ACTION_END_TOKEN}"
+        f"{latent_block.strip()}{_ACTION_START_TOKEN}{result['action_content']}{_ACTION_END_TOKEN}"
     )
     return result
 

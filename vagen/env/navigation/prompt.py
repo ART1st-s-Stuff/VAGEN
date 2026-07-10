@@ -1,5 +1,6 @@
 # Prompt templates for the legacy AI2-THOR navigation environment.
 from vagen.env.navigation.nimloth_format import (
+    NIMLOTH_ACTION_BLOCK,
     NIMLOTH_EVAL_FORMAT_INSTRUCTION,
     NIMLOTH_WM_FORMAT_INSTRUCTION,
 )
@@ -37,13 +38,13 @@ FORMAT_CONFIGS = {
     },
     "nimloth": {
         "description": NIMLOTH_EVAL_FORMAT_INSTRUCTION,
-        "format": "<think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|>",
-        "example": """<think>I should move one step toward the visible target.</think><|latent_state|><|action_start|><|action_(0)|><|action_end|>""",
+        "format": f"<think>...</think>{NIMLOTH_ACTION_BLOCK}",
+        "example": f"<think>I should move one step toward the visible target.</think>{NIMLOTH_ACTION_BLOCK.replace('(idx)', '(0)')}",
     },
     "nimloth_wm": {
         "description": NIMLOTH_WM_FORMAT_INSTRUCTION,
-        "format": "<observation>...</observation><think>...</think><|latent_state|><|action_start|><|action_(idx)|><|action_end|><prediction>...</prediction>",
-        "example": """<observation>The target is ahead-left.</observation><think>I should move forward one step and reassess.</think><|latent_state|><|action_start|><|action_(0)|><|action_end|><prediction>I expect to be closer to the target.</prediction>""",
+        "format": f"<observation>...</observation><think>...</think>{NIMLOTH_ACTION_BLOCK}<prediction>...</prediction>",
+        "example": f"<observation>The target is ahead-left.</observation><think>I should move forward one step and reassess.</think>{NIMLOTH_ACTION_BLOCK.replace('(idx)', '(0)')}<prediction>I expect to be closer to the target.</prediction>",
     },
 }
 

@@ -6,6 +6,8 @@ keeping the legacy environment import layout (``vagen.env.navigation``).
 
 from __future__ import annotations
 
+import os
+
 ACTION_NAMES = (
     "move_forward",
     "move_backward",
@@ -21,7 +23,29 @@ ACTION_TO_IDX = {name: idx for idx, name in enumerate(ACTION_NAMES)}
 IDX_TO_ACTION = {idx: name for name, idx in ACTION_TO_IDX.items()}
 ACTION_TOKEN = {name: f"<|action_({idx})|>" for name, idx in ACTION_TO_IDX.items()}
 
-SPECIAL_TOKENS = ["<|latent_state|>", "<|action_start|>", "<|action_end|>"] + [
+
+def latent_token_count_from_env() -> int:
+    raw = os.environ.get("NIMLOTH_LATENT_TOKEN_COUNT") or os.environ.get("LATENT_TOKEN_COUNT") or "1"
+    try:
+        count = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"latent token count must be an integer, got {raw!r}") from exc
+    if count < 1:
+        raise ValueError(f"latent token count must be >= 1, got {count}")
+    return count
+
+
+def latent_state_tokens(count: int | None = None) -> tuple[str, ...]:
+    count = latent_token_count_from_env() if count is None else int(count)
+    if count < 1:
+        raise ValueError(f"latent token count must be >= 1, got {count}")
+    return ("<|latent_state|>", *(f"<|latent_state_{idx}|>" for idx in range(1, count)))
+
+
+LATENT_STATE_TOKENS = latent_state_tokens()
+LATENT_STATE_BLOCK = "".join(LATENT_STATE_TOKENS)
+
+SPECIAL_TOKENS = [*LATENT_STATE_TOKENS, "<|action_start|>", "<|action_end|>"] + [
     ACTION_TOKEN[name] for name in ACTION_NAMES
 ]
 
@@ -30,7 +54,7 @@ _ACTION_IDX_LEGEND = (
     "4=turn_right, 5=turn_left, 6=look_up, 7=look_down."
 )
 
-NIMLOTH_ACTION_BLOCK = "<|latent_state|><|action_start|><|action_(idx)|><|action_end|>"
+NIMLOTH_ACTION_BLOCK = f"{LATENT_STATE_BLOCK}<|action_start|><|action_(idx)|><|action_end|>"
 
 NIMLOTH_FORMAT_BODY = (
     "<think>...</think>"
