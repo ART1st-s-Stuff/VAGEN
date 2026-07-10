@@ -4,6 +4,7 @@ from vagen.env.navigation.prompt import (
     action_template,
     format_prompt,
     init_observation_template,
+    source_eval_chat_template_compat,
     system_prompt,
 )
 from vagen.env.utils.parse_utils import PARSE_FUNC_MAP
@@ -62,6 +63,31 @@ def test_source_eval_prompt_matches_step60_transcript_format():
         "After that, the observation is:\n<image>\n"
         "Decide your next action(s)."
     )
+
+
+def test_source_eval_chat_boundary_matches_source_without_changing_other_boundaries():
+    chat = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "initial"},
+        {"role": "assistant", "content": "same"},
+        {"role": "user", "content": "next"},
+        {"role": "assistant", "content": "same"},
+        {"role": "user", "content": "last"},
+    ]
+    prompt = (
+        "<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\ninitial<|im_end|>\n"
+        "<|im_start|>assistant\nsame<|im_end|>\n<|im_start|>user\nnext<|im_end|>\n"
+        "<|im_start|>assistant\nsame<|im_end|>\n<|im_start|>user\nlast<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    expected = prompt.replace(
+        "<|im_start|>assistant\nsame<|im_end|>\n<|im_start|>user\n",
+        "<|im_start|>assistant\nsame<|im_end|><|im_start|>user\n",
+    )
+    actual = source_eval_chat_template_compat(prompt, chat, "<|im_end|>")
+    assert actual == expected
+    assert "system\nsystem<|im_end|>\n<|im_start|>user" in actual
+    assert "user\ninitial<|im_end|>\n<|im_start|>assistant" in actual
 
 
 def test_source_eval_parser_and_explicit_environment_values():

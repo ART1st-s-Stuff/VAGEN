@@ -16,6 +16,7 @@ from verl.utils.dataset.rl_dataset import process_image, collate_fn
 import vagen.env
 from vagen.env import REGISTERED_ENV
 from vagen.server.client import BatchEnvClient
+from vagen.env.navigation.prompt import SOURCE_EVAL_MODE, source_eval_chat_template_compat
     
 class QwenVLRolloutManagerService():
     def __init__(self,
@@ -351,6 +352,12 @@ class QwenVLRolloutManagerService():
                         image_data.append(img)
             
         prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=(not is_final), tokenize=False)
+        if self.envs[env_id].get("prompt_format") == SOURCE_EVAL_MODE:
+            prompt_with_chat_template = source_eval_chat_template_compat(
+                prompt_with_chat_template,
+                chat,
+                self.tokenizer.eos_token,
+            )
         if is_final: # NOTE hard coded
             assert prompt_with_chat_template[-1] == '\n', f"The last token should be new line token, got {prompt_with_chat_template[-1]}"
             prompt_with_chat_template = prompt_with_chat_template[:-1] # remove the last in token

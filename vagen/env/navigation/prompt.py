@@ -8,6 +8,21 @@ from vagen.env.navigation.nimloth_format import (
 SOURCE_EVAL_MODE = "source_eval_mode"
 
 
+def source_eval_chat_template_compat(prompt, chat, eos_token):
+    """Reproduce source step60's assistant-to-user turn boundary exactly."""
+    for index, message in enumerate(chat[:-1]):
+        if message["role"] != "assistant" or chat[index + 1]["role"] != "user":
+            continue
+        old = (
+            f"<|im_start|>assistant\n{message['content']}{eos_token}\n"
+            "<|im_start|>user\n"
+        )
+        if old not in prompt:
+            raise ValueError("source_eval_mode assistant/user boundary not found in chat template")
+        prompt = prompt.replace(old, old.replace(f"{eos_token}\n", eos_token, 1), 1)
+    return prompt
+
+
 FORMAT_CONFIGS = {
     "free_think": {
         "description": "You should first give your thought process, and then your answer.",
