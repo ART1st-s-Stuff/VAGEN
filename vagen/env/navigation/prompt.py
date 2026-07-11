@@ -27,11 +27,13 @@ FORMAT_CONFIGS = {
     },
     "worldmodeling": {
         "description": "You should first give your thought process with reasoning and prediction of next state, then your answer.\nThe prediction should describe what you expect to see after your actions are executed.",
+        "single_action_description": "You should first give your thought process with reasoning and prediction of the next state after exactly one action, then your answer.\nThe prediction should describe what you expect to see after that one action is executed.",
         "format": "<think><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
         "example": """<think><reasoning>I should turn right to inspect the room.</reasoning><prediction>I expect to see another part of the room.</prediction></think><answer>rotateright</answer>""",
     },
     "grounding_worldmodeling": {
         "description": "You should first give your thought process with your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.",
+        "single_action_description": "You should first describe the current observation, then your reasoning, then predict what you expect to see after exactly one action, and finally your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment after that one action.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
         "example": """<think><observation>The target is not visible.</observation><reasoning>I should rotate to search.</reasoning><prediction>I expect to see a new view of the room.</prediction></think><answer>rotateright</answer>""",
     },
@@ -68,7 +70,7 @@ Hints:
 1. Choose exactly one valid action for the current step. Do not combine actions.
 2. If the target object is far away, move toward it one step at a time across multiple turns.
 3. If you seem to be stuck, use one action such as lookdown, rotateleft, or rotateright to inspect another view.
-4. Output the action only inside the required action field for the selected format."""
+4. Output exactly one action name inside the required action field for the selected format, for example <answer>moveahead</answer>."""
 
 _NIMLOTH_SINGLE_ACTION_HINTS = """\
 Hints:
@@ -133,14 +135,16 @@ def format_prompt_generator(format_type):
         if format_type not in FORMAT_CONFIGS:
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
+        description = config["description"]
 
         if max_actions_per_step <= 1:
-            action_count_instruction = "You must take exactly one action in each response. Do not output multiple actions and do not use '|'."
+            action_count_instruction = "You must take exactly one action in each response. Do not output commas, pipes, or multiple actions. Output exactly one action string."
+            description = config.get("single_action_description", description)
         else:
             action_count_instruction = f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'."
 
         base_prompt = f"""{action_count_instruction}
-{config["description"]}
+{description}
 Your response should be in the format of:
 {config["format"]}"""
 
