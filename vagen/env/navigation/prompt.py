@@ -33,7 +33,7 @@ FORMAT_CONFIGS = {
     },
     "grounding_worldmodeling": {
         "description": "You should first give your thought process with your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.",
-        "single_action_description": "You should first describe the current observation, then your reasoning, then predict what you expect to see after exactly one action, and finally your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment after that one action.",
+        "single_action_description": "You should first describe the current observation, then your reasoning, then predict what you expect to see after exactly one action, and finally your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment after that one action. Keep each field concise and complete; do not repeat text or continue reasoning after the answer.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
         "example": """<think><observation>The target is not visible.</observation><reasoning>I should rotate to search.</reasoning><prediction>I expect to see a new view of the room.</prediction></think><answer>rotateright</answer>""",
     },
