@@ -527,8 +527,14 @@ class RayPPOTrainer(object):
         # number of GPUs total
         n_gpus = config.trainer.n_gpus_per_node * config.trainer.nnodes
 
-        # 1. Check total batch size for data correctness
-        real_train_batch_size = config.data.train_batch_size * config.actor_rollout_ref.rollout.n
+        # 1. Check total batch size after VAGEN's environment-level repeat.
+        # Agentic rollout keeps rollout.n=1 and repeats each input through
+        # rollout_manager.n_trajectory before world-size balancing.
+        real_train_batch_size = (
+            config.data.train_batch_size
+            * config.actor_rollout_ref.rollout.n
+            * config.rollout_manager.n_trajectory
+        )
         assert real_train_batch_size % n_gpus == 0, \
             f"real_train_batch_size ({real_train_batch_size}) must be divisible by total n_gpus ({n_gpus})."
 
