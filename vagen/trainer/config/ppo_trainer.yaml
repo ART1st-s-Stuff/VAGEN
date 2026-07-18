@@ -32,6 +32,7 @@ actor_rollout_ref:
     ppo_max_token_len_per_gpu: 16384 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
     grad_norm_threshold: 1000
+    nimloth_parameter_audit: False
     clip_ratio: 0.2
     entropy_coeff: 0.001
     use_kl_loss: False # True for GRPO
@@ -64,6 +65,7 @@ actor_rollout_ref:
       optimizer_offload: False
       fsdp_size: -1
   ref:
+    use_ref: True
     fsdp_config:
       param_offload: False
       wrap_policy:
@@ -73,6 +75,7 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: null
     log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
     log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    nimloth_parameter_audit: False
     ulysses_sequence_parallel_size: ${actor_rollout_ref.actor.ulysses_sequence_parallel_size} # sp size
   rollout:
     name: vllm
@@ -144,6 +147,7 @@ critic:
   grad_clip: 1.0
   cliprange_value: 0.5
   use_reward_mask: False
+  nimloth_parameter_audit: False
 
 reward_model:
   enable: False
@@ -202,7 +206,10 @@ trainer:
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   val_before_train: True
   val_only: False
+  disable_validation: False
   validation_data_dir: null
+  train_data_dir: null
+  nimloth_online_update_audit: False
   assert_val_env_composition: False
   val_env_composition: null
 
@@ -218,6 +225,7 @@ rollout_manager:
   window_size: 5
   max_turns: 5
   n_gpus_per_node: ${trainer.n_gpus_per_node}
+  mini_batch_size: null
   n_trajectory: 1 # >1 for grpo, please set actor_rollout_ref.rollout.n = 1 since we don't use vllm n sample parameter, set it >1 here for grpo agentic setting
   use_multi_turn_reward: True # for ablation study
   use_loss_mask: True # for ablation study

@@ -16,6 +16,7 @@ FSDP PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import math
 import os
 import uuid
 import importlib
@@ -929,6 +930,26 @@ class RayPPOTrainer(object):
                 f.write(json.dumps(serializable, ensure_ascii=False) + "\n")
         print(f"Dumped {len(records)} validation records to {dump_path}")
 
+    def _dump_training_records(self, records: list[dict]) -> None:
+        train_data_dir = self.config.trainer.get("train_data_dir", None)
+        if not train_data_dir:
+            return
+        os.makedirs(train_data_dir, exist_ok=True)
+        dump_path = os.path.join(train_data_dir, f"{self.global_steps}.jsonl")
+        with open(dump_path, "w", encoding="utf-8") as f:
+            for record_idx, item in enumerate(records):
+                serializable = {k: v for k, v in item.items() if k != "image_data"}
+                image_paths = self._save_validation_images(
+                    train_data_dir,
+                    self.global_steps,
+                    record_idx,
+                    item.get("image_data"),
+                )
+                if image_paths:
+                    serializable["image_paths"] = image_paths
+                f.write(json.dumps(serializable, ensure_ascii=False) + "\n")
+        print(f"Dumped {len(records)} training records to {dump_path}")
+
     def _validate(self):
         print(f"[DEBUG] validation at global step {self.global_steps} begins")
         # Lists to collect samples for the table
@@ -1307,6 +1328,7 @@ class RayPPOTrainer(object):
                         final_gen_batch_output, rst=self._process_in_mini_batches(batch, rollout_manager, mini_batch_size) 
                         train_metrics=self.log_rst_to_metrics_dict(rst=rst,mode='train')
                         metrics.update(train_metrics)
+                        self._dump_training_records(rst)
                     print(f"[DEBUG] step {self.global_steps} rollout ends")
                     batch = batch.union(final_gen_batch_output)
 
@@ -1386,6 +1408,45 @@ class RayPPOTrainer(object):
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
+
+                    if self.config.trainer.get('nimloth_online_update_audit', False):
+                        post_actor_log_prob = self.actor_rollout_wg.compute_log_prob(batch)
+                        response_length = old_log_prob.batch['old_log_probs'].shape[-1]
+                        policy_mask = batch.batch['loss_mask'][:, -response_length:].bool()
+                        actor_delta = (
+                            post_actor_log_prob.batch['old_log_probs']
+                            - old_log_prob.batch['old_log_probs']
+                        ).abs().masked_select(policy_mask)
+                        actor_max_change = float(actor_delta.max().item())
+                        if not math.isfinite(actor_max_change) or actor_max_change <= 0:
+                            raise RuntimeError(
+                                'Nimloth online actor policy log-probs did not change'
+                            )
+                        metrics['audit/actor_log_prob_max_change'] = actor_max_change
+                        reference_max_change = None
+                        if self.use_reference_policy:
+                            post_ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                            ref_delta = (
+                                post_ref_log_prob.batch['ref_log_prob']
+                                - ref_log_prob.batch['ref_log_prob']
+                            ).abs().masked_select(policy_mask)
+                            reference_max_change = float(ref_delta.max().item())
+                            if reference_max_change != 0.0:
+                                raise RuntimeError(
+                                    'Nimloth immutable reference log-probs changed'
+                                )
+                            metrics['audit/reference_log_prob_max_change'] = (
+                                reference_max_change
+                            )
+                        print(
+                            'NIMLOTH_ONLINE_UPDATE_AUDIT='
+                            + json.dumps({
+                                'actor_log_prob_max_change': actor_max_change,
+                                'reference_log_prob_max_change': reference_max_change,
+                                'policy_tokens': int(policy_mask.sum().item()),
+                            }, sort_keys=True),
+                            flush=True,
+                        )
 
                     # validate
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \

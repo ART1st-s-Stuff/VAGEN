@@ -122,8 +122,13 @@ def main_task(config, compute_score=None):
         raise NotImplementedError
     reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=0, compute_score=compute_score)
 
-    # Note that we always use function-based RM for validation
-    val_reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=1, compute_score=compute_score)
+    # Mechanics gates may explicitly disable all validation rollout. This avoids
+    # silently running a second environment split after the requested update.
+    val_reward_fn = None
+    if not config.trainer.get('disable_validation', False):
+        val_reward_fn = reward_manager_cls(
+            tokenizer=tokenizer, num_examine=1, compute_score=compute_score
+        )
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
