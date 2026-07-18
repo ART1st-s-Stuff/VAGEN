@@ -1,4 +1,4 @@
 [submodule "verl"]
 	path = verl
 	url = ssh://git@ssh.github.com:443/ART1st-s-Stuff/verl.git
-	branch = nimloth/vagen-legacy
+	branch = nimloth/vagen-legacy-k8-online

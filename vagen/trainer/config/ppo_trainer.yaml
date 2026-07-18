@@ -197,6 +197,9 @@ trainer:
   val_env_composition: null
 
 rollout_manager:
+  # Optional fully-qualified subclasses for project-specific rollout protocols.
+  manager_class: null
+  service_manager_class: null
   max_trajectory_length: ${data.max_trajectory_length}
   window_size: 5
   max_turns: 5

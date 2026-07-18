@@ -18,6 +18,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import os
 import uuid
+import importlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -44,6 +45,24 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
 WorkerType = Type[Worker]
+
+
+def resolve_rollout_manager_class(config, *, use_service: bool):
+    """Resolve an optional project rollout manager without hard-coding it in VAGEN."""
+    config_key = 'service_manager_class' if use_service else 'manager_class'
+    class_path = config.get(config_key)
+    default = QwenVLRolloutManagerService if use_service else QwenVLRolloutManager
+    if not class_path:
+        return default
+    module_name, separator, class_name = str(class_path).rpartition('.')
+    if not separator or not module_name or not class_name:
+        raise ValueError(f'invalid rollout manager class path: {class_path!r}')
+    manager_class = getattr(importlib.import_module(module_name), class_name)
+    if not isinstance(manager_class, type) or not issubclass(manager_class, default):
+        raise TypeError(
+            f'custom rollout manager {class_path!r} must subclass {default.__name__}'
+        )
+    return manager_class
 
 
 class Role(Enum):
@@ -915,21 +934,19 @@ class RayPPOTrainer(object):
         # Lists to collect samples for the table
     
         if self.test_rollout_manager==None:
-            if self.config.rollout_manager.get("use_service",False):
-                self.test_rollout_manager =QwenVLRolloutManagerService(
-                    actor_rollout_wg=self.actor_rollout_wg,
-                    config=self.config.rollout_manager,
-                    tokenizer=self.tokenizer,
-                    processor=self.processor,
-                    split="val",
-                )
-            else:
-                self.test_rollout_manager =QwenVLRolloutManager(
-                    actor_rollout_wg=self.actor_rollout_wg,
-                    config=self.config.rollout_manager,
-                    tokenizer=self.tokenizer,
-                    processor=self.processor, 
-                )
+            use_service = self.config.rollout_manager.get("use_service", False)
+            manager_class = resolve_rollout_manager_class(
+                self.config.rollout_manager, use_service=use_service
+            )
+            manager_kwargs = dict(
+                actor_rollout_wg=self.actor_rollout_wg,
+                config=self.config.rollout_manager,
+                tokenizer=self.tokenizer,
+                processor=self.processor,
+            )
+            if use_service or self.config.rollout_manager.get("manager_class"):
+                manager_kwargs["split"] = "val"
+            self.test_rollout_manager = manager_class(**manager_kwargs)
         
         validation_rst=[]
         
@@ -1240,21 +1257,19 @@ class RayPPOTrainer(object):
         # we start from step 1
         self.global_steps += 1
 
-        if self.config.rollout_manager.get("use_service",False):
-            rollout_manager = QwenVLRolloutManagerService(
-                actor_rollout_wg=self.actor_rollout_wg,
-                config=self.config.rollout_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-                split="train",
-            )
-        else:
-            rollout_manager = QwenVLRolloutManager(
-                actor_rollout_wg=self.actor_rollout_wg,
-                config=self.config.rollout_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-            )
+        use_service = self.config.rollout_manager.get("use_service", False)
+        manager_class = resolve_rollout_manager_class(
+            self.config.rollout_manager, use_service=use_service
+        )
+        manager_kwargs = dict(
+            actor_rollout_wg=self.actor_rollout_wg,
+            config=self.config.rollout_manager,
+            tokenizer=self.tokenizer,
+            processor=self.processor,
+        )
+        if use_service or self.config.rollout_manager.get("manager_class"):
+            manager_kwargs["split"] = "train"
+        rollout_manager = manager_class(**manager_kwargs)
 
         for epoch in range(self.config.trainer.total_epochs):
             for batch_dict in self.train_dataloader:
