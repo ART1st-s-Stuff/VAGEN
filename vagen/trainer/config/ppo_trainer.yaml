@@ -39,6 +39,15 @@ actor_rollout_ref:
     kl_loss_type: low_var_kl # for grpo
     ppo_epochs: 1
     shuffle: False
+    nimloth_wm_aux:
+      enabled: False
+      checkpoint_dir: null
+      allow_random_init: False
+      latent_token_count: null
+      loss_coef: 1.0
+      lr: 1e-5
+      lr_warmup_steps_ratio: 0.0
+      projector_hidden_dim: 2048
     ulysses_sequence_parallel_size: 1 # sp size
     optim:
       lr: 1e-6
