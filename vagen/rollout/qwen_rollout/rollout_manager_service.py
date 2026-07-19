@@ -12,11 +12,12 @@ import re
 from verl import DataProto
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
-from verl.utils.dataset.rl_dataset import process_image, collate_fn
+from verl.utils.dataset.rl_dataset import collate_fn
 import vagen.env
 from vagen.env import REGISTERED_ENV
 from vagen.server.client import BatchEnvClient
 from vagen.env.navigation.prompt import SOURCE_EVAL_MODE, source_eval_chat_template_compat
+from vagen.rollout.image_utils import prepare_rollout_image
     
 class QwenVLRolloutManagerService():
     def __init__(self,
@@ -300,7 +301,7 @@ class QwenVLRolloutManagerService():
         image_placeholder = self.envs[env_id].get('image_placeholder', "<image>")
         if 'multi_modal_data' in obs:
             if image_placeholder in obs['multi_modal_data']:
-                record_entry['image_data'] = [process_image(image) for image in obs['multi_modal_data'][image_placeholder]]
+                record_entry['image_data'] = [prepare_rollout_image(image) for image in obs['multi_modal_data'][image_placeholder]]
         self.recorder[env_id].append(record_entry)
 
     @torch.no_grad()
