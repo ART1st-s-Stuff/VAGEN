@@ -1,4 +1,5 @@
 # Prompt templates for the legacy AI2-THOR navigation environment.
+from vagen.env.navigation import hligb_single_action_prompt
 from vagen.env.navigation.nimloth_format import (
     NIMLOTH_ACTION_BLOCK,
     NIMLOTH_EVAL_FORMAT_INSTRUCTION,
@@ -6,6 +7,7 @@ from vagen.env.navigation.nimloth_format import (
 )
 
 SOURCE_EVAL_MODE = "source_eval_mode"
+HLIGB_SINGLE_ACTION_MODE = "hligb_single_action_source"
 
 
 def source_eval_chat_template_compat(prompt, chat, eos_token):
@@ -133,6 +135,12 @@ def system_prompt(**kwargs):
 
     if selected_format == SOURCE_EVAL_MODE:
         return "\n\n".join([_SOURCE_EVAL_BASE_SYSTEM_PROMPT, _SOURCE_EVAL_SINGLE_ACTION_HINTS])
+    if selected_format == HLIGB_SINGLE_ACTION_MODE:
+        return hligb_single_action_prompt.system_prompt(
+            format="grounding_worldmodeling",
+            max_actions_per_step=kwargs.get("max_actions_per_step", 1),
+            action_sep=kwargs.get("action_sep", ","),
+        )
 
     parts = [_BASE_SYSTEM_PROMPT]
     if selected_format in ("nimloth", "nimloth_wm"):
@@ -145,6 +153,8 @@ def system_prompt(**kwargs):
 def init_observation_template(**kwargs):
     observation = kwargs.get("observation", "No observation provided.")
     instruction = kwargs.get("instruction", "No instruction provided.")
+    if kwargs.get("format") == HLIGB_SINGLE_ACTION_MODE:
+        return hligb_single_action_prompt.init_observation_template(**kwargs)
     suffix = "Decide your next action(s)." if kwargs.get("format") == SOURCE_EVAL_MODE else "Decide your next action."
     return f"""[Initial Observation]:
 {observation}
@@ -153,6 +163,8 @@ Human Instruction: {instruction}
 
 
 def action_template(**kwargs):
+    if kwargs.get("format") == HLIGB_SINGLE_ACTION_MODE:
+        return hligb_single_action_prompt.action_template(**kwargs)
     observation = kwargs.get("observation", "No observation provided.")
     valid_action = kwargs.get("valid_action", "No valid action provided.")
     env_feedback = kwargs.get("env_feedback", "No environment feedback provided.")
@@ -223,6 +235,9 @@ Your response should be in the format of:
 
 
 format_prompt = {ft: format_prompt_generator(ft) for ft in FORMAT_CONFIGS}
+format_prompt[HLIGB_SINGLE_ACTION_MODE] = (
+    lambda **kwargs: hligb_single_action_prompt.format_prompt["grounding_worldmodeling"](**kwargs)
+)
 # Nimloth baseline config uses the short alias `wm` for world modeling.
 format_prompt["wm"] = format_prompt["worldmodeling"]
 

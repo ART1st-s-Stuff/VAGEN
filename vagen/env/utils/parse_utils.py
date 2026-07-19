@@ -439,6 +439,7 @@ PARSE_FUNC_MAP = {
     "worldmodeling": parse_worldmodeling,
     "wm": parse_worldmodeling,
     "grounding_worldmodeling": parse_grounding_worldmodeling,
+    "hligb_single_action_source": parse_grounding_worldmodeling,
     "nimloth": parse_nimloth,
     "nimloth_wm": parse_nimloth_wm,
     "grounding_structured": parse_grounding,

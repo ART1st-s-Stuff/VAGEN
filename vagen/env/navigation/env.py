@@ -7,7 +7,14 @@ from ai2thor.platform import CloudRendering
 from vagen.env.utils.context_utils import convert_numpy_to_PIL
 from vagen.env.utils.parse_utils import PARSE_FUNC_MAP
 from .env_config import NavigationEnvConfig
-from .prompt import SOURCE_EVAL_MODE, system_prompt, init_observation_template, action_template, format_prompt
+from .prompt import (
+    HLIGB_SINGLE_ACTION_MODE,
+    SOURCE_EVAL_MODE,
+    action_template,
+    format_prompt,
+    init_observation_template,
+    system_prompt,
+)
 from vagen.env.utils.state_reward_text_utils import env_state_reward_wrapper
 
 class NavigationEnv(BaseEnv):
@@ -36,6 +43,17 @@ class NavigationEnv(BaseEnv):
         "look_up": 7,
         "lookdown": 8,
         "look_down": 8
+    }
+
+    HLIGB_ACTION_LOOKUP = {
+        "moveahead": 1,
+        "moveback": 2,
+        "moveright": 3,
+        "moveleft": 4,
+        "rotateright": 5,
+        "rotateleft": 6,
+        "lookup": 7,
+        "lookdown": 8,
     }
 
     SOURCE_ACTION_LOOKUP = {
@@ -73,7 +91,13 @@ class NavigationEnv(BaseEnv):
         self.success_threshold = self.config.success_threshold
         self.step_length = self.config.step_length
         self.source_eval_compat = self.config.prompt_format == SOURCE_EVAL_MODE
-        self.action_lookup = self.SOURCE_ACTION_LOOKUP if self.source_eval_compat else self.ACTION_LOOKUP
+        self.hligb_single_action_compat = self.config.prompt_format == HLIGB_SINGLE_ACTION_MODE
+        if self.source_eval_compat:
+            self.action_lookup = self.SOURCE_ACTION_LOOKUP
+        elif self.hligb_single_action_compat:
+            self.action_lookup = self.HLIGB_ACTION_LOOKUP
+        else:
+            self.action_lookup = self.ACTION_LOOKUP
         # Environment setup
         self.resolution = config.resolution
         self.thor_config = {
@@ -390,9 +414,12 @@ class NavigationEnv(BaseEnv):
                 observation=img_placeholder,
                 reward=self.reward,
                 done=bool(self.measure_success()[0]) if self.source_eval_compat else self.measure_success()[0],
+                instruction=self.episode_language_instruction,
                 env_feedback=self.info["env_feedback"],
                 format=self.config.prompt_format,
             )
+            if self.hligb_single_action_compat:
+                obs_str += "\n" + format_prompt_text
         
         return {
             "obs_str": obs_str,
