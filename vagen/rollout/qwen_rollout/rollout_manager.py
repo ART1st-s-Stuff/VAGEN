@@ -202,6 +202,7 @@ class QwenVLRolloutManager():
         
         if self.envs is None:
             self.envs = {}
+        self.input_index_by_env_id = {}
             
         for env_id, env in self.envs.items():
             env_config_id = env.config.config_id()
@@ -210,6 +211,7 @@ class QwenVLRolloutManager():
         
         for i, cfg in enumerate(env_configs):
             env_id = i
+            self.input_index_by_env_id[env_id] = i
             env_name = cfg["env_name"]
             env_config = cfg["env_config"]
             seed = cfg["seed"]
