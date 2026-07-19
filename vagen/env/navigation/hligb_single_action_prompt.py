@@ -1,36 +1,9 @@
-"""Exact prompt helpers used by the hligb step10 single-action checkpoint.
+"""Prompt loaded when the hligb step10 checkpoint was trained.
 
-Kept isolated so existing VAGEN prompt modes retain their current behavior.
-The golden test is derived from eval job 479904's source checkout.
+The wording intentionally retains multi-action hints/examples while the env
+parser executes at most one action.  This mirrors committed VAGEN HEAD 8839a2a
+and the archived runtime transcript, including that contradiction.
 """
-
-import re
-
-
-def _as_int(value, default):
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _limit_answer_actions(text, max_actions_per_step, action_sep):
-    max_actions = _as_int(max_actions_per_step, 5)
-    if max_actions <= 0:
-        return text
-
-    def replace_answer(match):
-        answer = match.group(1)
-        actions = [action.strip() for action in answer.split(action_sep) if action.strip()]
-        if len(actions) <= max_actions:
-            return match.group(0)
-        return "<answer>" + (f" {action_sep} ").join(actions[:max_actions]) + "</answer>"
-
-    return re.sub(r"<answer>(.*?)</answer>", replace_answer, text, flags=re.DOTALL)
-
-
-def _single_action(max_actions_per_step):
-    return _as_int(max_actions_per_step, 5) == 1
 
 
 # This FORMAT_CONFIGS is for the robot navigation task,
@@ -68,9 +41,6 @@ def system_prompt(**kwargs):
     example = "" # Default empty example
     # Internally uses kwargs.get("format"), as in your original code
     selected_format = kwargs.get("format", "default")
-    max_actions_per_step = kwargs.get("max_actions_per_step", 5)
-    action_sep = kwargs.get("action_sep", ",")
-
     if selected_format in ["free_think", "default"]:
         example=f"""Example:
 Round 1:
@@ -159,15 +129,6 @@ image_3
 Round 4:
 Env_feedback: Success"""
 
-    if _single_action(max_actions_per_step):
-        hint_text = """1. Choose exactly one action for this turn. If the target is far away, keep moving toward it over multiple turns, one action at a time.
-2. If you seem to be stuck, look down or rotate to inspect nearby space before choosing the next single action."""
-    else:
-        hint_text = """1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call moveahead, moveleft and move right multiple times.
-2. If you find yourself seems to be stuck, you can lookdown to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
-
-    example = _limit_answer_actions(example, max_actions_per_step, action_sep)
-
     base_prompt_text = f"""You are a home robot and perform navigation tasks according to instructions.
 Actions you can take: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.{" "}
 moveahead: Move forward by some distance
@@ -183,7 +144,8 @@ Format correct: +0.5
 Achieve the human instruction: +10.0
 The instruction will be provided with each observation. Look at the image carefully and navigate to complete the instruction.
 Hints:
-{hint_text}"""
+1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call moveahead, moveleft and move right multiple times.
+2. If you find yourself seems to be stuck, you can lookdown to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
     return base_prompt_text + '\n' + example
 
 # init_observation_template and action_template from your second code block
@@ -238,12 +200,7 @@ def format_prompt_generator(format_type):
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
 
-        if _single_action(max_actions_per_step):
-            action_instruction = "Choose exactly one action for this turn."
-        else:
-            action_instruction = f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'."
-
-        base_prompt = f"""{action_instruction}
+        base_prompt = f"""You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.
 {config["description"]}"""
 
         if "additional_info" in config: # In case it's added to FORMAT_CONFIGS later
@@ -256,7 +213,6 @@ Your response should be in the format of:
         if add_example:
             # The 'e.g.' is already part of the example string in this FORMAT_CONFIGS
             example_text = config["example"].format(action_sep=action_sep)
-            example_text = _limit_answer_actions(example_text, max_actions_per_step, action_sep)
             return base_prompt + '\n' + f"e.g. {example_text}"
 
         return base_prompt
