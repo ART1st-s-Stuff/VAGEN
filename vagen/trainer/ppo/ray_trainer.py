@@ -43,6 +43,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
+from vagen.trainer.validation_identity import attach_validation_input_metadata
 WorkerType = Type[Worker]
 
 
@@ -961,9 +962,18 @@ class RayPPOTrainer(object):
             self.test_rollout_manager.reset(env_configs)
             self.test_rollout_manager.rollout_loop()
             micro_validation_rst = self.test_rollout_manager.recording_to_log() # data source == inputs in our current setting, outputs=whole trjecotry
-            for i, (item, env_config, uid) in enumerate(zip(micro_validation_rst, env_configs, uids, strict=False)):
-                source = batch.non_tensor_batch['data_source'][i] if 'data_source' in batch.non_tensor_batch else env_config.get('data_source')
-                item.update(self._record_metadata(env_config, uid, source))
+            if 'data_source' in batch.non_tensor_batch:
+                sources = list(batch.non_tensor_batch['data_source'])
+            else:
+                sources = [env_config.get('data_source') for env_config in env_configs]
+            attach_validation_input_metadata(
+                micro_validation_rst,
+                env_configs=env_configs,
+                uids=uids,
+                sources=sources,
+                input_index_by_env_id=self.test_rollout_manager.input_index_by_env_id,
+                metadata_fn=self._record_metadata,
+            )
             validation_rst.extend(micro_validation_rst)
         
         self._assert_val_env_composition(validation_rst)
