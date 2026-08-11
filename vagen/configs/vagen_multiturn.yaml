@@ -56,6 +56,16 @@ trainer:
 decision_ledger:
   enabled: false
 
+# Scheme B remains disabled until every probability and gradient semantic is explicit.
+joint_policy:
+  enabled: false
+  implementation: null
+  alpha: null
+  beta: null
+  prior_temperature: null
+  backprop_to_llm: null
+  score_dtype: null
+
 # ============================================================================
 # Algorithm Configuration
 # ============================================================================

@@ -59,6 +59,7 @@ from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from vagen.agent_loop.decision_ledger import summarize_decision_ledger_batch
+from vagen.joint_policy import parse_joint_policy_section
 from vagen.utils.image_dump_actor import ImageDumpActor
 from vagen.utils.upload_hugging_face import HFUploadManager
 from vagen.utils.image_validation_logger import ValidationGenerationsLogger
@@ -411,6 +412,13 @@ class RayPPOTrainer:
         self._max_pending_dumps = self._log_image_cfg.get("max_pending", 2)
 
         ledger_enabled = bool(self.config.get("decision_ledger", {}).get("enabled", False))
+        self.joint_policy_config = parse_joint_policy_section(
+            self.config.get("joint_policy", {"enabled": False})
+        )
+        if self.joint_policy_config is not None and not ledger_enabled:
+            raise ValueError(
+                "joint_policy.enabled requires decision_ledger.enabled=true"
+            )
         if ledger_enabled and (
             self.config.actor_rollout_ref.rollout.mode != "async"
             or self.config.trainer.get("concat_multi_turn", True)
@@ -418,6 +426,11 @@ class RayPPOTrainer:
             raise ValueError(
                 "decision_ledger.enabled requires async rollout with "
                 "trainer.concat_multi_turn=false"
+            )
+        if self.joint_policy_config is not None:
+            raise NotImplementedError(
+                "joint_policy contract exists, but guided rollout, frozen-Q owner, "
+                "and replay are not connected; refusing to run stock PPO"
             )
 
         # HuggingFace Hub upload

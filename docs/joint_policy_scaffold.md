@@ -51,6 +51,29 @@ The following still require explicit decisions before M2/M3 are complete:
   if any, trains them;
 - checkpoint and refresh timing for the frozen critic snapshot.
 
+## M2 contract status
+
+The dependency-light Scheme-B contract is implemented, but operational rollout
+remains disabled:
+
+- all probability semantics (`alpha`, `beta`, prior temperature, score dtype,
+  and `backprop_to_llm`) are explicit and enter a hashed contract id;
+- the tensor formula always detaches frozen Q and conditionally detaches prior
+  logits according to the explicit gradient setting;
+- a versioned behavior record binds the action table/token ids, sampled prior
+  token, prior logits, frozen all-action Q, guided first action, snapshot id, and
+  behavior log-probabilities;
+- ledger v2 embeds and revalidates the complete behavior record before claiming
+  policy ownership;
+- `joint_policy.enabled=true` fails closed while Q ownership, rollout sampling,
+  replay, and checkpoint refresh are not connected.
+
+VAGEN-Lite currently has no `[B,A]` action-value head equivalent to the old
+Nimloth `ValueHead`. Its existing token critic is scalar per response token, and
+its transition reward predictor is an immediate-reward model. Neither is used
+as a substitute. The state feeding the old ValueHead must be chosen before Q
+ownership can be implemented safely.
+
 ## M1: decision ledger
 
 M1 records environment facts before adding an actor. It uses VAGEN-Lite's async
@@ -133,8 +156,8 @@ outside environment PPO.
 
 ## Validation boundary
 
-M1 unit tests are dependency-light and cover ledger construction, strict
-validation, multi-action preservation, fallback ownership and reward anchoring,
-remote step decoding, termination semantics, and static wiring order. Full Ray,
-multimodal rollout, PPO, checkpoint, and GPU validation are explicitly outside
-M1.
+Dependency-light tests cover M1 plus Scheme-B config, numerical reference,
+behavior/ledger schema identity, overflow handling, and fail-closed wiring. Torch
+autograd/parity tests exist but are skipped in the current local environment
+because torch is unavailable. Full Ray, multimodal rollout, Q ownership, PPO,
+checkpoint, and GPU validation remain outside the completed scope.

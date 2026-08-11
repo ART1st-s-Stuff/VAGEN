@@ -32,6 +32,29 @@ class DecisionLedgerWiringTest(unittest.TestCase):
             source,
         )
 
+    def test_scheme_b_tensor_path_always_detaches_q(self) -> None:
+        source = _source("vagen/joint_policy/torch_policy.py")
+        self.assertIn("q_guidance = frozen_all_action_q.detach()", source)
+        self.assertIn(
+            "prior_logits if config.backprop_to_llm else prior_logits.detach()",
+            source,
+        )
+        self.assertIn("config.alpha * scaled_prior_logits + config.beta * q_guidance", source)
+
+    def test_joint_policy_config_is_validated_before_workers_start(self) -> None:
+        source = _source("vagen/ray_trainer.py")
+        parser = source.index("self.joint_policy_config = parse_joint_policy_section(")
+        dataloader = source.index("self._create_dataloader(")
+        self.assertLess(parser, dataloader)
+        self.assertIn(
+            '"joint_policy.enabled requires decision_ledger.enabled=true"',
+            source,
+        )
+        self.assertIn(
+            '"and replay are not connected; refusing to run stock PPO"',
+            source,
+        )
+
     def test_navigation_exports_versioned_action_space_and_executed_actions(self) -> None:
         source = _source("vagen/envs/navigation/navigation_env.py")
         self.assertIn('"action_space": "navigation_v1"', source)
