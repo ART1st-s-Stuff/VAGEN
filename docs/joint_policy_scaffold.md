@@ -2,43 +2,54 @@
 
 ## Status
 
-This document records the framework boundary while the actor parameterization is
-still undecided. It is not an actor design and does not select a logit formula.
+This document records the framework boundary while some policy-gradient details
+remain undecided. Milestone M1 still implements no actor logits or PPO loss.
 
-The intended joint policy is currently written as
+## Confirmed provisional policy
 
-\[
-\pi(c, p, A \mid x)
-= \pi_{\mathrm{LLM}}(c, p \mid x)
-  \pi_{\mathrm{actor}}(A \mid s, p),
-\]
-
-where `c` is the sampled CoT, `p` is the action prior, and `A` is an ordered
-action sequence. Whether `p` is a sampled variable or a deterministic LLM head
-output remains unresolved and must be settled before PPO ratios are defined.
-
-## Deferred actor decisions
-
-This scaffold deliberately does not decide:
-
-- how actor logits are computed;
-- whether the actor has an independent trainable residual head;
-- whether an action-value term is used, stopped, normalized, or snapshotted;
-- whether the environment commits a complete action sequence or replans after
-  each executed action;
-- whether PPO clips one executed action, each sequence position, or a complete
-  sequence ratio;
-- how actor parameters, optimizer, scheduler, and any target critic are saved.
-
-In particular, the candidate
+At each real environment turn, the LLM samples CoT `c` and a prior action token
+`b`. The complete prior distribution `p` is the softmax over the LLM's action-
+token logits at that boundary; `p` is deterministic given the LLM forward, while
+the sampled token `b` contributes its log-probability to the LLM policy factor.
+The provisional joint policy is
 
 \[
-z(a) = \alpha l_{\mathrm{prior}}(a)
-     + \beta\,\operatorname{stopgrad}(Q(s,a))
+\pi(c,b,a \mid x)
+= \pi_{\mathrm{LLM}}(c,b \mid x)
+  \pi_{\mathrm{guided}}(a \mid s,p,\bar Q).
 \]
 
-is only a proposal. No field or class in milestone M1 may imply that it has been
-accepted.
+The environment executes only the first selected action and then replans from
+the next real observation. Unexecuted simulated tail actions are not PPO
+environment actions.
+
+The first guided-policy candidate is scheme B:
+
+\[
+\pi_{\mathrm{guided}}(a \mid s,p,\bar Q)
+= \operatorname{softmax}\left(
+    \alpha l_{\mathrm{prior}}(a)
+    + \beta\,\operatorname{stopgrad}(\bar Q(s,a))
+  \right).
+\]
+
+The old Nimloth `ValueHead` remains an action-value critic. It is not renamed to
+an actor head and receives no actor-loss gradient. `\bar Q` must be a frozen
+rollout-time snapshot; replay must use the rollout-persisted guidance scores and
+snapshot identity rather than recomputing them after a critic update.
+
+## Deferred policy decisions
+
+The following still require explicit decisions before M2/M3 are complete:
+
+- whether the guided-policy factor backpropagates through
+  `l_prior` into the LLM; without that path it has no trainable parameter during
+  one PPO update and its ratio remains one;
+- `alpha`, `beta`, prior temperature, and any warmup or KL target;
+- critic coverage/calibration for action slots not executed in a given state;
+- how simulated tail actions are generated and which non-PPO auxiliary objective,
+  if any, trains them;
+- checkpoint and refresh timing for the frozen critic snapshot.
 
 ## M1: decision ledger
 
@@ -102,23 +113,23 @@ current predictor experiment. They are not the joint-policy contract.
 
 ## Later milestones
 
-### M2: actor protocol and checkpoint ownership
+### M2: guided-policy protocol and checkpoint ownership
 
-Only after the actor design is approved:
-
-1. define the conditional action/sequence distribution;
-2. record exact rollout-time component and joint behavior log-probabilities;
-3. specify the replay state and critic/target snapshot identity;
-4. register every trainable module, optimizer, scheduler, and target state in a
-   checkpoint round-trip test;
-5. promote policy-owned actions to a new ledger schema version.
+1. sample one real action from the LLM-prior/frozen-Q guided distribution;
+2. record the sampled LLM prior token, prior logits/distribution, frozen
+   all-action guidance scores, selected-action behavior log-probabilities, and
+   critic snapshot identity;
+3. replay current LLM logits against the same persisted Q-guidance scores;
+4. keep trainable current-critic regression separate from frozen policy guidance;
+5. checkpoint the critic and the exact snapshot-refresh boundary;
+6. promote the one executed policy-owned action to a new ledger schema version.
 
 ### M3: joint PPO
 
-Implement current log-probability replay, ratio construction, credit assignment,
-clipping, entropy/KL terms, and actor update only after M2 is complete. If only
-the first planned action is executed before replanning, unexecuted tail actions
-must not be presented as on-policy environment actions.
+After deciding whether guided-policy gradients reach the LLM, implement the LLM
+and guided-policy component ratios, joint ratio/clipping, first-action credit,
+entropy/KL terms, and critic update ordering. Simulated tail actions must remain
+outside environment PPO.
 
 ## Validation boundary
 
