@@ -45,6 +45,8 @@ from verl.utils.rollout_trace import (
 from verl.utils.transferqueue_utils import tqbridge
 from verl.workers.rollout.replica import TokenOutput, get_rollout_replica_class
 
+from .decision_ledger import last_policy_token_index
+
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
@@ -576,10 +578,16 @@ class AgentLoopWorkerBase:
 
         scores = [input.reward_score for input in inputs]
         if all(score is not None for score in scores):
-            prompt_length = prompt_ids.size(1)
-            response_length = attention_mask[:, prompt_length:].sum(dim=1) - 1
+            reward_positions = torch.tensor(
+                [last_policy_token_index(mask.tolist()) for mask in response_mask],
+                dtype=torch.long,
+                device=response_mask.device,
+            )
             rm_scores = torch.zeros_like(response_mask, dtype=torch.float32)
-            rm_scores[torch.arange(response_mask.size(0)), response_length] = torch.tensor(scores, dtype=torch.float32)
+            rm_scores[
+                torch.arange(response_mask.size(0), device=response_mask.device),
+                reward_positions,
+            ] = torch.tensor(scores, dtype=torch.float32, device=response_mask.device)
             batch["rm_scores"] = rm_scores
 
         non_tensor_batch = {

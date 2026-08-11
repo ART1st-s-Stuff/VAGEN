@@ -39,6 +39,7 @@ import httpx
 from PIL import Image
 
 from vagen.envs.gym_image_env import GymImageEnv
+from vagen.utils.remote_step_protocol import parse_remote_step_fields
 from .multipart_codec import encode_multipart, decode_multipart
 
 LOGGER = logging.getLogger(__name__)
@@ -428,9 +429,7 @@ class GymImageEnvClient(GymImageEnv):
         if images:
             obs["multi_modal_input"] = {"<image>": images}
 
-        reward = float(data.get("reward", 0.0))
-        done = bool(data.get("done", False))
-        info = data.get("info", {})
+        reward, done, info = parse_remote_step_fields(data)
 
         return obs, reward, done, info
 

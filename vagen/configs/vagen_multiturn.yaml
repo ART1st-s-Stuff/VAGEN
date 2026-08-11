@@ -52,6 +52,10 @@ trainer:
     max_pending: 2          # Max pending async image dump tasks (prevents IO from blocking training)
     png_compress_level: 0   # PNG compression level (0 = no compression, fastest)
 
+# Opt in when a no-concat environment implements the decision-ledger info contract.
+decision_ledger:
+  enabled: false
+
 # ============================================================================
 # Algorithm Configuration
 # ============================================================================

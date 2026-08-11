@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from PIL import Image
 from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, register
+from .decision_ledger import build_decision_ledger_from_env_info
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
@@ -61,7 +62,7 @@ class AgentData:
         self.turn_prompt_ids: Optional[List[int]] = None
         self.turn_response_ids: Optional[List[int]] = None
         self.turn_response_mask: Optional[List[int]] = None
-        self.turn_response_logprobs: Optional[List[int]] = None
+        self.turn_response_logprobs: Optional[List[float]] = None
 
         # Env stats
         self.env_turns: int = 0
@@ -92,6 +93,8 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
+        ledger_config = config.get("decision_ledger", {})
+        cls.decision_ledger_enabled = bool(ledger_config.get("enabled", False))
         
 
     @rollout_trace_op
@@ -264,6 +267,15 @@ class GymAgentLoop(AgentLoopBase):
         if len(agent_data.turn_response_mask) >= self.response_length:
             last_turn = True
 
+        decision_ledger = None
+        if self.decision_ledger_enabled:
+            decision_ledger = build_decision_ledger_from_env_info(
+                info,
+                env_turn_reward=reward,
+                env_terminated=done,
+                rollout_truncated=last_turn and not done,
+            )
+
         turn_images=agent_data.sys_images+agent_data.cur_images
         
         resp_len = len(agent_data.turn_response_mask)
@@ -285,6 +297,11 @@ class GymAgentLoop(AgentLoopBase):
                 "traj_success": float(traj_success)},
                 "image_data": turn_images,
                 "last_turn": last_turn,
+                **(
+                    {"decision_ledger": decision_ledger}
+                    if decision_ledger is not None
+                    else {}
+                ),
                 "group_idx": agent_data.group_idx,
                 "traj_idx": agent_data.traj_idx,
                 "turn_idx": agent_data.env_turns,
