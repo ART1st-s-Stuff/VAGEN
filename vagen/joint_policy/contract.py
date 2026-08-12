@@ -35,8 +35,22 @@ class FrozenQGuidedPolicyConfig:
     backprop_to_llm: bool
     score_dtype: str
 
+    def __post_init__(self) -> None:
+        validated = type(self)._validated_fields(
+            {
+                "implementation": self.implementation,
+                "alpha": self.alpha,
+                "beta": self.beta,
+                "prior_temperature": self.prior_temperature,
+                "backprop_to_llm": self.backprop_to_llm,
+                "score_dtype": self.score_dtype,
+            }
+        )
+        for field, value in validated.items():
+            object.__setattr__(self, field, value)
+
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any]) -> "FrozenQGuidedPolicyConfig":
+    def _validated_fields(cls, raw: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(raw, Mapping):
             raise ValueError("joint policy config must be a mapping")
         missing = _REQUIRED_CONFIG_FIELDS - set(raw)
@@ -67,15 +81,18 @@ class FrozenQGuidedPolicyConfig:
             raise ValueError(
                 "joint policy score_dtype must be float32, bfloat16, or float64"
             )
+        return {
+            "implementation": _IMPLEMENTATION,
+            "alpha": alpha,
+            "beta": beta,
+            "prior_temperature": prior_temperature,
+            "backprop_to_llm": True,
+            "score_dtype": raw["score_dtype"],
+        }
 
-        return cls(
-            implementation=_IMPLEMENTATION,
-            alpha=alpha,
-            beta=beta,
-            prior_temperature=prior_temperature,
-            backprop_to_llm=raw["backprop_to_llm"],
-            score_dtype=raw["score_dtype"],
-        )
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, Any]) -> "FrozenQGuidedPolicyConfig":
+        return cls(**cls._validated_fields(raw))
 
     def contract_id(
         self,

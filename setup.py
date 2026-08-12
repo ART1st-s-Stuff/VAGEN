@@ -9,6 +9,7 @@ setup(
         "gymnasium",
         "gymnasium[toy-text]",
         "fastapi",
+        "fire",
         "httpx",
         "Pillow",
         "uvicorn<0.41",

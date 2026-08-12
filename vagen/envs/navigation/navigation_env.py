@@ -39,7 +39,7 @@ class NavigationEnvConfig:
     success_reward: float = 1.0         # reaching the goal
     gpu_device: int = 0
     prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode | nimloth
-    latent_token_count: int = 1        # Nimloth inject slots; ignored by text formats
+    latent_token_count: int | None = None  # required by Nimloth; ignored by text formats
     example_count: int = 0             # number of examples in system prompt (0 = none)
     success_threshold: float = 1.0
     step_length: float = 0.3
@@ -93,7 +93,10 @@ class NavigationEnv(GymImageEnv):
                 or not isinstance(self.cfg.latent_token_count, int)
                 or self.cfg.latent_token_count < 1
             ):
-                raise ValueError("latent_token_count must be a positive int")
+                raise ValueError(
+                    "prompt_format=nimloth requires explicit positive "
+                    "latent_token_count"
+                )
         self._controller = None
         self._dataset = self._load_dataset()
         self._episode_data: Optional[Dict] = None
@@ -152,7 +155,7 @@ class NavigationEnv(GymImageEnv):
                 self.cfg.prompt_format,
                 self.cfg.max_actions_per_step,
                 self.cfg.action_sep,
-                self.cfg.latent_token_count,
+                self.cfg.latent_token_count or 1,
             )
             obs_str = init_observation_template(observation=ph, instruction=self._instruction) + "\n" + fmt
         else:
@@ -200,7 +203,7 @@ class NavigationEnv(GymImageEnv):
             prompt_format=self.cfg.prompt_format,
             action_sep=self.cfg.action_sep,
             max_actions=self.cfg.max_actions_per_step,
-            latent_token_count=self.cfg.latent_token_count,
+            latent_token_count=self.cfg.latent_token_count or 1,
         )
         actions = parsed["actions"]
         prev_pos = self._agent_pos()
@@ -286,7 +289,7 @@ class NavigationEnv(GymImageEnv):
             max_actions_per_step=self.cfg.max_actions_per_step,
             action_sep=self.cfg.action_sep,
             example_count=self.cfg.example_count,
-            latent_token_count=self.cfg.latent_token_count,
+            latent_token_count=self.cfg.latent_token_count or 1,
         )}
 
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:

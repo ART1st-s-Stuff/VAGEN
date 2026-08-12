@@ -12,6 +12,14 @@ def _source(relative_path: str) -> str:
 
 
 class DecisionLedgerWiringTest(unittest.TestCase):
+    def test_agent_loop_closes_environment_on_ledger_failure(self) -> None:
+        source = _source("vagen/agent_loop/gym_agent_loop_no_concat.py")
+        method_start = source.index("async def run(")
+        method_end = source.index("async def _handle_pending_state", method_start)
+        method = source[method_start:method_end]
+        self.assertIn("try:", method)
+        self.assertIn("finally:\n            await env.close()", method)
+
     def test_upstream_action_text_reaches_environment_unchanged(self) -> None:
         source = _source("vagen/agent_loop/gym_agent_loop_no_concat.py")
         method_start = source.index("async def _handle_env_state")
@@ -68,6 +76,15 @@ class DecisionLedgerWiringTest(unittest.TestCase):
             source,
         )
         self.assertIn("non_tensor_batch.update(extra_fields)", source)
+
+    def test_final_reward_tensor_is_revalidated_before_ppo_scores(self) -> None:
+        source = _source("vagen/ray_trainer.py")
+        final_validation = source.rindex("validate_decision_ledger_reward_rows(")
+        score_assignment = source.index(
+            'batch.batch["token_level_scores"] = reward_tensor',
+            final_validation,
+        )
+        self.assertLess(final_validation, score_assignment)
 
     def test_validation_runs_before_old_log_prob_replay(self) -> None:
         source = _source("vagen/ray_trainer.py")

@@ -85,6 +85,26 @@ class FrozenQGuidedPolicyConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "alpha must be positive"):
             _config(alpha=0.0, beta=1.0)
 
+    def test_direct_dataclass_construction_cannot_bypass_invariants(self) -> None:
+        with self.assertRaisesRegex(ValueError, "alpha must be positive"):
+            FrozenQGuidedPolicyConfig(
+                implementation="frozen_q_guided_v1",
+                alpha=0.0,
+                beta=1.0,
+                prior_temperature=1.0,
+                backprop_to_llm=True,
+                score_dtype="float32",
+            )
+        with self.assertRaisesRegex(ValueError, "must be true"):
+            FrozenQGuidedPolicyConfig(
+                implementation="frozen_q_guided_v1",
+                alpha=1.0,
+                beta=1.0,
+                prior_temperature=1.0,
+                backprop_to_llm=False,
+                score_dtype="float32",
+            )
+
     def test_contract_id_binds_config_action_table_and_tokens(self) -> None:
         config = _config(backprop_to_llm=True)
         changed_alpha = _config(backprop_to_llm=True, alpha=0.5)

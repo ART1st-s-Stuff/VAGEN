@@ -260,9 +260,11 @@ class GymService:
             try:
                 yield
             finally:
-                if shutdown_callback is not None:
-                    shutdown_callback()
-                await handler.aclose()
+                try:
+                    await handler.aclose()
+                finally:
+                    if shutdown_callback is not None:
+                        shutdown_callback()
 
         app = FastAPI(
             title="Gym Environment Service",

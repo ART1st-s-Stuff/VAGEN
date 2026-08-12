@@ -227,7 +227,16 @@ class NavigationHandler(BaseGymHandler):
 
         result_data = {"session_id": session_id}
         if seed is not None:
-            obs, info = await self._sessions[session_id].env.reset(seed)
+            try:
+                obs, info = await self._sessions[session_id].env.reset(seed)
+            except BaseException:
+                self._sessions.pop(session_id, None)
+                self._active[device] = max(0, self._active[device] - 1)
+                try:
+                    await env.close()
+                finally:
+                    self._env_slots.release()
+                raise
             result_data["obs"] = obs.get("obs_str", "")
             result_data["info"] = info
             images = self._extract_images(obs)

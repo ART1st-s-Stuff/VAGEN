@@ -119,54 +119,51 @@ class GymAgentLoop(AgentLoopBase):
         seed = kwargs["seed"]
         self.env_max_turns = kwargs.get("max_turns", None)
         env: GymImageEnv = env_cls(env_config=env_config)
+        try:
+            # Bootstrap: reset -> system_prompt (message order: system, then initial user)
+            init_obs, info = await env.reset(seed=seed)
+            sys_obs = await env.system_prompt()
 
-        # Bootstrap: reset -> system_prompt (message order: system, then initial user)
-        init_obs, info = await env.reset(seed=seed)
-        sys_obs = await env.system_prompt()
+            sys_msg={"role": "system", "content": convert_obs_to_content(sys_obs, **kwargs)}
+            sys_images=_normalize_images(sys_obs.get("multi_modal_input", {}).get("<image>", []) or [])
 
-       
-        
-        sys_msg={"role": "system", "content": convert_obs_to_content(sys_obs, **kwargs)}
-        sys_images=_normalize_images(sys_obs.get("multi_modal_input", {}).get("<image>", []) or [])
-        
-        cur_msg={"role": "user", "content": convert_obs_to_content(init_obs, **kwargs)}
-        cur_images=_normalize_images(init_obs.get("multi_modal_input", {}).get("<image>", []) or [])
+            cur_msg={"role": "user", "content": convert_obs_to_content(init_obs, **kwargs)}
+            cur_images=_normalize_images(init_obs.get("multi_modal_input", {}).get("<image>", []) or [])
 
-        per_turn_response_limit = int(kwargs.get("response_length_per_turn") or self.response_length)
-        per_turn_response_limit = min(per_turn_response_limit, self.response_length)
-        if per_turn_response_limit <= 0:
-            per_turn_response_limit = 1
+            per_turn_response_limit = int(kwargs.get("response_length_per_turn") or self.response_length)
+            per_turn_response_limit = min(per_turn_response_limit, self.response_length)
+            if per_turn_response_limit <= 0:
+                per_turn_response_limit = 1
 
-        agent_data = AgentData(
-            sys_msg=sys_msg,
-            sys_images=sys_images,
-            cur_msg=cur_msg,
-            cur_images=cur_images,
-            metrics=metrics,
-            request_id=request_id,
-            env=env,
-            response_limit=per_turn_response_limit,
-            env_name=kwargs["env_name"],
-            group_idx=kwargs["group_idx"],
-            traj_idx=kwargs["traj_idx"],
-        )
+            agent_data = AgentData(
+                sys_msg=sys_msg,
+                sys_images=sys_images,
+                cur_msg=cur_msg,
+                cur_images=cur_images,
+                metrics=metrics,
+                request_id=request_id,
+                env=env,
+                response_limit=per_turn_response_limit,
+                env_name=kwargs["env_name"],
+                group_idx=kwargs["group_idx"],
+                traj_idx=kwargs["traj_idx"],
+            )
 
-        # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
-        state = AgentState.PENDING
-        while state != AgentState.TERMINATED:
-            if state == AgentState.PENDING:
-                state = await self._handle_pending_state(agent_data, sampling_params)
-            elif state == AgentState.GENERATING:
-                state = await self._handle_generating_state(agent_data, sampling_params)
-            elif state == AgentState.INTERACTING:
-                state = await self._handle_env_state(agent_data, **kwargs)
-            else:
-                logger.error(f"Invalid state: {state}")
-                state = AgentState.TERMINATED
-
-        # Close env after loop
-        await env.close()
-        return agent_data.outputs
+            # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
+            state = AgentState.PENDING
+            while state != AgentState.TERMINATED:
+                if state == AgentState.PENDING:
+                    state = await self._handle_pending_state(agent_data, sampling_params)
+                elif state == AgentState.GENERATING:
+                    state = await self._handle_generating_state(agent_data, sampling_params)
+                elif state == AgentState.INTERACTING:
+                    state = await self._handle_env_state(agent_data, **kwargs)
+                else:
+                    logger.error(f"Invalid state: {state}")
+                    state = AgentState.TERMINATED
+            return agent_data.outputs
+        finally:
+            await env.close()
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode initial (system + first user) messages into prompt_ids."""
