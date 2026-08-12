@@ -30,6 +30,30 @@ class _Client:
 
 
 class RemoteSessionRoutingTest(unittest.TestCase):
+    def test_state_mutating_step_is_never_retried(self) -> None:
+        try:
+            from vagen.envs_remote import gym_image_env_client as module
+        except ImportError as exc:
+            self.skipTest(f"remote-client dependencies unavailable: {exc}")
+
+        env = module.GymImageEnvClient(
+            {
+                "base_urls": ["http://server-a"],
+                "retries": 3,
+                "backoff": 0.0,
+                "log_retries": False,
+            }
+        )
+        env._session_id = "session-on-a"
+        env._client = _Client([RuntimeError("ambiguous timeout"), _Response()])
+
+        async def run_call():
+            return await env._call("step", params={"action_str": "x"})
+
+        with self.assertRaisesRegex(RuntimeError, "Remote call failed"):
+            asyncio.run(run_call())
+        self.assertEqual(env._client.urls, ["http://server-a/call"])
+
     def test_session_bound_retries_stay_on_connecting_server(self) -> None:
         try:
             from vagen.envs_remote import gym_image_env_client as module
@@ -58,7 +82,7 @@ class RemoteSessionRoutingTest(unittest.TestCase):
                 ),
                 mock.patch.object(module.asyncio, "sleep", return_value=None),
             ):
-                return await env._call("step", params={"action_str": "x"})
+                return await env._call("system_prompt")
 
         data, images = asyncio.run(run_call())
         self.assertEqual(data, {"obs": "ok"})

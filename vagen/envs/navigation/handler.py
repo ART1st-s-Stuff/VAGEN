@@ -62,7 +62,9 @@ class NavigationHandler(BaseGymHandler):
         self._env_slots = asyncio.Semaphore(max_envs)
         # Per-GPU state
         self._active: Dict[int, int] = {d: 0 for d in self.devices}
-        self._cache: Dict[int, List[Tuple[str, NavigationEnv]]] = {d: [] for d in self.devices}
+        self._cache: Dict[int, List[Tuple[str, Dict[str, Any], NavigationEnv]]] = {
+            d: [] for d in self.devices
+        }
         # seed → scene index (lazy loaded)
         self._scene_index: Dict[str, List[str]] = {}
 
@@ -103,34 +105,47 @@ class NavigationHandler(BaseGymHandler):
     # GPU assignment
     # ------------------------------------------------------------------
 
-    def _pick_device(self, preferred_scene: Optional[str] = None) -> int:
-        """Pick GPU: prefer one with a matching cached scene, else fewest active."""
-        if preferred_scene:
+    def _pick_device(
+        self,
+        preferred_scene: Optional[str] = None,
+        env_config: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Prefer a device caching the same scene and exact environment config."""
+        if preferred_scene and env_config is not None:
             for device, pool in self._cache.items():
-                if any(scene == preferred_scene for scene, _ in pool):
+                if any(
+                    scene == preferred_scene and cached_config == env_config
+                    for scene, cached_config, _env in pool
+                ):
                     return device
         return min(self._active, key=self._active.get)
 
-    def _pop_cached(self, device: int, preferred_scene: Optional[str] = None) -> Optional[NavigationEnv]:
-        """Pop cached env from device, preferring same scene."""
+    def _pop_cached(
+        self,
+        device: int,
+        env_config: Dict[str, Any],
+        preferred_scene: Optional[str] = None,
+    ) -> Optional[NavigationEnv]:
+        """Pop only an environment created from the exact requested config."""
         pool = self._cache[device]
-        if not pool:
-            return None
         if preferred_scene:
-            for i, (scene, env) in enumerate(pool):
-                if scene == preferred_scene:
+            for i, (scene, cached_config, env) in enumerate(pool):
+                if scene == preferred_scene and cached_config == env_config:
                     pool.pop(i)
                     LOGGER.info(f"[NavHandler] Cache hit: scene={preferred_scene} GPU {device}")
                     return env
-        _, env = pool.pop()
-        LOGGER.info(f"[NavHandler] Cache reuse (diff scene) GPU {device}")
-        return env
+        for i, (_scene, cached_config, env) in enumerate(pool):
+            if cached_config == env_config:
+                pool.pop(i)
+                LOGGER.info(f"[NavHandler] Cache reuse (same config) GPU {device}")
+                return env
+        return None
 
     def _pop_any_cached(self) -> Optional[Tuple[int, NavigationEnv]]:
         """Pop any cached env from any device (to free a slot for new creation)."""
         for device, pool in self._cache.items():
             if pool:
-                _, env = pool.pop()
+                _, _config, env = pool.pop()
                 return device, env
         return None
 
@@ -154,7 +169,7 @@ class NavigationHandler(BaseGymHandler):
             preferred_scene = self._get_scene_for_seed(env_config.get("eval_set", "base"), seed)
 
         # Try cache on target device (env already alive, no new slot needed)
-        env = self._pop_cached(device, preferred_scene)
+        env = self._pop_cached(device, env_config, preferred_scene)
         if env is not None:
             LOGGER.info(f"[NavHandler] Reuse cached -> active ({self._stats_str()})")
             return env
@@ -184,7 +199,11 @@ class NavigationHandler(BaseGymHandler):
                 )
 
         env_config_with_gpu = {**env_config, "gpu_device": device}
-        env = NavigationEnv(env_config_with_gpu)
+        try:
+            env = NavigationEnv(env_config_with_gpu)
+        except BaseException:
+            self._env_slots.release()
+            raise
         LOGGER.info(f"[NavHandler] New env GPU {device} ({self._stats_str()})")
         return env
 
@@ -200,7 +219,7 @@ class NavigationHandler(BaseGymHandler):
         preferred_scene = None
         if seed is not None:
             preferred_scene = self._get_scene_for_seed(env_config.get("eval_set", "base"), seed)
-        device = self._pick_device(preferred_scene)
+        device = self._pick_device(preferred_scene, env_config)
         self._active[device] += 1
 
         try:
@@ -255,7 +274,12 @@ class NavigationHandler(BaseGymHandler):
 
         # Move from active to cached (env stays alive, no slot change)
         self._active[device] = max(0, self._active[device] - 1)
-        self._cache[device].append((scene, env))
+        cached_config = {
+            field: value
+            for field, value in env.config.items()
+            if field != "gpu_device"
+        }
+        self._cache[device].append((scene, cached_config, env))
 
         del self._sessions[ctx.session_id]
         LOGGER.info(
@@ -345,7 +369,7 @@ class NavigationHandler(BaseGymHandler):
 
     async def aclose(self):
         for device, entries in self._cache.items():
-            for _, env in entries:
+            for _, _config, env in entries:
                 try:
                     await env.close()
                 except Exception as e:

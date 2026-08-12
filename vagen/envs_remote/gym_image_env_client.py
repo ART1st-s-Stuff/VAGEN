@@ -321,8 +321,11 @@ class GymImageEnvClient(GymImageEnv):
             headers["X-API-Key"] = self.token
 
         last_exc: Optional[Exception] = None
+        # A timed-out state-mutating step may already have executed remotely.
+        # Retrying it would duplicate the action without an idempotency key.
+        max_retries = 0 if method == "step" else self.retries
 
-        for attempt in range(self.retries + 1):
+        for attempt in range(max_retries + 1):
             # Session IDs are local to the server selected by /connect. Retrying
             # /call on a different URL would address a nonexistent session.
             base_url = self.base_urls[self._current_url_index]
@@ -345,9 +348,9 @@ class GymImageEnvClient(GymImageEnv):
             except Exception as e:
                 last_exc = e
 
-                if attempt == self.retries:
+                if attempt == max_retries:
                     LOGGER.error(
-                        f"[Client] Call {method} failed after {self.retries} retries to {base_url}: {e}"
+                        f"[Client] Call {method} failed after {max_retries} retries to {base_url}: {e}"
                     )
                     raise RuntimeError(f"Remote call failed: {e}") from e
 
@@ -358,7 +361,7 @@ class GymImageEnvClient(GymImageEnv):
                     next_url = base_url
                     LOGGER.warning(
                         f"[Client] Call {method} retry (sticky={base_url}, next={next_url}, "
-                        f"attempt={attempt + 1}/{self.retries}, delay={delay:.2f}s, error={type(e).__name__})"
+                        f"attempt={attempt + 1}/{max_retries}, delay={delay:.2f}s, error={type(e).__name__})"
                     )
 
                 await asyncio.sleep(delay)
