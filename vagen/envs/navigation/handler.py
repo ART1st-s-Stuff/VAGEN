@@ -105,6 +105,15 @@ class NavigationHandler(BaseGymHandler):
     # GPU assignment
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _cache_config(env_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove server-owned fields before cache identity comparison."""
+        return {
+            field: value
+            for field, value in env_config.items()
+            if field != "gpu_device"
+        }
+
     def _pick_device(
         self,
         preferred_scene: Optional[str] = None,
@@ -112,9 +121,10 @@ class NavigationHandler(BaseGymHandler):
     ) -> int:
         """Prefer a device caching the same scene and exact environment config."""
         if preferred_scene and env_config is not None:
+            requested_config = self._cache_config(env_config)
             for device, pool in self._cache.items():
                 if any(
-                    scene == preferred_scene and cached_config == env_config
+                    scene == preferred_scene and cached_config == requested_config
                     for scene, cached_config, _env in pool
                 ):
                     return device
@@ -128,14 +138,15 @@ class NavigationHandler(BaseGymHandler):
     ) -> Optional[NavigationEnv]:
         """Pop only an environment created from the exact requested config."""
         pool = self._cache[device]
+        requested_config = self._cache_config(env_config)
         if preferred_scene:
             for i, (scene, cached_config, env) in enumerate(pool):
-                if scene == preferred_scene and cached_config == env_config:
+                if scene == preferred_scene and cached_config == requested_config:
                     pool.pop(i)
                     LOGGER.info(f"[NavHandler] Cache hit: scene={preferred_scene} GPU {device}")
                     return env
         for i, (_scene, cached_config, env) in enumerate(pool):
-            if cached_config == env_config:
+            if cached_config == requested_config:
                 pool.pop(i)
                 LOGGER.info(f"[NavHandler] Cache reuse (same config) GPU {device}")
                 return env
@@ -274,11 +285,7 @@ class NavigationHandler(BaseGymHandler):
 
         # Move from active to cached (env stays alive, no slot change)
         self._active[device] = max(0, self._active[device] - 1)
-        cached_config = {
-            field: value
-            for field, value in env.config.items()
-            if field != "gpu_device"
-        }
+        cached_config = self._cache_config(env.config)
         self._cache[device].append((scene, cached_config, env))
 
         del self._sessions[ctx.session_id]

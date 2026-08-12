@@ -92,6 +92,7 @@ class NavigationHandlerCleanupTest(unittest.TestCase):
                     "eval_set": "base",
                     "prompt_format": "nimloth",
                     "latent_token_count": 16,
+                    "gpu_device": 0,
                 },
                 "FloorPlan1",
             )
@@ -99,7 +100,11 @@ class NavigationHandlerCleanupTest(unittest.TestCase):
         self.assertIs(
             handler._pop_cached(
                 0,
-                {"eval_set": "base", "prompt_format": "free_think"},
+                {
+                    "eval_set": "base",
+                    "prompt_format": "free_think",
+                    "gpu_device": 0,
+                },
                 "FloorPlan1",
             ),
             env,
