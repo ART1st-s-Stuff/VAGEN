@@ -87,6 +87,13 @@ Hints:
 1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call move_forward, move_left and move_right multiple times.
 2. If you find yourself seems to be stuck, you can look_down to see if there's any object above or below you, you can also rotate to see if there's any object behind you."""
 
+_NIMLOTH_BASE_SYSTEM_PROMPT = """\
+You are a home robot and perform navigation tasks according to instructions.
+Actions you can take: move_forward, move_backward, move_right, move_left, turn_right, turn_left, look_up, look_down.
+Choose exactly one valid action for the current observation, execute one step,
+and then reassess from the next real observation. Never combine actions in one
+response. If you are stuck, use one look or turn action to inspect another view."""
+
 _EXAMPLES = [
     """\
 Example 1:
@@ -125,7 +132,13 @@ def system_prompt(
     Args:
         example_count: number of examples to include. 0 = no examples.
     """
-    parts = [_BASE_SYSTEM_PROMPT]
+    if format_name == "nimloth" and example_count != 0:
+        raise ValueError("prompt_format=nimloth requires example_count=0")
+    parts = [
+        _NIMLOTH_BASE_SYSTEM_PROMPT
+        if format_name == "nimloth"
+        else _BASE_SYSTEM_PROMPT
+    ]
     parts.append(
         get_format_instruction(
             format_name,

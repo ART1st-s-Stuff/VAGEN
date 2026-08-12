@@ -8,7 +8,7 @@ from vagen.envs.navigation.utils.nimloth_format import (
     latent_state_tokens,
 )
 from vagen.envs.navigation.utils.parse import parse_response
-from vagen.envs.navigation.utils.prompt import get_format_instruction
+from vagen.envs.navigation.utils.prompt import get_format_instruction, system_prompt
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +40,24 @@ class NimlothNavigationFormatTest(unittest.TestCase):
                 "look_down",
             ),
         )
+
+    def test_complete_system_prompt_has_only_single_action_guidance(self) -> None:
+        prompt = system_prompt(
+            "nimloth",
+            max_actions_per_step=1,
+            example_count=0,
+            latent_token_count=16,
+        )
+        self.assertIn("Choose exactly one valid action", prompt)
+        self.assertNotIn("take multiple actions", prompt)
+        self.assertNotIn("<action>", prompt)
+        with self.assertRaisesRegex(ValueError, "example_count=0"):
+            system_prompt(
+                "nimloth",
+                max_actions_per_step=1,
+                example_count=1,
+                latent_token_count=16,
+            )
 
     def test_prompt_expands_exact_k16_latent_block(self) -> None:
         prompt = get_format_instruction(
@@ -120,6 +138,9 @@ class NimlothNavigationFormatTest(unittest.TestCase):
         for response in (
             valid + "<|latent_state_7|>",
             valid + "<|latent_state_16|>",
+            valid + "<|latent_state_x|>",
+            valid + "<|action_(x)|>",
+            valid + "<prediction>old wm tail</prediction>",
             "<|latent_state_16|>" + valid,
         ):
             with self.subTest(response=response):

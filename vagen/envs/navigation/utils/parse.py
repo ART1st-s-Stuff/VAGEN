@@ -32,8 +32,9 @@ _PARSE_PATTERNS = {
     "eval_mode": r"<action>(.*?)</action>",  # lenient: first <action> anywhere
 }
 
-_NIMLOTH_ACTION_TOKEN_RE = re.compile(r"<\|action_\(\d+\)\|>")
-_NIMLOTH_LATENT_TOKEN_RE = re.compile(r"<\|latent_state(?:_\d+)?\|>")
+_NIMLOTH_ACTION_TOKEN_RE = re.compile(r"<\|action_\([^|>]*\)\|>")
+_NIMLOTH_LATENT_TOKEN_RE = re.compile(r"<\|latent_state(?:_[^|>]*)?\|>")
+_NIMLOTH_ENVELOPE_RE = re.compile(r"^\s*<think>(.*?)</think>(.*?)\s*$", re.DOTALL)
 
 
 def parse_response(
@@ -97,27 +98,21 @@ def _parse_nimloth_response(
     }
     if max_actions != 1:
         raise ValueError("prompt_format=nimloth requires exactly one action")
+    envelope = _NIMLOTH_ENVELOPE_RE.fullmatch(response)
+    if envelope is None or not envelope.group(1).strip():
+        return result
+    response_tail = envelope.group(2).strip()
     known_tokens = list(ACTION_TOKEN_TO_NAME)
-    found_tokens = _NIMLOTH_ACTION_TOKEN_RE.findall(response)
+    found_tokens = _NIMLOTH_ACTION_TOKEN_RE.findall(response_tail)
     if len(found_tokens) != 1 or found_tokens[0] not in ACTION_TOKEN_TO_NAME:
         return result
     expected_block = action_block(
         latent_token_count=latent_token_count,
         action=found_tokens[0],
     )
-    if response.count("<|action_start|>") != 1 or response.count("<|action_end|>") != 1:
+    if response_tail != expected_block:
         return result
-    if response.count(expected_block) != 1:
-        return result
-    block_start = response.index(expected_block)
-    before = response[:block_start]
-    after = response[block_start + len(expected_block) :]
-    control_tokens = ("<|action_start|>", "<|action_end|>", *known_tokens)
-    if (
-        _NIMLOTH_LATENT_TOKEN_RE.search(before)
-        or _NIMLOTH_LATENT_TOKEN_RE.search(after)
-        or any(token in before or token in after for token in control_tokens)
-    ):
+    if len(_NIMLOTH_LATENT_TOKEN_RE.findall(response_tail)) != latent_token_count:
         return result
     result["actions"] = [ACTION_TOKEN_TO_NAME[found_tokens[0]]]
     result["format_correct"] = True
