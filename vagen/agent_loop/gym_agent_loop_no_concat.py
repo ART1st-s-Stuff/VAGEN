@@ -25,6 +25,29 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_text_only_content, _normalize_images
 
+def _strip_trailing_generation_terminators(
+    token_ids: List[int],
+    tokenizer: Any,
+) -> List[int]:
+    """Strip only tokenizer-declared generation terminators for env text decoding."""
+
+    terminator_ids: set[int] = set()
+    for attribute in ("eos_token_id", "pad_token_id"):
+        value = getattr(tokenizer, attribute, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            terminator_ids.add(value)
+        elif isinstance(value, (list, tuple, set)):
+            terminator_ids.update(
+                item
+                for item in value
+                if isinstance(item, int) and not isinstance(item, bool)
+            )
+    trimmed = list(token_ids)
+    while trimmed and trimmed[-1] in terminator_ids:
+        trimmed.pop()
+    return trimmed
+
+
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -225,9 +248,14 @@ class GymAgentLoop(AgentLoopBase):
         if output.log_probs:
             agent_data.turn_response_logprobs = output.log_probs
 
-        # Cache assistant text and add assistant message (text-only)
+        # Keep raw generated IDs for PPO, but omit trailing model terminators
+        # from environment parsing while preserving Nimloth control tokens.
+        env_response_ids = _strip_trailing_generation_terminators(
+            agent_data.turn_response_ids,
+            self.tokenizer,
+        )
         assistant_message = await self.loop.run_in_executor(
-            None, lambda: self.tokenizer.decode(agent_data.turn_response_ids, skip_special_tokens=False)
+            None, lambda: self.tokenizer.decode(env_response_ids, skip_special_tokens=False)
         )
         agent_data.last_assistant_text = assistant_message
         return AgentState.INTERACTING
