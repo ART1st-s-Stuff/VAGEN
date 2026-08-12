@@ -25,7 +25,7 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
             temperature=0.0,
             top_p=1.0,
             gpu_memory_utilization=0.6,
-            env_timeout=500.0,
+            env_timeout=300.0,
         )
 
     def test_config_has_no_optimizer_actor_critic_or_fsdp(self) -> None:
@@ -42,6 +42,35 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
         self.assertFalse(config.joint_policy.enabled)
         for forbidden in ("optimizer", "fsdp", "critic"):
             self.assertNotIn(forbidden, text.lower())
+
+    def test_input_config_matches_current_navigation_profile(self) -> None:
+        try:
+            from vagen.standalone_one_turn_smoke import build_input
+        except ImportError as exc:
+            self.skipTest(f"smoke dependencies unavailable: {exc}")
+
+        config = build_input(self._args(Path("/output.json"))).non_tensor_batch[
+            "config"
+        ][0]
+        self.assertEqual(
+            config,
+            {
+                "base_urls": "http://127.0.0.1:8000",
+                "timeout": 300.0,
+                "retries": 0,
+                "eval_set": "base",
+                "prompt_format": "nimloth",
+                "latent_token_count": 16,
+                "max_actions_per_step": 1,
+                "action_sep": "|",
+                "example_count": 0,
+                "format_reward": 0.0,
+                "per_turn_format_reward": 0.0,
+                "success_reward": 10.0,
+                "success_threshold": 1.5,
+                "step_length": 0.5,
+            },
+        )
 
     def test_input_seed_is_json_serializable_python_int(self) -> None:
         try:
@@ -67,6 +96,28 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
 
         replica = RolloutReplicaRegistry.get("nimloth_vllm")
         self.assertEqual(replica.__name__, "NimlothVLLMReplica")
+
+    def test_ray_runtime_env_preserves_explicit_runtime_paths(self) -> None:
+        try:
+            from unittest.mock import patch
+            from vagen.standalone_one_turn_smoke import build_ray_runtime_env
+        except ImportError as exc:
+            self.skipTest(f"smoke dependencies unavailable: {exc}")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PATH": "/venv/bin:/usr/bin",
+                "PYTHONPATH": "/nimloth/src:/vagen:/verl",
+                "RAY_TMPDIR": "/tmp/does-not-propagate-as-env",
+            },
+            clear=True,
+        ):
+            actor_env = build_ray_runtime_env()["env_vars"]
+        self.assertEqual(actor_env["PATH"], "/venv/bin:/usr/bin")
+        self.assertEqual(actor_env["PYTHONPATH"], "/nimloth/src:/vagen:/verl")
+        self.assertEqual(actor_env["VLLM_USE_V1"], "1")
+        self.assertNotIn("RAY_TMPDIR", actor_env)
 
     def test_atomic_json_rejects_nonfinite_values(self) -> None:
         try:

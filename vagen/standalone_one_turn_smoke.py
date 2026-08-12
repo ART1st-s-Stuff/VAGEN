@@ -141,6 +141,13 @@ def build_input(args: argparse.Namespace) -> Any:
                     "prompt_format": "nimloth",
                     "latent_token_count": args.latent_token_count,
                     "max_actions_per_step": 1,
+                    "action_sep": "|",
+                    "example_count": 0,
+                    "format_reward": 0.0,
+                    "per_turn_format_reward": 0.0,
+                    "success_reward": 10.0,
+                    "success_threshold": 1.5,
+                    "step_length": 0.5,
                 }
             ],
             dtype=object,
@@ -260,21 +267,51 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+def build_ray_runtime_env() -> dict[str, Any]:
+    """Pin the environment required by standalone rollout actors."""
+
+    from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+
+    runtime_env = get_ppo_ray_runtime_env()
+    actor_env = runtime_env.setdefault("env_vars", {})
+    actor_env["VLLM_USE_V1"] = "1"
+    for name in (
+        "PATH",
+        "PYTHONPATH",
+        "HOME",
+        "HF_HOME",
+        "TRANSFORMERS_CACHE",
+        "TORCH_HOME",
+        "TMPDIR",
+        "VLLM_USE_FLASHINFER_SAMPLER",
+        "VLLM_WORKER_MULTIPROC_METHOD",
+        "VLLM_ALLREDUCE_USE_SYMM_MEM",
+        "NIMLOTH_LATENT_TOKEN_COUNT",
+    ):
+        if value := os.environ.get(name):
+            actor_env[name] = value
+    return runtime_env
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import ray
     import vagen.rollout.nimloth_vllm  # noqa: F401 -- registers replica
-    from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
     from verl.utils import hf_tokenizer
     from vagen.agent_loop.agent_loop_no_concat import AgentLoopManager
 
     if args.output.exists():
         raise FileExistsError(f"refusing to overwrite smoke output: {args.output}")
     os.environ.setdefault("VLLM_USE_V1", "1")
-    runtime_env = get_ppo_ray_runtime_env()
-    runtime_env.setdefault("env_vars", {})["VLLM_USE_V1"] = "1"
+    ray_init_kwargs: dict[str, Any] = {
+        "address": "local",
+        "runtime_env": build_ray_runtime_env(),
+        "include_dashboard": False,
+    }
+    if ray_temp_dir := os.environ.get("RAY_TMPDIR"):
+        ray_init_kwargs["_temp_dir"] = ray_temp_dir
     manager = None
     try:
-        ray.init(runtime_env=runtime_env)
+        ray.init(**ray_init_kwargs)
         config = build_config(args)
         manager = AgentLoopManager(config, worker_group=None)
         result = manager.generate_sequences(build_input(args))
