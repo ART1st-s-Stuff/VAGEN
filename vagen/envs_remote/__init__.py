@@ -30,9 +30,9 @@ Usage:
     app = GymService(MyEnvHandler()).build()
 """
 
-from .gym_image_env_client import GymImageEnvClient
-from .service import GymService
-from .handler import BaseGymHandler, HandlerResult, SessionNotFoundError
+from __future__ import annotations
+
+from typing import Any
 
 __all__ = [
     "GymImageEnvClient",
@@ -41,3 +41,23 @@ __all__ = [
     "HandlerResult",
     "SessionNotFoundError",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "GymImageEnvClient":
+        from .gym_image_env_client import GymImageEnvClient
+
+        return GymImageEnvClient
+    if name == "GymService":
+        from .service import GymService
+
+        return GymService
+    if name in {"BaseGymHandler", "HandlerResult", "SessionNotFoundError"}:
+        from .handler import BaseGymHandler, HandlerResult, SessionNotFoundError
+
+        return {
+            "BaseGymHandler": BaseGymHandler,
+            "HandlerResult": HandlerResult,
+            "SessionNotFoundError": SessionNotFoundError,
+        }[name]
+    raise AttributeError(name)
