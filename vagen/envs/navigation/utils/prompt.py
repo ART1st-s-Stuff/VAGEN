@@ -9,6 +9,8 @@ Structure:
 
 from __future__ import annotations
 
+from .nimloth_format import ACTION_NAMES, action_block
+
 
 # ---------------------------------------------------------------------------
 # Format instructions — the ONLY part that differs per format
@@ -40,10 +42,24 @@ def get_format_instruction(
     format_name: str,
     max_actions_per_step: int = 5,
     action_sep: str = "|",
+    latent_token_count: int = 1,
 ) -> str:
     """Return the format-specific instruction string."""
+    if format_name == "nimloth":
+        if max_actions_per_step != 1:
+            raise ValueError("prompt_format=nimloth requires exactly one action")
+        legend = ", ".join(
+            f"{index}={name}" for index, name in enumerate(ACTION_NAMES)
+        )
+        return (
+            "You must take exactly one action in each response. "
+            "Respond in this format:\n"
+            f"<think>...</think>{action_block(latent_token_count=latent_token_count)}\n"
+            f"where idx is one of: {legend}."
+        )
     if format_name not in _FORMAT_INSTRUCTIONS:
-        raise ValueError(f"Unknown format {format_name!r}. Available: {sorted(_FORMAT_INSTRUCTIONS)}")
+        available = sorted((*_FORMAT_INSTRUCTIONS, "nimloth"))
+        raise ValueError(f"Unknown format {format_name!r}. Available: {available}")
     action_example = f"action1{action_sep} action2{action_sep} ..."
     return (
         f"You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.\n"
@@ -102,6 +118,7 @@ def system_prompt(
     max_actions_per_step: int = 5,
     action_sep: str = "|",
     example_count: int = 1,
+    latent_token_count: int = 1,
 ) -> str:
     """Build the full system prompt: base + format instruction + optional examples.
 
@@ -109,7 +126,14 @@ def system_prompt(
         example_count: number of examples to include. 0 = no examples.
     """
     parts = [_BASE_SYSTEM_PROMPT]
-    parts.append(get_format_instruction(format_name, max_actions_per_step, action_sep))
+    parts.append(
+        get_format_instruction(
+            format_name,
+            max_actions_per_step,
+            action_sep,
+            latent_token_count,
+        )
+    )
     for ex in _EXAMPLES[:example_count]:
         parts.append(ex.format(sep=action_sep))
     return "\n\n".join(parts)

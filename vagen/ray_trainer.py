@@ -58,7 +58,12 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.rollout_skip import RolloutSkip
 from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
-from vagen.agent_loop.decision_ledger import summarize_decision_ledger_batch
+from vagen.agent_loop.decision_ledger import (
+    DECISION_LEDGER_SCHEMA,
+    parse_decision_ledger_enabled,
+    summarize_decision_ledger_batch,
+    validate_decision_ledger_reward_rows,
+)
 from vagen.joint_policy import parse_joint_policy_section
 from vagen.utils.image_dump_actor import ImageDumpActor
 from vagen.utils.upload_hugging_face import HFUploadManager
@@ -411,7 +416,9 @@ class RayPPOTrainer:
         self._log_image_enable = self._log_image_cfg.get("enable", False)
         self._max_pending_dumps = self._log_image_cfg.get("max_pending", 2)
 
-        ledger_enabled = bool(self.config.get("decision_ledger", {}).get("enabled", False))
+        ledger_enabled = parse_decision_ledger_enabled(
+            self.config.get("decision_ledger")
+        )
         self.joint_policy_config = parse_joint_policy_section(
             self.config.get("joint_policy", {"enabled": False})
         )
@@ -779,8 +786,7 @@ class RayPPOTrainer:
     def _validate_decision_ledger_batch(self, batch: DataProto, metrics: dict) -> None:
         """Validate no-concat execution facts before policy replay."""
 
-        ledger_config = self.config.get("decision_ledger", {})
-        if not bool(ledger_config.get("enabled", False)):
+        if not parse_decision_ledger_enabled(self.config.get("decision_ledger")):
             return
         ledgers = batch.non_tensor_batch.get("decision_ledger")
         if ledgers is None:
@@ -789,7 +795,17 @@ class RayPPOTrainer:
             summarize_decision_ledger_batch(
                 ledgers,
                 expected_batch_size=len(batch),
+                allowed_schemas={DECISION_LEDGER_SCHEMA},
             )
+        )
+        if "rm_scores" not in batch.batch:
+            raise ValueError(
+                "decision-ledger rollout is missing token-level rm_scores"
+            )
+        validate_decision_ledger_reward_rows(
+            ledgers,
+            reward_rows=batch.batch["rm_scores"].detach().cpu().tolist(),
+            response_masks=batch.batch["response_mask"].detach().cpu().tolist(),
         )
 
     def _validate(self):

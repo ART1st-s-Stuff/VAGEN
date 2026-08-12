@@ -11,7 +11,10 @@ from uuid import uuid4
 
 from PIL import Image
 from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, register
-from .decision_ledger import build_decision_ledger_from_env_info
+from .decision_ledger import (
+    build_decision_ledger_from_env_info,
+    parse_decision_ledger_enabled,
+)
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
@@ -93,8 +96,9 @@ class GymAgentLoop(AgentLoopBase):
         cls.apply_chat_template_kwargs = config.data.get("apply_chat_template_kwargs", {})
         cls.prompt_length = config.actor_rollout_ref.rollout.prompt_length
         cls.response_length = config.actor_rollout_ref.rollout.response_length
-        ledger_config = config.get("decision_ledger", {})
-        cls.decision_ledger_enabled = bool(ledger_config.get("enabled", False))
+        cls.decision_ledger_enabled = parse_decision_ledger_enabled(
+            config.get("decision_ledger")
+        )
         
 
     @rollout_trace_op
@@ -226,7 +230,7 @@ class GymAgentLoop(AgentLoopBase):
 
         # Cache assistant text and add assistant message (text-only)
         assistant_message = await self.loop.run_in_executor(
-            None, lambda: self.tokenizer.decode(agent_data.turn_response_ids, skip_special_tokens=True)
+            None, lambda: self.tokenizer.decode(agent_data.turn_response_ids, skip_special_tokens=False)
         )
         agent_data.last_assistant_text = assistant_message
         return AgentState.INTERACTING

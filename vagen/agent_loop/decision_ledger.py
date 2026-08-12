@@ -36,6 +36,25 @@ _GUIDED_REQUIRED_FIELDS = _BASE_REQUIRED_FIELDS | {
 }
 
 
+def parse_decision_ledger_enabled(raw: Mapping[str, Any] | None) -> bool:
+    """Parse the opt-in feature flag without truthiness coercion."""
+
+    if raw is None:
+        return False
+    if not isinstance(raw, Mapping):
+        raise ValueError("decision_ledger section must be a mapping")
+    allowed = {"enabled"}
+    unexpected = set(raw) - allowed
+    if unexpected:
+        raise ValueError(
+            f"decision_ledger section has unexpected fields: {sorted(unexpected)}"
+        )
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("decision_ledger.enabled must be explicit bool")
+    return enabled
+
+
 def build_decision_ledger(
     *,
     action_space: str,
@@ -278,10 +297,55 @@ def last_policy_token_index(response_mask: Sequence[int | bool]) -> int:
     return last_index
 
 
+def validate_decision_ledger_reward_rows(
+    ledgers: Sequence[Mapping[str, Any]],
+    *,
+    reward_rows: Sequence[Sequence[Real]],
+    response_masks: Sequence[Sequence[int | bool]],
+) -> None:
+    """Bind ledger reward facts to the exact token reward rows used by PPO."""
+
+    records = list(ledgers)
+    rewards = list(reward_rows)
+    masks = list(response_masks)
+    if len(records) != len(rewards) or len(records) != len(masks):
+        raise ValueError(
+            "decision ledger, reward row, and response mask batch sizes must match"
+        )
+    for row_index, (ledger, reward_row, response_mask) in enumerate(
+        zip(records, rewards, masks, strict=True)
+    ):
+        validate_decision_ledger(ledger)
+        row = [
+            _finite_real(value, f"reward_rows[{row_index}]")
+            for value in _plain_sequence(reward_row, f"reward_rows[{row_index}]")
+        ]
+        mask = _plain_sequence(response_mask, f"response_masks[{row_index}]")
+        if len(row) != len(mask):
+            raise ValueError(
+                f"decision ledger reward row {row_index} does not align with response mask"
+            )
+        anchor = last_policy_token_index(mask)
+        outside_reward = sum(abs(value) for index, value in enumerate(row) if index != anchor)
+        if outside_reward != 0.0:
+            raise ValueError(
+                "decision ledger reward is non-zero outside the last policy-owned "
+                f"token for row {row_index}"
+            )
+        actual_reward = sum(row)
+        expected_reward = float(ledger["env_turn_reward"])
+        if not math.isclose(actual_reward, expected_reward, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError(
+                "PPO reward row does not match ledger env_turn_reward: "
+                f"row={row_index}, actual={actual_reward}, expected={expected_reward}"
+            )
+
+
 def summarize_decision_ledger_batch(
     ledgers: Sequence[Mapping[str, Any]],
     *,
     expected_batch_size: int,
+    allowed_schemas: set[str] | frozenset[str] | None = None,
 ) -> dict[str, float]:
     """Validate a complete no-concat batch and return ownership diagnostics."""
 
@@ -302,6 +366,12 @@ def summarize_decision_ledger_batch(
     format_valid_turns = 0
 
     for ledger in records:
+        schema = ledger.get("schema") if isinstance(ledger, Mapping) else None
+        if allowed_schemas is not None and schema not in allowed_schemas:
+            raise ValueError(
+                f"decision ledger schema {schema!r} is not allowed at this "
+                "trainer boundary"
+            )
         validate_decision_ledger(ledger)
         action_count = len(ledger["executed_action_ids"])
         total_actions += action_count
@@ -360,6 +430,16 @@ def _base_ledger(
     }
 
 
+def _finite_real(value: Any, field: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"{field} must contain finite real values")
+    return float(value)
+
+
 def _plain_sequence(value: Any, field: str) -> list[Any]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise ValueError(f"{field} must be a sequence")
@@ -373,6 +453,8 @@ __all__ = [
     "build_decision_ledger_from_env_info",
     "build_guided_decision_ledger",
     "last_policy_token_index",
+    "parse_decision_ledger_enabled",
     "summarize_decision_ledger_batch",
     "validate_decision_ledger",
+    "validate_decision_ledger_reward_rows",
 ]

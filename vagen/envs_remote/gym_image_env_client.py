@@ -104,7 +104,10 @@ class GymImageEnvClient(GymImageEnv):
         # HTTP client
         self._client: Optional[httpx.AsyncClient] = None
         self._session_id: Optional[str] = None
-        self._current_url_index: int = 0
+        # Session-bound calls stay on the server that returned the session ID.
+        self._current_url_index: int = (
+            random.randrange(len(self.base_urls)) if self.base_urls else 0
+        )
 
         # Remove client-specific keys before passing to remote
         self._remote_env_config = {
@@ -281,7 +284,7 @@ class GymImageEnvClient(GymImageEnv):
             return self._current_url_index
 
         offset = attempt - self.failover_after_failures
-        return offset % len(self.base_urls)
+        return (self._current_url_index + offset) % len(self.base_urls)
 
     async def _call(
         self,
@@ -320,8 +323,9 @@ class GymImageEnvClient(GymImageEnv):
         last_exc: Optional[Exception] = None
 
         for attempt in range(self.retries + 1):
-            url_index = self._pick_url_index(attempt)
-            base_url = self.base_urls[url_index]
+            # Session IDs are local to the server selected by /connect. Retrying
+            # /call on a different URL would address a nonexistent session.
+            base_url = self.base_urls[self._current_url_index]
             url = f"{base_url}/call"
 
             try:
@@ -335,11 +339,6 @@ class GymImageEnvClient(GymImageEnv):
                 # Decode response
                 content_type = response.headers.get("content-type", "")
                 data, result_images = decode_multipart(content_type, response.content)
-
-                # Update current URL on success
-                if url_index != self._current_url_index:
-                    LOGGER.info(f"[Client] Switched to {base_url}")
-                    self._current_url_index = url_index
 
                 return data, result_images if result_images else None
 
@@ -356,10 +355,9 @@ class GymImageEnvClient(GymImageEnv):
                 delay = self.backoff * (2**attempt) * jitter
 
                 if self.log_retries:
-                    next_url_index = self._pick_url_index(attempt + 1)
-                    next_url = self.base_urls[next_url_index]
+                    next_url = base_url
                     LOGGER.warning(
-                        f"[Client] Call {method} retry (current={base_url}, next={next_url}, "
+                        f"[Client] Call {method} retry (sticky={base_url}, next={next_url}, "
                         f"attempt={attempt + 1}/{self.retries}, delay={delay:.2f}s, error={type(e).__name__})"
                     )
 

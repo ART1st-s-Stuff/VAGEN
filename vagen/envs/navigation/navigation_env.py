@@ -38,7 +38,8 @@ class NavigationEnvConfig:
     per_turn_format_reward: float = 0.01  # per-step bonus if this turn's format is correct
     success_reward: float = 1.0         # reaching the goal
     gpu_device: int = 0
-    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode
+    prompt_format: str = "free_think"   # free_think | wm | no_think | eval_mode | nimloth
+    latent_token_count: int = 1        # Nimloth inject slots; ignored by text formats
     example_count: int = 0             # number of examples in system prompt (0 = none)
     success_threshold: float = 1.0
     step_length: float = 0.3
@@ -84,6 +85,15 @@ class NavigationEnv(GymImageEnv):
         valid = {f.name for f in fields(NavigationEnvConfig)}
         self.cfg = NavigationEnvConfig(**{k: v for k, v in env_config.items() if k in valid})
         assert self.cfg.eval_set in VALID_EVAL_SETS
+        if self.cfg.prompt_format == "nimloth":
+            if self.cfg.max_actions_per_step != 1:
+                raise ValueError("prompt_format=nimloth requires max_actions_per_step=1")
+            if (
+                isinstance(self.cfg.latent_token_count, bool)
+                or not isinstance(self.cfg.latent_token_count, int)
+                or self.cfg.latent_token_count < 1
+            ):
+                raise ValueError("latent_token_count must be a positive int")
         self._controller = None
         self._dataset = self._load_dataset()
         self._episode_data: Optional[Dict] = None
@@ -138,8 +148,12 @@ class NavigationEnv(GymImageEnv):
         ph = self.cfg.image_placeholder
         img = Image.fromarray(self._controller.last_event.frame.astype(np.uint8))
         if init:
-            fmt = get_format_instruction(self.cfg.prompt_format,
-                                         self.cfg.max_actions_per_step, self.cfg.action_sep)
+            fmt = get_format_instruction(
+                self.cfg.prompt_format,
+                self.cfg.max_actions_per_step,
+                self.cfg.action_sep,
+                self.cfg.latent_token_count,
+            )
             obs_str = init_observation_template(observation=ph, instruction=self._instruction) + "\n" + fmt
         else:
             obs_str = action_template(
@@ -186,6 +200,7 @@ class NavigationEnv(GymImageEnv):
             prompt_format=self.cfg.prompt_format,
             action_sep=self.cfg.action_sep,
             max_actions=self.cfg.max_actions_per_step,
+            latent_token_count=self.cfg.latent_token_count,
         )
         actions = parsed["actions"]
         prev_pos = self._agent_pos()
@@ -271,6 +286,7 @@ class NavigationEnv(GymImageEnv):
             max_actions_per_step=self.cfg.max_actions_per_step,
             action_sep=self.cfg.action_sep,
             example_count=self.cfg.example_count,
+            latent_token_count=self.cfg.latent_token_count,
         )}
 
     async def reset(self, seed: int) -> Tuple[Dict[str, Any], Dict[str, Any]]:

@@ -13,6 +13,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
+from .nimloth_format import ACTION_TOKEN_TO_NAME, action_block
+
 
 # ---------------------------------------------------------------------------
 # Parse patterns
@@ -30,12 +32,15 @@ _PARSE_PATTERNS = {
     "eval_mode": r"<action>(.*?)</action>",  # lenient: first <action> anywhere
 }
 
+_NIMLOTH_ACTION_TOKEN_RE = re.compile(r"<\|action_\(\d+\)\|>")
+
 
 def parse_response(
     response: str,
     prompt_format: str = "free_think",
     action_sep: str = "|",
     max_actions: int = 5,
+    latent_token_count: int = 1,
 ) -> Dict[str, Any]:
     """Parse an LLM response and extract actions.
 
@@ -44,6 +49,13 @@ def parse_response(
         and optional think/observation/prediction text.
     """
     result: Dict[str, Any] = {"llm_raw_response": response, "actions": [], "format_correct": False}
+
+    if prompt_format == "nimloth":
+        return _parse_nimloth_response(
+            response,
+            max_actions=max_actions,
+            latent_token_count=latent_token_count,
+        )
 
     pattern = _PARSE_PATTERNS.get(prompt_format)
     if pattern is None:
@@ -68,6 +80,47 @@ def parse_response(
     result["format_correct"] = True
     actions = [a.strip().lower() for a in action_text.split(action_sep) if a.strip()][:max_actions]
     result["actions"] = actions
+    return result
+
+
+def _parse_nimloth_response(
+    response: str,
+    *,
+    max_actions: int,
+    latent_token_count: int,
+) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "llm_raw_response": response,
+        "actions": [],
+        "format_correct": False,
+    }
+    if max_actions != 1:
+        raise ValueError("prompt_format=nimloth requires exactly one action")
+    known_tokens = list(ACTION_TOKEN_TO_NAME)
+    found_tokens = _NIMLOTH_ACTION_TOKEN_RE.findall(response)
+    if len(found_tokens) != 1 or found_tokens[0] not in ACTION_TOKEN_TO_NAME:
+        return result
+    expected_block = action_block(
+        latent_token_count=latent_token_count,
+        action=found_tokens[0],
+    )
+    if response.count("<|action_start|>") != 1 or response.count("<|action_end|>") != 1:
+        return result
+    if response.count(expected_block) != 1:
+        return result
+    block_start = response.index(expected_block)
+    before = response[:block_start]
+    after = response[block_start + len(expected_block) :]
+    control_tokens = (
+        "<|latent_state|>",
+        "<|action_start|>",
+        "<|action_end|>",
+        *known_tokens,
+    )
+    if any(token in before or token in after for token in control_tokens):
+        return result
+    result["actions"] = [ACTION_TOKEN_TO_NAME[found_tokens[0]]]
+    result["format_correct"] = True
     return result
 
 
