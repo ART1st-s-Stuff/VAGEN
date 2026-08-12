@@ -39,7 +39,7 @@ def _record(**overrides):
         "prior_token_id": 101,
         "prior_action_id": 0,
         "prior_response_idx": 12,
-        "behavior_llm_prior_logprob": -0.4,
+        "behavior_llm_prior_logprob": math.log(0.5),
         "prior_logits": [0.0, 0.0],
         "frozen_all_action_q": [0.0, math.log(3.0)],
         "guided_action_id": 1,
@@ -161,9 +161,9 @@ class GuidedPolicyBehaviorRecordTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prior token id"):
             _record(prior_token_id=999)
 
-    def test_rejects_positive_llm_logprob(self) -> None:
-        with self.assertRaisesRegex(ValueError, "must not be positive"):
-            _record(behavior_llm_prior_logprob=0.1)
+    def test_rejects_llm_logprob_unrelated_to_prior_action(self) -> None:
+        with self.assertRaisesRegex(ValueError, "LLM prior log-prob"):
+            _record(behavior_llm_prior_logprob=-123.0)
 
     def test_logprob_comparison_uses_absolute_tolerance(self) -> None:
         config = _config(alpha=1.0, beta=1.0)
@@ -175,6 +175,7 @@ class GuidedPolicyBehaviorRecordTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "behavior guided log-prob"):
             _record(
                 prior_logits=[-1e9, 0.0],
+                behavior_llm_prior_logprob=-1e9,
                 frozen_all_action_q=[0.0, 0.0],
                 guided_action_id=0,
                 behavior_guided_logprob=guided[0] + 999.0,

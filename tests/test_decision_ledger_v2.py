@@ -38,7 +38,7 @@ def _behavior():
         prior_token_id=101,
         prior_action_id=0,
         prior_response_idx=12,
-        behavior_llm_prior_logprob=-0.4,
+        behavior_llm_prior_logprob=math.log(0.5),
         prior_logits=[0.0, 0.0],
         frozen_all_action_q=[0.0, math.log(3.0)],
         guided_action_id=1,

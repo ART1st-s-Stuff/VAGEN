@@ -199,8 +199,17 @@ class GuidedPolicyBehaviorRecord:
             behavior_llm_prior_logprob,
             "behavior_llm_prior_logprob",
         )
-        if llm_logprob > 0.0:
-            raise ValueError("behavior_llm_prior_logprob must not be positive")
+        expected_llm_logprob = prior_log_probs[prior_action_id]
+        if not math.isclose(
+            llm_logprob,
+            expected_llm_logprob,
+            rel_tol=0.0,
+            abs_tol=_logprob_tolerance(config.score_dtype, expected_llm_logprob),
+        ):
+            raise ValueError(
+                "behavior LLM prior log-prob does not match prior logits and action: "
+                f"recorded={llm_logprob}, expected={expected_llm_logprob}"
+            )
         guided_logprob = _finite_float(
             behavior_guided_logprob,
             "behavior_guided_logprob",
