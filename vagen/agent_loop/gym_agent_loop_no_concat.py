@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import re
 from enum import Enum
@@ -24,6 +25,80 @@ import importlib
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 from .gym_agent_loop import convert_obs_to_content, extract_success, _flatten_text_only_content, _normalize_images
+
+def _nimloth_turn_generation_spec(
+    tokenizer: Any,
+    *,
+    latent_token_count: int,
+    max_response_tokens: int,
+) -> Any:
+    """Build Nimloth's shared real-CoT/K-slot/action generation contract."""
+
+    from nimloth.backbone.qwen25vl.policy import reasoning_forbidden_token_ids
+    from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
+    from nimloth.latent import LatentActionTokens, latent_state_tokens, special_token_ids
+
+    tokens = LatentActionTokens()
+    token_id_map = special_token_ids(
+        tokenizer,
+        latent_token_count=latent_token_count,
+    )
+    close_ids = tuple(
+        int(value) for value in tokenizer.encode("</think>", add_special_tokens=False)
+    )
+    injected_ids = tuple(
+        token_id_map[token]
+        for token in (
+            *latent_state_tokens(latent_token_count, tokens),
+            tokens.action_start,
+        )
+    )
+    action_token_ids = tuple(token_id_map[token] for token in tokens.action_tokens)
+    protocol_overhead = len(close_ids) + len(injected_ids) + 2
+    if max_response_tokens <= protocol_overhead:
+        raise ValueError(
+            "response limit is too small for Nimloth turn protocol: "
+            f"{max_response_tokens} <= {protocol_overhead}"
+        )
+    return TurnGenerationSpec(
+        close_text="</think>",
+        close_token_ids=close_ids,
+        injected_token_ids=injected_ids,
+        action_token_ids=action_token_ids,
+        action_end_token_id=token_id_map[tokens.action_end],
+        forbidden_reasoning_token_ids=reasoning_forbidden_token_ids(
+            tokenizer,
+            token_id_map,
+            close_token_ids=close_ids,
+        ),
+        max_reasoning_tokens=max_response_tokens - protocol_overhead,
+    )
+
+
+def _nimloth_response_mask(response_ids: List[int], spec: Any) -> List[int]:
+    """Mark sampled CoT/action tokens while excluding forced protocol tokens."""
+
+    from nimloth.backbone.qwen25vl.turn_generation import find_token_subsequence
+
+    injected_start = find_token_subsequence(response_ids, spec.injected_token_ids)
+    if injected_start is None:
+        raise RuntimeError("Nimloth turn response did not inject latent queries")
+    injected_end = injected_start + len(spec.injected_token_ids)
+    if tuple(response_ids[injected_start:injected_end]) != spec.injected_token_ids:
+        raise RuntimeError("Nimloth turn response has an invalid injected prefix")
+    if len(response_ids) != injected_end + 2:
+        raise RuntimeError("Nimloth turn response has an invalid action suffix length")
+    if response_ids[injected_end] not in spec.action_token_ids:
+        raise RuntimeError("Nimloth turn response has an invalid action token")
+    if response_ids[injected_end + 1] != spec.action_end_token_id:
+        raise RuntimeError("Nimloth turn response did not end at action_end")
+
+    mask = [0] * len(response_ids)
+    for index in range(min(injected_start, spec.max_reasoning_tokens)):
+        mask[index] = 1
+    mask[injected_end] = 1
+    return mask
+
 
 def _strip_trailing_generation_terminators(
     token_ids: List[int],
@@ -146,6 +221,17 @@ class GymAgentLoop(AgentLoopBase):
             # Bootstrap: reset -> system_prompt (message order: system, then initial user)
             init_obs, info = await env.reset(seed=seed)
             sys_obs = await env.system_prompt()
+            prompt_format = env_config.get("prompt_format", "free_think")
+            latent_token_count = env_config.get("latent_token_count")
+            if prompt_format == "nimloth" and (
+                isinstance(latent_token_count, bool)
+                or not isinstance(latent_token_count, int)
+                or latent_token_count < 1
+            ):
+                raise ValueError(
+                    "prompt_format=nimloth requires explicit positive "
+                    "latent_token_count"
+                )
 
             sys_msg={"role": "system", "content": convert_obs_to_content(sys_obs, **kwargs)}
             sys_images=_normalize_images(sys_obs.get("multi_modal_input", {}).get("<image>", []) or [])
@@ -172,6 +258,14 @@ class GymAgentLoop(AgentLoopBase):
                 traj_idx=kwargs["traj_idx"],
             )
 
+            if prompt_format == "nimloth":
+                # The opening tag is a prompt prefix; generated IDs begin with the
+                # model's real thought and close it before forcing K slots/action.
+                agent_data.cur_msg = {
+                    "role": "user",
+                    "content": cur_msg["content"],
+                }
+
             # State machine: always GENERATE -> INTERACT, and decide termination inside INTERACT
             state = AgentState.PENDING
             while state != AgentState.TERMINATED:
@@ -191,14 +285,27 @@ class GymAgentLoop(AgentLoopBase):
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: Dict[str, Any]) -> AgentState:
         """Encode initial (system + first user) messages into prompt_ids."""
         image_data = agent_data.sys_images + agent_data.cur_images
+        prompt_format = agent_data.env.config.get("prompt_format", "free_think")
+        messages = [agent_data.sys_msg, agent_data.cur_msg]
+        chat_template_args = {
+            "add_generation_prompt": True,
+            **self.apply_chat_template_kwargs,
+        }
+        if prompt_format == "nimloth":
+            messages.append({"role": "assistant", "content": "<think>"})
+            chat_template_args.update(
+                {
+                    "add_generation_prompt": False,
+                    "continue_final_message": True,
+                }
+            )
         if self.processor is not None:
             raw_prompt = await self.loop.run_in_executor(
                 None,
                 lambda: self.processor.apply_chat_template(
-                    [agent_data.sys_msg, agent_data.cur_msg],
-                    add_generation_prompt=True,
+                    messages,
                     tokenize=False,
-                    **self.apply_chat_template_kwargs,
+                    **chat_template_args,
                 ),
             )
             model_inputs = self.processor(text=[raw_prompt], images=image_data, return_tensors="pt")
@@ -206,15 +313,14 @@ class GymAgentLoop(AgentLoopBase):
         else:
             if image_data:
                 raise ValueError("Environment returned images but `processor` is None.")
-            flat_messages = [_flatten_text_only_content(m) for m in [agent_data.sys_msg, agent_data.cur_msg]]
+            flat_messages = [_flatten_text_only_content(m) for m in messages]
             agent_data.turn_prompt_ids = await self.loop.run_in_executor(
                 None,
                 lambda: self.tokenizer.apply_chat_template(
                     flat_messages,
-                    add_generation_prompt=True,
                     tokenize=True,
                     return_dict=False,
-                    **self.apply_chat_template_kwargs,
+                    **chat_template_args,
                 ),
             )
         
@@ -232,6 +338,23 @@ class GymAgentLoop(AgentLoopBase):
         max_new_tokens = min(max_new_tokens, agent_data.response_limit)
         sampling_params_for_turn["max_new_tokens"] = max_new_tokens
         image_data = agent_data.sys_images + agent_data.cur_images
+        prompt_format = agent_data.env.config.get("prompt_format", "free_think")
+        nimloth_spec = None
+        if prompt_format == "nimloth":
+            nimloth_spec = _nimloth_turn_generation_spec(
+                self.tokenizer,
+                latent_token_count=agent_data.env.config["latent_token_count"],
+                max_response_tokens=max_new_tokens,
+            )
+            sampling_params_for_turn.update(
+                {
+                    "max_new_tokens": nimloth_spec.max_output_tokens,
+                    "logprobs": len(nimloth_spec.action_token_ids),
+                    "ignore_eos": True,
+                    "stop_token_ids": [nimloth_spec.action_end_token_id],
+                    "extra_args": nimloth_spec.to_extra_args(),
+                }
+            )
 
         with simple_timer("generate_sequences", agent_data.metrics):
             output = await self.server_manager.generate(
@@ -243,8 +366,29 @@ class GymAgentLoop(AgentLoopBase):
 
 
         agent_data.turn_response_ids = output.token_ids
-        agent_data.turn_response_mask = [1] * len(output.token_ids)
+        agent_data.turn_response_mask = (
+            _nimloth_response_mask(output.token_ids, nimloth_spec)
+            if nimloth_spec is not None
+            else [1] * len(output.token_ids)
+        )
         agent_data.turn_prompt_ids += agent_data.turn_response_ids
+        if nimloth_spec is not None:
+            if output.log_probs is None or len(output.log_probs) != len(output.token_ids):
+                raise RuntimeError(
+                    "Nimloth turn requires one rollout log-prob per response token"
+                )
+            if any(
+                not math.isfinite(float(value))
+                for value, sampled in zip(
+                    output.log_probs,
+                    agent_data.turn_response_mask,
+                    strict=True,
+                )
+                if sampled
+            ):
+                raise RuntimeError(
+                    "Nimloth sampled response token has non-finite log-probability"
+                )
         if output.log_probs:
             agent_data.turn_response_logprobs = output.log_probs
 
@@ -257,7 +401,11 @@ class GymAgentLoop(AgentLoopBase):
         assistant_message = await self.loop.run_in_executor(
             None, lambda: self.tokenizer.decode(env_response_ids, skip_special_tokens=False)
         )
-        agent_data.last_assistant_text = assistant_message
+        agent_data.last_assistant_text = (
+            f"<think>{assistant_message}"
+            if nimloth_spec is not None
+            else assistant_message
+        )
         return AgentState.INTERACTING
 
     async def _handle_env_state(self, agent_data: AgentData, **kwargs) -> AgentState:
