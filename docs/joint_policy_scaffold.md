@@ -116,11 +116,10 @@ Each turn then carries one versioned `decision_ledger` with:
 - action-format validity.
 
 M1 has no action-policy sampler, so every
-`decision_is_policy_sampled` entry is false. System-injected fallback tokens are
-also excluded from the LLM response loss mask; a filled zero must never pretend
-to be a behavior log-probability. Turn reward remains anchored to the last
-policy-owned response token, so excluding an injected suffix does not erase the
-environment reward.
+`decision_is_policy_sampled` entry is false. Upstream VAGEN passes the sampled
+assistant text directly to the environment and has no latent fallback adapter.
+Turn reward is anchored to the last policy-owned response token; a turn with no
+policy-owned token fails closed rather than assigning reward to padding.
 
 The ledger follows this path without lossy first-action conversion:
 
@@ -131,8 +130,9 @@ GymAgentLoop(no-concat)
   -> RayPPOTrainer strict validation and coverage metrics
 ```
 
-The existing `action_label` and `step_reward` fields remain available for the
-current predictor experiment. They are not the joint-policy contract.
+No fork-specific predictor supervision is restored on this upstream baseline.
+The ledger records execution facts only; it is not a world-model training
+interface.
 
 ### M1 invariants
 
@@ -143,7 +143,8 @@ current predictor experiment. They are not the joint-policy contract.
 - A terminal turn and a truncated turn cannot both be true.
 - Navigation and remote-client step results preserve strict reward, done,
   format, action-space, and fallback-source types rather than coercing them.
-- The latent fallback adapter only runs for `prompt_format=latent_plan`.
+- The upstream assistant action text reaches the environment unchanged; no
+  fork-specific `latent_plan` fallback is installed.
 - When the opt-in ledger is enabled, missing or malformed ledgers stop training
   before old log-probability computation.
 - M1 adds no trainable state and therefore changes no checkpoint ownership.
