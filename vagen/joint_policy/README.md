@@ -8,7 +8,7 @@ Current scope:
 - `contract.py` defines the provisional frozen-Q guided policy configuration,
   versioned behavior record, contract identity, and numerical audit reference;
 - `torch_policy.py` implements the tensor distribution while always detaching Q
-  and requiring an explicit decision for prior-to-LLM gradients;
+  and preserving the confirmed prior-to-LLM actor gradient;
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities.
 

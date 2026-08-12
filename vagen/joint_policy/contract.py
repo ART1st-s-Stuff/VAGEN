@@ -55,16 +55,14 @@ class FrozenQGuidedPolicyConfig:
         prior_temperature = _finite_float(
             raw["prior_temperature"], "prior_temperature"
         )
-        if alpha < 0.0:
-            raise ValueError("joint policy alpha must be non-negative")
+        if alpha <= 0.0:
+            raise ValueError("joint policy alpha must be positive")
         if beta < 0.0:
             raise ValueError("joint policy beta must be non-negative")
-        if alpha == 0.0 and beta == 0.0:
-            raise ValueError("joint policy alpha and beta cannot both be zero")
         if prior_temperature <= 0.0:
             raise ValueError("joint policy prior_temperature must be positive")
-        if not isinstance(raw["backprop_to_llm"], bool):
-            raise ValueError("joint policy backprop_to_llm must be explicit bool")
+        if raw["backprop_to_llm"] is not True:
+            raise ValueError("joint policy backprop_to_llm must be true")
         if raw["score_dtype"] not in {"float32", "bfloat16", "float64"}:
             raise ValueError(
                 "joint policy score_dtype must be float32, bfloat16, or float64"

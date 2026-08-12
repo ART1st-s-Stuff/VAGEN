@@ -13,14 +13,14 @@ from vagen.joint_policy.contract import guided_log_probs_reference
 from vagen.joint_policy.torch_policy import frozen_q_guided_log_probs
 
 
-def _config(backprop_to_llm: bool, score_dtype: str = "float64"):
+def _config(score_dtype: str = "float64"):
     return FrozenQGuidedPolicyConfig.from_mapping(
         {
             "implementation": "frozen_q_guided_v1",
             "alpha": 1.0,
             "beta": 0.5,
             "prior_temperature": 0.7,
-            "backprop_to_llm": backprop_to_llm,
+            "backprop_to_llm": True,
             "score_dtype": score_dtype,
         }
     )
@@ -31,7 +31,7 @@ class FrozenQGuidedTorchTest(unittest.TestCase):
     def test_matches_reference_and_detaches_q(self) -> None:
         prior = torch.tensor([[0.2, -0.3]], dtype=torch.float64, requires_grad=True)
         q_values = torch.tensor([[1.5, -0.5]], dtype=torch.float64, requires_grad=True)
-        config = _config(True)
+        config = _config()
         output = frozen_q_guided_log_probs(prior, q_values, config)
         expected_prior, expected_guided = guided_log_probs_reference(
             prior.detach().tolist()[0],
@@ -52,15 +52,24 @@ class FrozenQGuidedTorchTest(unittest.TestCase):
         self.assertGreater(float(prior.grad.abs().sum()), 0.0)
         self.assertIsNone(q_values.grad)
 
-    def test_detached_prior_has_no_guided_gradient(self) -> None:
-        prior = torch.tensor([[0.2, -0.3]], requires_grad=True)
-        q_values = torch.tensor([[1.5, -0.5]], requires_grad=True)
-        output = frozen_q_guided_log_probs(
-            prior,
-            q_values,
-            _config(False, score_dtype="float32"),
+    def test_prior_gradient_exists_for_small_positive_alpha(self) -> None:
+        prior = torch.tensor([[0.2, -0.3]], dtype=torch.float64, requires_grad=True)
+        q_values = torch.tensor([[1.5, -0.5]], dtype=torch.float64, requires_grad=True)
+        config = FrozenQGuidedPolicyConfig.from_mapping(
+            {
+                "implementation": "frozen_q_guided_v1",
+                "alpha": 1e-4,
+                "beta": 1.0,
+                "prior_temperature": 1.0,
+                "backprop_to_llm": True,
+                "score_dtype": "float64",
+            }
         )
-        self.assertFalse(output["guided_log_probs"].requires_grad)
+        frozen_q_guided_log_probs(prior, q_values, config)[
+            "guided_log_probs"
+        ][0, 0].backward()
+        self.assertGreater(float(prior.grad.abs().sum()), 0.0)
+        self.assertIsNone(q_values.grad)
 
     def test_rejects_overflow_after_scaling(self) -> None:
         prior = torch.tensor([[1e30, -1e30]], dtype=torch.float32)

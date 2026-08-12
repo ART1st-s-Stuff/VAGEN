@@ -56,7 +56,8 @@ trainer:
 decision_ledger:
   enabled: false
 
-# Scheme B remains disabled until every probability and gradient semantic is explicit.
+# Scheme B remains disabled until Q ownership, rollout, and replay are connected.
+# When enabled, backprop_to_llm must be true; false has no trainable actor path.
 joint_policy:
   enabled: false
   implementation: null

@@ -65,23 +65,29 @@ class FrozenQGuidedPolicyConfigTest(unittest.TestCase):
     def test_disabled_section_does_not_invent_policy_defaults(self) -> None:
         self.assertIsNone(parse_joint_policy_section({"enabled": False}))
 
-    def test_enabled_section_requires_explicit_gradient_choice(self) -> None:
-        with self.assertRaisesRegex(ValueError, "backprop_to_llm"):
-            parse_joint_policy_section(
-                {
-                    "enabled": True,
-                    "implementation": "frozen_q_guided_v1",
-                    "alpha": 1.0,
-                    "beta": 0.25,
-                    "prior_temperature": 1.0,
-                    "backprop_to_llm": None,
-                    "score_dtype": "float64",
-                }
-            )
+    def test_enabled_section_requires_llm_gradient_path(self) -> None:
+        for invalid_choice in (None, False):
+            with self.subTest(backprop_to_llm=invalid_choice):
+                with self.assertRaisesRegex(ValueError, "must be true"):
+                    parse_joint_policy_section(
+                        {
+                            "enabled": True,
+                            "implementation": "frozen_q_guided_v1",
+                            "alpha": 1.0,
+                            "beta": 0.25,
+                            "prior_temperature": 1.0,
+                            "backprop_to_llm": invalid_choice,
+                            "score_dtype": "float64",
+                        }
+                    )
 
-    def test_contract_id_binds_gradient_action_table_and_tokens(self) -> None:
+    def test_requires_positive_prior_weight_for_llm_gradient(self) -> None:
+        with self.assertRaisesRegex(ValueError, "alpha must be positive"):
+            _config(alpha=0.0, beta=1.0)
+
+    def test_contract_id_binds_config_action_table_and_tokens(self) -> None:
         config = _config(backprop_to_llm=True)
-        detached = _config(backprop_to_llm=False)
+        changed_alpha = _config(backprop_to_llm=True, alpha=0.5)
         contract_id = config.contract_id(
             _ACTION_SPACE,
             _ACTION_NAMES,
@@ -93,7 +99,7 @@ class FrozenQGuidedPolicyConfigTest(unittest.TestCase):
         )
         self.assertNotEqual(
             contract_id,
-            detached.contract_id(_ACTION_SPACE, _ACTION_NAMES, _ACTION_TOKEN_IDS),
+            changed_alpha.contract_id(_ACTION_SPACE, _ACTION_NAMES, _ACTION_TOKEN_IDS),
         )
         self.assertNotEqual(
             contract_id,

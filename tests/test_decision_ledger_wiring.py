@@ -35,10 +35,8 @@ class DecisionLedgerWiringTest(unittest.TestCase):
     def test_scheme_b_tensor_path_always_detaches_q(self) -> None:
         source = _source("vagen/joint_policy/torch_policy.py")
         self.assertIn("q_guidance = frozen_all_action_q.detach()", source)
-        self.assertIn(
-            "prior_logits if config.backprop_to_llm else prior_logits.detach()",
-            source,
-        )
+        self.assertIn("policy_prior_logits = prior_logits", source)
+        self.assertNotIn("prior_logits.detach()", source)
         self.assertIn("config.alpha * scaled_prior_logits + config.beta * q_guidance", source)
 
     def test_joint_policy_config_is_validated_before_workers_start(self) -> None:

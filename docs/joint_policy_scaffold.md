@@ -2,8 +2,9 @@
 
 ## Status
 
-This document records the framework boundary while some policy-gradient details
-remain undecided. Milestone M1 still implements no actor logits or PPO loss.
+This document records the framework boundary while state ownership and rollout
+integration remain undecided. Milestone M1 implements no actor logits or PPO
+loss; the M2 contract fixes the confirmed Scheme-B gradient semantics.
 
 ## Confirmed provisional policy
 
@@ -33,19 +34,31 @@ The first guided-policy candidate is scheme B:
   \right).
 \]
 
+The guided-policy actor loss backpropagates through `l_prior` into the LLM. Q is
+always stop-gradient in that loss. Configurations with
+`backprop_to_llm != true` are rejected rather than constructing an actor with no
+trainable gradient path.
+
 The old Nimloth `ValueHead` remains an action-value critic. It is not renamed to
-an actor head and receives no actor-loss gradient. `\bar Q` must be a frozen
-rollout-time snapshot; replay must use the rollout-persisted guidance scores and
-snapshot identity rather than recomputing them after a critic update.
+an actor head and receives no actor-loss gradient. It is trained only on the
+actually executed first action using Huber regression against a stop-gradient
+discounted return constructed from real environment rewards. An
+immediate reward alone is not the Q target, an advantage is not the Q target,
+and unexecuted action slots receive no fabricated counterfactual target.
+Terminal trajectories bootstrap with zero. A rollout truncation must use an
+explicit rollout-time frozen-critic bootstrap; this remains blocked until the
+critic state and snapshot owner are implemented.
+
+`\bar Q` must be a frozen rollout-time snapshot; replay must use the rollout-
+persisted guidance scores and snapshot identity rather than recomputing them
+after a critic update.
 
 ## Deferred policy decisions
 
 The following still require explicit decisions before M2/M3 are complete:
 
-- whether the guided-policy factor backpropagates through
-  `l_prior` into the LLM; without that path it has no trainable parameter during
-  one PPO update and its ratio remains one;
-- `alpha`, `beta`, prior temperature, and any warmup or KL target;
+- positive `alpha`, non-negative `beta`, prior temperature, discount `gamma`, score dtype, critic loss
+  coefficient, and any warmup or KL target;
 - critic coverage/calibration for action slots not executed in a given state;
 - how simulated tail actions are generated and which non-PPO auxiliary objective,
   if any, trains them;
@@ -57,9 +70,10 @@ The dependency-light Scheme-B contract is implemented, but operational rollout
 remains disabled:
 
 - all probability semantics (`alpha`, `beta`, prior temperature, score dtype,
-  and `backprop_to_llm`) are explicit and enter a hashed contract id;
-- the tensor formula always detaches frozen Q and conditionally detaches prior
-  logits according to the explicit gradient setting;
+  and the required LLM gradient path) are explicit and enter a hashed contract
+  id;
+- the tensor formula always detaches frozen Q and always keeps prior logits
+  connected to the LLM;
 - a versioned behavior record binds the action table/token ids, sampled prior
   token, prior logits, frozen all-action Q, guided first action, snapshot id, and
   behavior log-probabilities;
@@ -143,16 +157,17 @@ current predictor experiment. They are not the joint-policy contract.
    all-action guidance scores, selected-action behavior log-probabilities, and
    critic snapshot identity;
 3. replay current LLM logits against the same persisted Q-guidance scores;
-4. keep trainable current-critic regression separate from frozen policy guidance;
-5. checkpoint the critic and the exact snapshot-refresh boundary;
+4. regress the selected current Q against stop-gradient discounted real-reward
+   return while keeping it separate from frozen policy guidance;
+5. checkpoint the critic and the exact snapshot-refresh/bootstrap boundary;
 6. promote the one executed policy-owned action to a new ledger schema version.
 
 ### M3: joint PPO
 
-After deciding whether guided-policy gradients reach the LLM, implement the LLM
-and guided-policy component ratios, joint ratio/clipping, first-action credit,
-entropy/KL terms, and critic update ordering. Simulated tail actions must remain
-outside environment PPO.
+Implement the LLM and guided-policy component ratios with the guided factor
+backpropagating through prior logits, joint ratio/clipping, first-action credit,
+entropy/KL terms, selected-action return regression, and critic update ordering.
+Simulated tail actions must remain outside environment PPO.
 
 ## Validation boundary
 

@@ -34,9 +34,7 @@ def frozen_q_guided_log_probs(
     if not torch.isfinite(frozen_all_action_q).all():
         raise ValueError("joint policy frozen Q must be finite")
 
-    policy_prior_logits = (
-        prior_logits if config.backprop_to_llm else prior_logits.detach()
-    )
+    policy_prior_logits = prior_logits
     scaled_prior_logits = policy_prior_logits / config.prior_temperature
     if not torch.isfinite(scaled_prior_logits).all():
         raise ValueError("joint policy scaled prior logits must be finite")
