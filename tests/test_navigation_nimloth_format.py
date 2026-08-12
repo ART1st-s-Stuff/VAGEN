@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from vagen.envs.navigation.utils.nimloth_format import (
     ACTION_NAMES,
@@ -10,7 +11,21 @@ from vagen.envs.navigation.utils.parse import parse_response
 from vagen.envs.navigation.utils.prompt import get_format_instruction
 
 
+_ROOT = Path(__file__).resolve().parents[1]
+
+
 class NimlothNavigationFormatTest(unittest.TestCase):
+    def test_checked_in_rollout_configs_select_k16(self) -> None:
+        for relative in (
+            "examples/train/navigation/train_navigation_nimloth_k16.yaml",
+            "examples/train/navigation/val_navigation_nimloth_k16.yaml",
+        ):
+            with self.subTest(relative=relative):
+                text = (_ROOT / relative).read_text(encoding="utf-8")
+                self.assertIn("prompt_format: nimloth", text)
+                self.assertIn("latent_token_count: 16", text)
+                self.assertIn("max_actions_per_step: 1", text)
+
     def test_action_token_ids_follow_navigation_action_order(self) -> None:
         self.assertEqual(
             ACTION_NAMES,
@@ -87,6 +102,27 @@ class NimlothNavigationFormatTest(unittest.TestCase):
                     f"<think>x</think>{latent}<|action_start|>"
                     f"{block}<|action_end|>"
                 )
+                parsed = parse_response(
+                    response,
+                    prompt_format="nimloth",
+                    max_actions=1,
+                    latent_token_count=16,
+                )
+                self.assertFalse(parsed["format_correct"])
+                self.assertEqual(parsed["actions"], [])
+
+    def test_parser_rejects_extra_or_unknown_latent_control_tokens(self) -> None:
+        valid = (
+            "<think>x</think>"
+            + "".join(latent_state_tokens(16))
+            + "<|action_start|><|action_(0)|><|action_end|>"
+        )
+        for response in (
+            valid + "<|latent_state_7|>",
+            valid + "<|latent_state_16|>",
+            "<|latent_state_16|>" + valid,
+        ):
+            with self.subTest(response=response):
                 parsed = parse_response(
                     response,
                     prompt_format="nimloth",

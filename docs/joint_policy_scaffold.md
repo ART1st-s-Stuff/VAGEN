@@ -95,13 +95,21 @@ M1 records environment facts before adding an actor. It uses VAGEN-Lite's async
 identified sample.
 
 Navigation can opt in with the following settings; the trainer rejects the
-ledger unless both async rollout and no-concat mode are active:
+ledger unless both async rollout and no-concat mode are active. A K16 Nimloth
+checkpoint must also use the explicit K16 environment protocol; relying on the
+K1 environment default fails closed. Reference train/validation environment
+files are `examples/train/navigation/{train,val}_navigation_nimloth_k16.yaml`.
 
 ```yaml
 trainer:
   concat_multi_turn: false
 decision_ledger:
   enabled: true
+# Each Navigation/RemoteEnv config:
+config:
+  prompt_format: nimloth
+  latent_token_count: 16
+  max_actions_per_step: 1
 ```
 
 Each turn then carries one versioned `decision_ledger` with:

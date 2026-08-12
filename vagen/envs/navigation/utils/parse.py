@@ -33,6 +33,7 @@ _PARSE_PATTERNS = {
 }
 
 _NIMLOTH_ACTION_TOKEN_RE = re.compile(r"<\|action_\(\d+\)\|>")
+_NIMLOTH_LATENT_TOKEN_RE = re.compile(r"<\|latent_state(?:_\d+)?\|>")
 
 
 def parse_response(
@@ -111,13 +112,12 @@ def _parse_nimloth_response(
     block_start = response.index(expected_block)
     before = response[:block_start]
     after = response[block_start + len(expected_block) :]
-    control_tokens = (
-        "<|latent_state|>",
-        "<|action_start|>",
-        "<|action_end|>",
-        *known_tokens,
-    )
-    if any(token in before or token in after for token in control_tokens):
+    control_tokens = ("<|action_start|>", "<|action_end|>", *known_tokens)
+    if (
+        _NIMLOTH_LATENT_TOKEN_RE.search(before)
+        or _NIMLOTH_LATENT_TOKEN_RE.search(after)
+        or any(token in before or token in after for token in control_tokens)
+    ):
         return result
     result["actions"] = [ACTION_TOKEN_TO_NAME[found_tokens[0]]]
     result["format_correct"] = True

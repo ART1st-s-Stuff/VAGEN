@@ -1,0 +1,17 @@
+# Nimloth K16/inject navigation rollout contract.
+# The latent count must match the loaded checkpoint config exactly.
+envs:
+  - name: RemoteEnv
+    n_envs: 10000
+    data_source: navigation
+    seed: [0, 30]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://localhost:8000"
+      timeout: 500
+      retries: 3
+      eval_set: base_train
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
