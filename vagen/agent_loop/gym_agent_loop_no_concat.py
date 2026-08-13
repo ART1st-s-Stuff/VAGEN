@@ -164,6 +164,7 @@ class AgentData:
         self.turn_response_ids: Optional[List[int]] = None
         self.turn_response_mask: Optional[List[int]] = None
         self.turn_response_logprobs: Optional[List[float]] = None
+        self.turn_policy_state: Optional[Dict[str, Any]] = None
 
         # Env stats
         self.env_turns: int = 0
@@ -373,6 +374,34 @@ class GymAgentLoop(AgentLoopBase):
         )
         agent_data.turn_prompt_ids += agent_data.turn_response_ids
         if nimloth_spec is not None:
+            if output.policy_state is None:
+                raise RuntimeError("Nimloth turn requires same-generation policy state")
+            if output.policy_state.get("request_id") != agent_data.request_id:
+                raise RuntimeError("Nimloth policy state request identity mismatch")
+            latent_hidden = output.policy_state.get("latent_hidden")
+            action_logits = output.policy_state.get("action_logits")
+            if (
+                output.policy_state.get("schema") != "nimloth_policy_state_v1"
+                or output.policy_state.get("latent_token_ids")
+                != list(nimloth_spec.injected_token_ids[:-1])
+                or output.policy_state.get("action_start_token_id")
+                != nimloth_spec.injected_token_ids[-1]
+                or output.policy_state.get("action_token_ids")
+                != list(nimloth_spec.action_token_ids)
+                or not isinstance(latent_hidden, list)
+                or len(latent_hidden) != len(nimloth_spec.injected_token_ids) - 1
+                or any(not isinstance(row, list) or not row for row in latent_hidden)
+                or not isinstance(action_logits, list)
+                or len(action_logits) != len(nimloth_spec.action_token_ids)
+                or any(
+                    not math.isfinite(float(value))
+                    for row in latent_hidden
+                    for value in row
+                )
+                or any(not math.isfinite(float(value)) for value in action_logits)
+            ):
+                raise RuntimeError("Nimloth turn returned invalid policy state")
+            agent_data.turn_policy_state = output.policy_state
             if output.log_probs is None or len(output.log_probs) != len(output.token_ids):
                 raise RuntimeError(
                     "Nimloth turn requires one rollout log-prob per response token"
@@ -477,6 +506,11 @@ class GymAgentLoop(AgentLoopBase):
                 **(
                     {"decision_ledger": decision_ledger}
                     if decision_ledger is not None
+                    else {}
+                ),
+                **(
+                    {"policy_state": agent_data.turn_policy_state}
+                    if agent_data.turn_policy_state is not None
                     else {}
                 ),
                 "group_idx": agent_data.group_idx,

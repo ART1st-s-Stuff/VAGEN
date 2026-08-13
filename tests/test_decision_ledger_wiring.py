@@ -71,10 +71,12 @@ class DecisionLedgerWiringTest(unittest.TestCase):
 
     def test_extra_fields_reach_dataproto_without_first_action_reduction(self) -> None:
         source = _source("vagen/agent_loop/agent_loop_no_concat.py")
+        self.assertIn('all_keys = {"policy_state"}', source)
         self.assertIn(
-            "all_keys = set(key for input_item in inputs for key in input_item.extra_fields)",
+            "key for input_item in inputs for key in input_item.extra_fields",
             source,
         )
+        self.assertIn("input.extra_fields.get(key) for input in inputs", source)
         self.assertIn("non_tensor_batch.update(extra_fields)", source)
 
     def test_final_reward_tensor_is_revalidated_before_ppo_scores(self) -> None:

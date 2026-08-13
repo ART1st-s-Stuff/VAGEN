@@ -199,6 +199,24 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
         )
     if int(result.non_tensor_batch["turn_idx"][0]) != 1:
         raise RuntimeError("one-turn smoke produced an unexpected turn index")
+    policy_state = result.non_tensor_batch["policy_state"][0]
+    if (
+        not isinstance(policy_state, dict)
+        or policy_state.get("schema") != "nimloth_policy_state_v1"
+        or len(policy_state.get("latent_hidden", [])) != 16
+        or any(len(row) != 2048 for row in policy_state["latent_hidden"])
+        or len(policy_state.get("action_logits", [])) != 8
+        or any(
+            not math.isfinite(float(value))
+            for row in policy_state["latent_hidden"]
+            for value in row
+        )
+        or any(
+            not math.isfinite(float(value))
+            for value in policy_state["action_logits"]
+        )
+    ):
+        raise RuntimeError("one-turn smoke received an invalid policy-state capture")
 
     if "rollout_log_probs" not in result.batch:
         raise RuntimeError("Nimloth smoke requires rollout token log-probabilities")
@@ -241,6 +259,7 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
             index for index, value in enumerate(response_masks[0]) if value
         ),
         "response_token_count": response_length,
+        "policy_state": policy_state,
         "metrics": metrics,
     }
 

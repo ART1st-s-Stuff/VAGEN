@@ -608,7 +608,10 @@ class AgentLoopWorkerBase:
         metrics = [input.metrics.model_dump() for input in inputs]
         # Collect extra fields from all inputs and convert them to np.ndarray
         extra_fields = {}
-        all_keys = set(key for input_item in inputs for key in input_item.extra_fields)
+        all_keys = {"policy_state"}
+        all_keys.update(
+            key for input_item in inputs for key in input_item.extra_fields
+        )
         for key in all_keys:
             temp_arr = np.empty(len(inputs), dtype=object)
             temp_arr[:] = [input.extra_fields.get(key) for input in inputs]

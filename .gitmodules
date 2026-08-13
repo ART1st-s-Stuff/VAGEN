@@ -1,4 +1,4 @@
 [submodule "verl"]
 	path = verl
-	url = https://github.com/JamesKrW/verl.git
-	branch = vagen-lite
+	url = https://github.com/ART1st-s-Stuff/verl.git
+	branch = nimloth/vagen-lite-async-policy-state-capture
