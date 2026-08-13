@@ -16,6 +16,10 @@ Current scope:
   selected guided-action log-prob from current prior logits plus only the
   rollout-persisted frozen Q; callers must provide the expected contract and
   snapshot identities;
+- `critic_loss.py` defines a pure selected-action Huber objective: it gathers
+  only the actually executed action, detaches return targets, and requires the
+  caller to specify `delta` and reduction rather than choosing experiment
+  defaults;
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities.
 

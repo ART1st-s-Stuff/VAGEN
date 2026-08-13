@@ -87,6 +87,9 @@ are implemented, but Q-guided operational rollout remains disabled:
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the
   current-prior gradient; it is not yet connected to actor FSDP replay;
+- a pure selected-action Huber helper gathers only the actually executed action
+  and detaches the return target; Huber delta and reduction remain mandatory
+  caller inputs, and no critic optimizer or return compiler is connected;
 - capture currently requires `data_parallel_size=1` and eager vLLM execution;
   unsupported DP routing and conflicting engine overrides fail closed;
 - `joint_policy.enabled=true` fails closed while Q ownership, rollout sampling,
