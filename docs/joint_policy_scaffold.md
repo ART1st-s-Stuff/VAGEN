@@ -100,6 +100,10 @@ are implemented, but Q-guided operational rollout remains disabled:
   external input without owning RNG. Remote execution uses an explicit `step_guided` method,
   revalidates before mutation, and checks the environment's action echo on both
   server and client. The agent loop does not yet create this envelope;
+- a pure inverse-CDF sampler accepts a uniform draw from an external RNG owner,
+  selects using half-open Scheme-B probability intervals, and records the draw,
+  full distribution inputs, contract, selected action, and behavior log-prob.
+  It does not create randomness or call the environment;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the

@@ -73,6 +73,7 @@ class FrozenQGuidedPolicyConfig:
             raise ValueError("joint policy alpha must be positive")
         if beta < 0.0:
             raise ValueError("joint policy beta must be non-negative")
+        beta = 0.0 if beta == 0.0 else beta
         if prior_temperature <= 0.0:
             raise ValueError("joint policy prior_temperature must be positive")
         if raw["backprop_to_llm"] is not True:

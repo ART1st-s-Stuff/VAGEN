@@ -105,6 +105,16 @@ class FrozenQGuidedPolicyConfigTest(unittest.TestCase):
                 score_dtype="float32",
             )
 
+    def test_contract_canonicalizes_signed_zero_beta(self) -> None:
+        positive = _config(beta=0.0)
+        negative = _config(beta=-0.0)
+        self.assertEqual(positive, negative)
+        self.assertEqual(math.copysign(1.0, negative.beta), 1.0)
+        self.assertEqual(
+            positive.contract_id(_ACTION_SPACE, _ACTION_NAMES, _ACTION_TOKEN_IDS),
+            negative.contract_id(_ACTION_SPACE, _ACTION_NAMES, _ACTION_TOKEN_IDS),
+        )
+
     def test_contract_id_binds_config_action_table_and_tokens(self) -> None:
         config = _config(backprop_to_llm=True)
         changed_alpha = _config(backprop_to_llm=True, alpha=0.5)

@@ -14,6 +14,9 @@ Current scope:
   versioned behavior record, contract identity, and numerical audit reference;
 - `torch_policy.py` implements the tensor distribution while always detaching Q
   and preserving the confirmed prior-to-LLM actor gradient;
+- `sampling.py` performs pure inverse-CDF Scheme-B selection from an externally
+  supplied uniform draw and emits a fully revalidated audit record. It imports
+  no RNG, accepts no current Q, and never calls an environment;
 - `replay.py` revalidates an immutable behavior-record batch and replays the
   selected guided-action log-prob from current prior logits plus only the
   rollout-persisted frozen Q; callers must provide the expected contract and
@@ -34,8 +37,8 @@ Current scope:
 The parent Nimloth layer has a pure `SharedSlotProjector`/`ValueHead` snapshot
 and capture-to-Q scorer, but this package does not yet own a production critic
 service, snapshot refresh lifecycle, guided rollout sampler, integrated PPO
-loss, or checkpoint lifecycle. The execution envelope is not produced by the
-agent loop, and the pure scorer/replay helpers are not wired to the actor worker
+loss, or checkpoint lifecycle. The execution envelope and external uniform draw
+are not produced by the agent loop, and the pure scorer/replay helpers are not wired to the actor worker
 or trainer. Enabling `joint_policy`
 therefore fails closed instead of silently running stock PPO. Remaining integration steps
 are described in `docs/joint_policy_scaffold.md`.
