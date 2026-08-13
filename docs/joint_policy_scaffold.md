@@ -66,8 +66,8 @@ The following still require explicit decisions before M2/M3 are complete:
 
 ## M2 contract status
 
-The dependency-light Scheme-B contract is implemented, but operational rollout
-remains disabled:
+The dependency-light Scheme-B contract and same-generation capture transport
+are implemented, but Q-guided operational rollout remains disabled:
 
 - all probability semantics (`alpha`, `beta`, prior temperature, score dtype,
   and the required LLM gradient path) are explicit and enter a hashed contract
@@ -79,6 +79,12 @@ remains disabled:
   behavior log-probabilities;
 - ledger v2 embeds and revalidates the complete behavior record before claiming
   policy ownership;
+- the Nimloth async replica reuses the existing vLLM worker hook to capture the
+  generated K latent hidden rows and raw action-boundary logits without a second
+  transformer replay; a two-phase TP protocol validates every rank before the
+  LM-head collective, and the sidecar is bound to request/token identities;
+- capture currently requires `data_parallel_size=1` and eager vLLM execution;
+  unsupported DP routing and conflicting engine overrides fail closed;
 - `joint_policy.enabled=true` fails closed while Q ownership, rollout sampling,
   replay, and checkpoint refresh are not connected.
 
@@ -181,7 +187,10 @@ Simulated tail actions must remain outside environment PPO.
 ## Validation boundary
 
 Dependency-light tests cover M1 plus Scheme-B config, numerical reference,
-behavior/ledger schema identity, overflow handling, and fail-closed wiring. Torch
-autograd/parity tests exist but are skipped in the current local environment
-because torch is unavailable. Full Ray, multimodal rollout, Q ownership, PPO,
-checkpoint, and GPU validation remain outside the completed scope.
+behavior/ledger schema identity, overflow handling, and fail-closed wiring.
+Complete CPU dependencies validate request-scoped/out-of-order capture, partial
+TP failure before LM-head collectives, error cleanup, request/token identity,
+and DataProto propagation. The older direct-vLLM path has separate GPU evidence,
+but the new async transport itself has not yet run on GPU. Q ownership, guided
+action replacement, PPO, checkpoint, and GPU capture validation remain outside
+the completed scope.
