@@ -117,12 +117,14 @@ are implemented, but Q-guided operational rollout remains disabled:
   external input without owning RNG. Remote execution uses an explicit `step_guided` method,
   revalidates before mutation, and checks the environment's action echo on both
   server and client. The agent loop does not yet create this envelope;
-- a pure inverse-CDF sampler accepts a uniform draw from an external RNG owner,
-  selects using half-open Scheme-B probability intervals, and records the draw,
-  full distribution inputs, contract, selected action, and behavior log-prob.
-  It does not create randomness or call the environment. The confirmed owner is
-  the rollout coordinator's deterministic keyed-draw service; its provenance
-  contract and agent-loop wiring are not yet implemented;
+- the rollout coordinator's stateless keyed-draw contract binds run seed,
+  policy step, stable sample/repeat identity, turn, validation mode, snapshot,
+  contract, and schema. Canonical SHA-256 maps each key to one exact 53-bit
+  uniform value; the public sampler accepts the full key rather than a caller-
+  chosen draw, applies half-open inverse-CDF selection, and persists/revalidates
+  the complete provenance in action-draw schema v2. It imports no RNG and never
+  calls the environment. Agent-loop construction of production keys is not yet
+  wired;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the
@@ -140,9 +142,10 @@ Nimloth `ValueHead`. Its existing token critic is scalar per response token, and
 its transition reward predictor is an immediate-reward model. Neither is used
 as a substitute. The chosen critic state is the mean of the per-slot outputs from the existing
 `SharedSlotProjector` applied to same-generation K-slot hidden rows. The parent
-critic/snapshot/scoring foundation now validates that path. The CPU Ray owner,
-per-global-update atomic refresh lifecycle, optimizer, and keyed guided sampler
-have confirmed ownership but are not yet implemented or wired.
+critic/snapshot/scoring foundation now validates that path. The keyed sampler
+contract is implemented but not wired in the agent loop. The CPU Ray owner,
+per-global-update atomic refresh lifecycle, and optimizer have confirmed
+ownership but are not yet implemented or wired.
 
 ## M1: decision ledger
 

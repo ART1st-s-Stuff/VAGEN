@@ -15,18 +15,24 @@ from .execution import (
 )
 from .replay import replay_guided_behavior_log_probs
 from .sampling import (
+    GUIDED_ACTION_DRAW_KEY_SCHEMA,
     GUIDED_ACTION_DRAW_SCHEMA,
+    GuidedActionDrawCoordinator,
+    GuidedActionDrawKey,
     GuidedPolicyActionDrawRecord,
     sample_frozen_q_guided_action,
 )
 from .torch_policy import frozen_q_guided_log_probs
 
 __all__ = [
+    "GUIDED_ACTION_DRAW_KEY_SCHEMA",
     "GUIDED_ACTION_DRAW_SCHEMA",
     "GUIDED_ACTION_EXECUTION_SCHEMA",
     "GUIDED_BEHAVIOR_SCHEMA",
     "SelectedActionHuberLoss",
     "FrozenQGuidedPolicyConfig",
+    "GuidedActionDrawCoordinator",
+    "GuidedActionDrawKey",
     "GuidedActionExecutionRequest",
     "GuidedPolicyActionDrawRecord",
     "GuidedPolicyBehaviorRecord",
