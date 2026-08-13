@@ -7,6 +7,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from omegaconf import OmegaConf
+
+
+def _nested_mapping_keys(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield str(key).lower()
+            yield from _nested_mapping_keys(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from _nested_mapping_keys(nested)
+
 
 class StandaloneOneTurnSmokeTest(unittest.TestCase):
     def _args(self, output: Path) -> argparse.Namespace:
@@ -36,7 +48,9 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
             self.skipTest(f"smoke dependencies unavailable: {exc}")
 
         config = build_config(self._args(Path("/output.json")))
-        text = str(config)
+        config_keys = set(
+            _nested_mapping_keys(OmegaConf.to_container(config, resolve=True))
+        )
         self.assertEqual(config.actor_rollout_ref.rollout.name, "nimloth_vllm")
         self.assertEqual(
             config.actor_rollout_ref.rollout.tensor_model_parallel_size,
@@ -51,7 +65,10 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
         self.assertTrue(config.decision_ledger.enabled)
         self.assertFalse(config.joint_policy.enabled)
         for forbidden in ("optimizer", "fsdp", "critic"):
-            self.assertNotIn(forbidden, text.lower())
+            self.assertFalse(
+                any(forbidden in key for key in config_keys),
+                f"unexpected {forbidden} config key",
+            )
 
     def test_input_config_matches_current_navigation_profile(self) -> None:
         try:

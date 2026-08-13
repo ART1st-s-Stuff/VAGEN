@@ -204,7 +204,12 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     policy_state = result.non_tensor_batch["policy_state"][0]
     if (
         not isinstance(policy_state, dict)
-        or policy_state.get("schema") != "nimloth_policy_state_v1"
+        or policy_state.get("schema") != "nimloth_policy_state_v2"
+        or not isinstance(policy_state.get("request_id"), str)
+        or not policy_state["request_id"]
+        or not isinstance(policy_state.get("generation_id"), str)
+        or not policy_state["generation_id"]
+        or policy_state["generation_id"] == policy_state["request_id"]
         or len(policy_state.get("latent_hidden", [])) != 16
         or any(len(row) != 2048 for row in policy_state["latent_hidden"])
         or len(policy_state.get("action_logits", [])) != 8

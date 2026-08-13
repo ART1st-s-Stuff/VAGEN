@@ -18,6 +18,7 @@ import os
 import random
 from abc import ABC, abstractmethod
 from typing import Any, Optional
+from uuid import uuid4
 
 import hydra
 import numpy as np
@@ -76,6 +77,12 @@ class AsyncLLMServerManager:
 
         # LRU cache to map request_id to server
         self.request_id_to_server = LRUCache(maxsize=max_cache_size)
+        self._generation_namespace = uuid4().hex
+        self._generation_counter = 0
+
+    def _next_generation_id(self) -> str:
+        self._generation_counter += 1
+        return f"{self._generation_namespace}:{self._generation_counter}"
 
     def _choose_server(self, request_id: str) -> ray.actor.ActorHandle:
         # TODO: implement server pressure awareness load balancing
@@ -93,6 +100,7 @@ class AsyncLLMServerManager:
         self,
         request_id,
         *,
+        require_unique_generation: bool = False,
         prompt_ids: list[int],
         sampling_params: dict[str, Any],
         image_data: Optional[list[Any]] = None,
@@ -107,13 +115,23 @@ class AsyncLLMServerManager:
         Returns:
             TokenOutput: token output
         """
-        server = self._choose_server(request_id)
-        output = await server.generate.remote(
-            request_id=request_id,
-            prompt_ids=prompt_ids,
-            sampling_params=sampling_params,
-            image_data=image_data,
+        if not isinstance(require_unique_generation, bool):
+            raise ValueError("require_unique_generation must be bool")
+        generation_id = (
+            self._next_generation_id()
+            if require_unique_generation
+            else request_id
         )
+        server = self._choose_server(request_id)
+        generate_kwargs = {
+            "request_id": generation_id,
+            "prompt_ids": prompt_ids,
+            "sampling_params": sampling_params,
+            "image_data": image_data,
+        }
+        if require_unique_generation:
+            generate_kwargs["session_request_id"] = request_id
+        output = await server.generate.remote(**generate_kwargs)
         return output
 
 

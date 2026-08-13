@@ -82,7 +82,16 @@ are implemented, but Q-guided operational rollout remains disabled:
 - the Nimloth async replica reuses the existing vLLM worker hook to capture the
   generated K latent hidden rows and raw action-boundary logits without a second
   transformer replay; a two-phase TP protocol validates every rank before the
-  LM-head collective, and the sidecar is bound to request/token identities;
+  LM-head collective. Capture schema v2 keeps the episode `request_id` only for
+  sticky server routing and binds every forward to a separate unique
+  `generation_id`; both identities and the exact token table travel with the
+  sidecar;
+- the parent Nimloth layer now owns a strict pure capture-to-Q scorer: it checks
+  capture v2/session/generation/token identities, feeds hidden rows in the
+  frozen snapshot's parameter dtype, and emits an immutable record containing
+  raw prior logits and all-action frozen Q. The output score dtype is hashed into
+  the policy contract and snapshot identity rather than selected per scoring
+  call; this scorer is not connected to environment action selection;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the
@@ -98,8 +107,10 @@ are implemented, but Q-guided operational rollout remains disabled:
 VAGEN-Lite currently has no `[B,A]` action-value head equivalent to the old
 Nimloth `ValueHead`. Its existing token critic is scalar per response token, and
 its transition reward predictor is an immediate-reward model. Neither is used
-as a substitute. The state feeding the old ValueHead must be chosen before Q
-ownership can be implemented safely.
+as a substitute. The chosen critic state is the mean of the per-slot outputs from the existing
+`SharedSlotProjector` applied to same-generation K-slot hidden rows. The parent
+critic/snapshot/scoring foundation now validates that path, but VAGEN still has
+no production Ray owner, refresh lifecycle, optimizer, or guided sampler.
 
 ## M1: decision ledger
 

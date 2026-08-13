@@ -62,7 +62,63 @@ class _Server:
     engine = _Engine()
 
 
+class _RemoteGenerate:
+    def __init__(self, owner) -> None:
+        self.owner = owner
+
+    async def remote(self, **kwargs):
+        self.owner.calls.append(kwargs)
+        return SimpleNamespace(token_ids=[11], log_probs=[-0.1], policy_state=None)
+
+
+class _ServerHandle:
+    def __init__(self, identity: int) -> None:
+        self.identity = identity
+        self.calls = []
+        self.generate = _RemoteGenerate(self)
+
+    def __hash__(self) -> int:
+        return self.identity
+
+
 class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
+    def test_manager_keeps_sticky_session_but_routes_unique_generation_identity(self) -> None:
+        try:
+            from vagen.agent_loop.agent_loop_no_concat import AsyncLLMServerManager
+        except ImportError as exc:
+            self.skipTest(f"VAGEN dependencies unavailable: {exc}")
+
+        servers = [_ServerHandle(1), _ServerHandle(2)]
+        manager = AsyncLLMServerManager(SimpleNamespace(), servers)
+        asyncio.run(
+            manager.generate.__wrapped__(
+                manager,
+                "session-a",
+                require_unique_generation=True,
+                prompt_ids=[1],
+                sampling_params={},
+            )
+        )
+        asyncio.run(
+            manager.generate.__wrapped__(
+                manager,
+                "session-a",
+                require_unique_generation=True,
+                prompt_ids=[2],
+                sampling_params={},
+            )
+        )
+        called = [server for server in servers if server.calls]
+        self.assertEqual(len(called), 1)
+        generation_ids = [call["request_id"] for call in called[0].calls]
+        self.assertEqual(len(generation_ids), len(set(generation_ids)))
+        self.assertTrue(all(generation_ids))
+        self.assertNotIn("session-a", generation_ids)
+        self.assertEqual(
+            [call["session_request_id"] for call in called[0].calls],
+            ["session-a", "session-a"],
+        )
+
     def test_token_output_accepts_identity_bound_policy_state(self) -> None:
         try:
             from verl.workers.rollout.replica import TokenOutput
@@ -73,8 +129,9 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
             token_ids=[11],
             log_probs=[-0.5],
             policy_state={
-                "schema": "nimloth_policy_state_v1",
+                "schema": "nimloth_policy_state_v2",
                 "request_id": "request-a",
+                "generation_id": "generation-a",
                 "latent_token_ids": [90],
                 "action_start_token_id": 92,
                 "action_token_ids": list(range(100, 108)),
@@ -135,21 +192,23 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
                     _Server(),
                     prompt_ids=[1, 2],
                     sampling_params=sampling,
-                    request_id="request-a",
+                    request_id="generation-a",
+                    session_request_id="request-a",
                 )
             )
 
         start.assert_awaited_once_with(
             _Server.engine,
-            request_id="request-a",
+            request_id="generation-a",
             latent_token_ids=(90, 91),
             action_start_token_id=92,
             action_token_ids=tuple(range(100, 108)),
         )
-        pop.assert_awaited_once_with(_Server.engine, request_id="request-a")
+        pop.assert_awaited_once_with(_Server.engine, request_id="generation-a")
         abort.assert_not_awaited()
-        self.assertEqual(output.policy_state["schema"], "nimloth_policy_state_v1")
+        self.assertEqual(output.policy_state["schema"], "nimloth_policy_state_v2")
         self.assertEqual(output.policy_state["request_id"], "request-a")
+        self.assertEqual(output.policy_state["generation_id"], "generation-a")
         self.assertEqual(output.policy_state["latent_token_ids"], [90, 91])
         self.assertEqual(output.policy_state["action_start_token_id"], 92)
         self.assertEqual(
@@ -245,18 +304,19 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
                         server,
                         prompt_ids=[1, 2],
                         sampling_params=sampling,
-                        request_id="request-b",
+                        request_id="generation-b",
+                        session_request_id="request-b",
                     )
                 )
 
         start.assert_awaited_once_with(
             server.engine,
-            request_id="request-b",
+            request_id="generation-b",
             latent_token_ids=(90, 91),
             action_start_token_id=92,
             action_token_ids=tuple(range(100, 108)),
         )
-        abort.assert_awaited_once_with(server.engine, request_id="request-b")
+        abort.assert_awaited_once_with(server.engine, request_id="generation-b")
 
     def test_launch_rejects_reserved_engine_overrides(self) -> None:
         try:

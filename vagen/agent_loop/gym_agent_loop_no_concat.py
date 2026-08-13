@@ -165,6 +165,7 @@ class AgentData:
         self.turn_response_mask: Optional[List[int]] = None
         self.turn_response_logprobs: Optional[List[float]] = None
         self.turn_policy_state: Optional[Dict[str, Any]] = None
+        self.turn_generation_id: Optional[str] = None
 
         # Env stats
         self.env_turns: int = 0
@@ -359,8 +360,9 @@ class GymAgentLoop(AgentLoopBase):
 
         with simple_timer("generate_sequences", agent_data.metrics):
             output = await self.server_manager.generate(
-                request_id = agent_data.request_id,
-                prompt_ids = agent_data.turn_prompt_ids,
+                request_id=agent_data.request_id,
+                require_unique_generation=nimloth_spec is not None,
+                prompt_ids=agent_data.turn_prompt_ids,
                 sampling_params = sampling_params_for_turn,
                 image_data = image_data,
             )
@@ -378,10 +380,18 @@ class GymAgentLoop(AgentLoopBase):
                 raise RuntimeError("Nimloth turn requires same-generation policy state")
             if output.policy_state.get("request_id") != agent_data.request_id:
                 raise RuntimeError("Nimloth policy state request identity mismatch")
+            generation_id = output.policy_state.get("generation_id")
+            if (
+                not isinstance(generation_id, str)
+                or not generation_id
+                or generation_id == agent_data.request_id
+            ):
+                raise RuntimeError("Nimloth policy state generation identity mismatch")
+            agent_data.turn_generation_id = generation_id
             latent_hidden = output.policy_state.get("latent_hidden")
             action_logits = output.policy_state.get("action_logits")
             if (
-                output.policy_state.get("schema") != "nimloth_policy_state_v1"
+                output.policy_state.get("schema") != "nimloth_policy_state_v2"
                 or output.policy_state.get("latent_token_ids")
                 != list(nimloth_spec.injected_token_ids[:-1])
                 or output.policy_state.get("action_start_token_id")

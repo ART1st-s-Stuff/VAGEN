@@ -13,7 +13,7 @@ from verl.workers.rollout.vllm_rollout.vllm_async_server import (
     vLLMReplica,
 )
 
-_POLICY_STATE_SCHEMA = "nimloth_policy_state_v1"
+_POLICY_STATE_SCHEMA = "nimloth_policy_state_v2"
 _WORKER_EXTENSION = (
     "nimloth.backbone.qwen25vl.vllm_hidden."
     "PolicyStateCaptureWorkerExtension"
@@ -33,6 +33,7 @@ def _capture_token_ids(spec: Any) -> tuple[tuple[int, ...], int, tuple[int, ...]
 
 def _policy_state_payload(
     request_id: str,
+    generation_id: str,
     state: Any,
     *,
     latent_token_ids: tuple[int, ...],
@@ -58,6 +59,7 @@ def _policy_state_payload(
     return {
         "schema": _POLICY_STATE_SCHEMA,
         "request_id": str(request_id),
+        "generation_id": str(generation_id),
         "latent_token_ids": list(latent_token_ids),
         "action_start_token_id": int(action_start_token_id),
         "action_token_ids": list(action_token_ids),
@@ -114,6 +116,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
         sampling_params: dict[str, Any],
         request_id: str,
         image_data: list[Any] | None = None,
+        session_request_id: str | None = None,
     ) -> TokenOutput:
         """Bracket one Nimloth request with request-scoped worker capture."""
 
@@ -134,6 +137,16 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                 request_id=request_id,
                 image_data=image_data,
             )
+        if not isinstance(request_id, str) or not request_id:
+            raise ValueError("Nimloth capture generation_id must be a non-empty string")
+        if not isinstance(session_request_id, str) or not session_request_id:
+            raise ValueError("Nimloth capture requires sticky session_request_id")
+        if session_request_id == request_id:
+            raise ValueError(
+                "Nimloth capture generation_id must differ from session_request_id"
+            )
+        generation_id = request_id
+        session_id = session_request_id
         latent_ids, action_start_id, action_ids = _capture_token_ids(spec)
         await async_start_policy_state_capture_for_request(
             self.engine,
@@ -176,7 +189,8 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
         return output.model_copy(
             update={
                 "policy_state": _policy_state_payload(
-                    request_id,
+                    session_id,
+                    generation_id,
                     state,
                     latent_token_ids=latent_ids,
                     action_start_token_id=action_start_id,
