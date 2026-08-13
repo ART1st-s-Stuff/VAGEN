@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
+from vagen.joint_policy import GuidedActionExecutionRequest
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -190,7 +192,13 @@ class BaseGymHandler(ABC):
         elif method == "reset":
             result = await self._handle_reset(ctx, params)
         elif method == "step":
+            if "guided_action_execution" in params:
+                raise ValueError(
+                    "guided action execution requires step_guided method"
+                )
             result = await self._handle_step(ctx, params)
+        elif method == "step_guided":
+            result = await self._handle_guided_step(ctx, params)
         elif method == "close":
             result = await self._handle_close(ctx)
         else:
@@ -217,10 +225,47 @@ class BaseGymHandler(ABC):
         return HandlerResult(data=result_data, images=images)
 
     async def _handle_step(self, ctx: SessionContext, params: Dict[str, Any]) -> HandlerResult:
-        """Handle step call."""
+        """Handle an ordinary raw-text step."""
         action_str = params.get("action_str", "")
+        if not isinstance(action_str, str):
+            raise ValueError("environment step action_str must be a string")
         obs, reward, done, info = await ctx.env.step(action_str)
+        return self._step_result(obs, reward, done, info)
 
+    async def _handle_guided_step(
+        self,
+        ctx: SessionContext,
+        params: Dict[str, Any],
+    ) -> HandlerResult:
+        """Validate a guided request before any state-mutating environment call."""
+        action_str = params.get("action_str")
+        if not isinstance(action_str, str) or not action_str:
+            raise ValueError("guided environment step action_str must be non-empty")
+        request = GuidedActionExecutionRequest.from_mapping(
+            params.get("guided_action_execution")
+        )
+        request.validate_raw_response(action_str)
+        guided_step = getattr(ctx.env, "guided_step", None)
+        if guided_step is None or not callable(guided_step):
+            raise ValueError(
+                "environment does not support guided action execution"
+            )
+        obs, reward, done, info = await guided_step(
+            action_str,
+            guided_action_execution=request.to_mapping(),
+        )
+        from vagen.joint_policy import validate_guided_action_execution_result
+
+        validate_guided_action_execution_result(info, request)
+        return self._step_result(obs, reward, done, info)
+
+    @staticmethod
+    def _step_result(
+        obs: Dict[str, Any],
+        reward: float,
+        done: bool,
+        info: Dict[str, Any],
+    ) -> HandlerResult:
         result_data = {
             "obs": obs.get("obs_str", ""),
             "reward": reward,
@@ -228,7 +273,7 @@ class BaseGymHandler(ABC):
             "info": info,
         }
 
-        images = self._extract_images(obs)
+        images = BaseGymHandler._extract_images(obs)
         return HandlerResult(data=result_data, images=images)
 
     async def _handle_close(self, ctx: SessionContext) -> HandlerResult:

@@ -92,6 +92,11 @@ are implemented, but Q-guided operational rollout remains disabled:
   raw prior logits and all-action frozen Q. The output score dtype is hashed into
   the policy contract and snapshot identity rather than selected per scoring
   call; this scorer is not connected to environment action selection;
+- a Navigation-only guided execution envelope now binds the complete behavior
+  record and raw LLM response SHA-256 while authorizing a separately selected
+  environment action. Remote execution uses an explicit `step_guided` method,
+  revalidates before mutation, and checks the environment's action echo on both
+  server and client. The agent loop does not yet create this envelope;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the

@@ -16,6 +16,7 @@ from PIL import Image
 from vagen.envs.gym_image_env import GymImageEnv
 from vagen.envs.navigation.utils.prompt import system_prompt, init_observation_template, action_template, get_format_instruction
 from vagen.envs.navigation.utils.parse import parse_response, compute_reward
+from vagen.joint_policy import GuidedActionExecutionRequest
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,46 @@ _ACTION_DISPATCH = {
     7: ("LookUp",      {"degrees": 30}),
     8: ("LookDown",    {"degrees": 30}),
 }
+
+
+
+def _resolve_navigation_execution(
+    parsed: Dict[str, Any],
+    guided_action_execution: Dict[str, Any] | None,
+    *,
+    prompt_format: str,
+) -> tuple[List[str], GuidedActionExecutionRequest | None]:
+    """Keep raw-response parsing as evidence while selecting an audited action."""
+
+    if guided_action_execution is None:
+        return list(parsed["actions"]), None
+    if prompt_format != "nimloth":
+        raise ValueError(
+            "guided action execution requires prompt_format=nimloth"
+        )
+    request = GuidedActionExecutionRequest.from_mapping(
+        guided_action_execution
+    )
+    raw_response = parsed.get("llm_raw_response")
+    if not isinstance(raw_response, str):
+        raise ValueError("guided action execution requires raw LLM response evidence")
+    request.validate_raw_response(raw_response)
+    behavior = request.behavior_record
+    action_names = tuple(ACTION_LOOKUP)
+    if behavior.action_space != "navigation_v1" or behavior.action_space_names != action_names:
+        raise ValueError(
+            "guided action execution action space does not match navigation_v1"
+        )
+    if not parsed.get("format_correct") or parsed.get("actions") != [
+        request.prior_action_name
+    ]:
+        raise ValueError(
+            "guided action execution prior action does not match raw LLM response"
+        )
+    if request.guided_action_name not in ACTION_LOOKUP:
+        raise ValueError("guided action execution selected an unknown navigation action")
+    return [request.guided_action_name], request
+
 
 VALID_EVAL_SETS = [
     "base", "common_sense", "complex_instruction", "visual_appearance", "long_horizon",
@@ -197,7 +238,12 @@ class NavigationEnv(GymImageEnv):
         self._info = {}
         return self._render_obs(init=True), {}
 
-    def _sync_step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+    def _sync_step(
+        self,
+        action_str: str,
+        *,
+        guided_action_execution: Dict[str, Any] | None = None,
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         parsed = parse_response(
             action_str,
             prompt_format=self.cfg.prompt_format,
@@ -205,7 +251,11 @@ class NavigationEnv(GymImageEnv):
             max_actions=self.cfg.max_actions_per_step,
             latent_token_count=self.cfg.latent_token_count or 1,
         )
-        actions = parsed["actions"]
+        actions, execution_request = _resolve_navigation_execution(
+            parsed,
+            guided_action_execution,
+            prompt_format=self.cfg.prompt_format,
+        )
         prev_pos = self._agent_pos()
         self._reward = 0.0
         self._valid_actions = []
@@ -244,6 +294,11 @@ class NavigationEnv(GymImageEnv):
 
         cur_pos = self._agent_pos()
         info.update({
+            **(
+                {"guided_action_execution": execution_request.to_mapping()}
+                if execution_request is not None
+                else {}
+            ),
             "metrics": {
                 "turn_metrics": {
                     "action_is_valid": bool(self._valid_actions),
@@ -297,6 +352,20 @@ class NavigationEnv(GymImageEnv):
 
     async def step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         return await asyncio.to_thread(self._sync_step, action_str)
+
+    async def guided_step(
+        self,
+        action_str: str,
+        *,
+        guided_action_execution: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        """Execute one separately authorized action while retaining raw evidence."""
+
+        return await asyncio.to_thread(
+            self._sync_step,
+            action_str,
+            guided_action_execution=guided_action_execution,
+        )
 
     async def close(self) -> None:
         await asyncio.to_thread(self._sync_close)

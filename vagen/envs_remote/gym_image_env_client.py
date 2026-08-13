@@ -39,6 +39,10 @@ import httpx
 from PIL import Image
 
 from vagen.envs.gym_image_env import GymImageEnv
+from vagen.joint_policy import (
+    GuidedActionExecutionRequest,
+    validate_guided_action_execution_result,
+)
 from vagen.utils.remote_step_protocol import parse_remote_step_fields
 from .multipart_codec import encode_multipart, decode_multipart
 
@@ -323,7 +327,7 @@ class GymImageEnvClient(GymImageEnv):
         last_exc: Optional[Exception] = None
         # A timed-out state-mutating step may already have executed remotely.
         # Retrying it would duplicate the action without an idempotency key.
-        max_retries = 0 if method == "step" else self.retries
+        max_retries = 0 if method in {"step", "step_guided"} else self.retries
 
         for attempt in range(max_retries + 1):
             # Session IDs are local to the server selected by /connect. Retrying
@@ -416,7 +420,12 @@ class GymImageEnvClient(GymImageEnv):
 
         return obs, info
 
-    async def step(self, action_str: str) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+    async def step(
+        self,
+        action_str: str,
+        *,
+        guided_action_execution: Dict[str, Any] | None = None,
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         """
         Execute step on remote environment.
 
@@ -424,13 +433,25 @@ class GymImageEnvClient(GymImageEnv):
         """
         self._check_connected("step")
 
-        data, images = await self._call("step", params={"action_str": action_str})
+        params: Dict[str, Any] = {"action_str": action_str}
+        request = None
+        method = "step"
+        if guided_action_execution is not None:
+            request = GuidedActionExecutionRequest.from_mapping(
+                guided_action_execution
+            )
+            request.validate_raw_response(action_str)
+            params["guided_action_execution"] = request.to_mapping()
+            method = "step_guided"
+        data, images = await self._call(method, params=params)
 
         obs = {"obs_str": data.get("obs", "")}
         if images:
             obs["multi_modal_input"] = {"<image>": images}
 
         reward, done, info = parse_remote_step_fields(data)
+        if request is not None:
+            validate_guided_action_execution_result(info, request)
 
         return obs, reward, done, info
 

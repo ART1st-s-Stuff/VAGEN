@@ -22,13 +22,19 @@ Current scope:
   only the actually executed action, detaches return targets, and requires the
   caller to specify `delta` and reduction rather than choosing experiment
   defaults;
+- `execution.py` defines the Navigation-only authorization envelope needed to
+  preserve the exact raw LLM response while executing a separately sampled
+  guided action. It binds the full behavior record and raw-response SHA-256;
+  remote transport uses a distinct `step_guided` method and validates the
+  executed-action echo on both server and client;
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities.
 
 The parent Nimloth layer has a pure `SharedSlotProjector`/`ValueHead` snapshot
 and capture-to-Q scorer, but this package does not yet own a production critic
 service, snapshot refresh lifecycle, guided rollout sampler, integrated PPO
-loss, or checkpoint lifecycle. The pure scorer and replay helper are not wired
-to the actor worker or trainer. Enabling `joint_policy`
+loss, or checkpoint lifecycle. The execution envelope is not produced by the
+agent loop, and the pure scorer/replay helpers are not wired to the actor worker
+or trainer. Enabling `joint_policy`
 therefore fails closed instead of silently running stock PPO. Remaining integration steps
 are described in `docs/joint_policy_scaffold.md`.
