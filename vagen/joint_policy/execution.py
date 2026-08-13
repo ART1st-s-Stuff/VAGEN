@@ -10,7 +10,7 @@ from typing import Any
 
 from .contract import GuidedPolicyBehaviorRecord
 
-GUIDED_ACTION_EXECUTION_SCHEMA = "vagen_guided_action_execution_v1"
+GUIDED_ACTION_EXECUTION_SCHEMA = "vagen_guided_action_execution_v2"
 _SHA256_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
@@ -21,6 +21,7 @@ class GuidedActionExecutionRequest:
     schema: str
     behavior_record_id: str
     raw_response_sha256: str
+    response_trace_id: str
     behavior_record: GuidedPolicyBehaviorRecord
 
     def __post_init__(self) -> None:
@@ -34,6 +35,14 @@ class GuidedActionExecutionRequest:
         ):
             raise ValueError(
                 "guided action execution raw_response_sha256 must be a "
+                "canonical sha256 id"
+            )
+        if (
+            not isinstance(self.response_trace_id, str)
+            or _SHA256_ID.fullmatch(self.response_trace_id) is None
+        ):
+            raise ValueError(
+                "guided action execution response_trace_id must be a "
                 "canonical sha256 id"
             )
         if not isinstance(self.behavior_record, GuidedPolicyBehaviorRecord):
@@ -82,6 +91,7 @@ class GuidedActionExecutionRequest:
         behavior: GuidedPolicyBehaviorRecord,
         *,
         raw_response: str,
+        response_trace_id: str,
     ) -> "GuidedActionExecutionRequest":
         if not isinstance(behavior, GuidedPolicyBehaviorRecord):
             raise ValueError(
@@ -93,6 +103,7 @@ class GuidedActionExecutionRequest:
             schema=GUIDED_ACTION_EXECUTION_SCHEMA,
             behavior_record_id=canonical.record_id(),
             raw_response_sha256=_raw_response_sha256(raw_response),
+            response_trace_id=response_trace_id,
             behavior_record=canonical,
         )
 
@@ -125,6 +136,7 @@ class GuidedActionExecutionRequest:
             schema=GUIDED_ACTION_EXECUTION_SCHEMA,
             behavior_record_id=raw["behavior_record_id"],
             raw_response_sha256=raw["raw_response_sha256"],
+            response_trace_id=raw["response_trace_id"],
             behavior_record=GuidedPolicyBehaviorRecord.from_mapping(
                 raw["behavior_record"]
             ),

@@ -93,8 +93,11 @@ are implemented, but Q-guided operational rollout remains disabled:
   the policy contract and snapshot identity rather than selected per scoring
   call; this scorer is not connected to environment action selection;
 - a Navigation-only guided execution envelope now binds the complete behavior
-  record and raw LLM response SHA-256 while authorizing a separately selected
-  environment action. Remote execution uses an explicit `step_guided` method,
+  record, raw LLM response SHA-256, and identity-bearing response-trace digest
+  while authorizing a separately selected environment action. The parent pure
+  assembler validates request/generation/spec identity, exact token decode,
+  canonical response mask/log-probs, and accepts the guided action as an
+  external input without owning RNG. Remote execution uses an explicit `step_guided` method,
   revalidates before mutation, and checks the environment's action echo on both
   server and client. The agent loop does not yet create this envelope;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
