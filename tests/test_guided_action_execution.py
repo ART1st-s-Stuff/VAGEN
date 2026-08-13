@@ -13,6 +13,7 @@ from vagen.joint_policy import FrozenQGuidedPolicyConfig, GuidedPolicyBehaviorRe
 
 _ACTION_TOKEN_IDS = tuple(range(100, 108))
 _RESPONSE_TRACE_ID = "sha256:" + "1" * 64
+_ACTION_DRAW_RECORD_ID = "sha256:" + "2" * 64
 
 
 def _config() -> FrozenQGuidedPolicyConfig:
@@ -75,7 +76,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
         from vagen.joint_policy import GuidedActionExecutionRequest
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         self.assertEqual(request.prior_action_id, 0)
         self.assertEqual(request.prior_action_name, "move_forward")
@@ -110,7 +111,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
             latent_token_count=16,
         )
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         actions, canonical = _resolve_navigation_execution(
             parsed,
@@ -135,7 +136,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
             latent_token_count=16,
         )
         wrong_prior = GuidedActionExecutionRequest.from_behavior(
-            _behavior(prior_action_id=1), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(prior_action_id=1), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         with self.assertRaisesRegex(ValueError, "prior action"):
             _resolve_navigation_execution(
@@ -145,7 +146,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
             )
 
         forged = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         ).to_mapping()
         forged["behavior_record"]["action_space_names"][0] = "forged"
         with self.assertRaisesRegex(ValueError, "action space|contract"):
@@ -170,6 +171,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
         request = GuidedActionExecutionRequest.from_behavior(
             _behavior(), raw_response="<think>x</think><action>move_forward</action>",
             response_trace_id=_RESPONSE_TRACE_ID,
+            action_draw_record_id=_ACTION_DRAW_RECORD_ID,
         )
         with self.assertRaisesRegex(ValueError, "prompt_format=nimloth"):
             env._sync_step(
@@ -210,7 +212,7 @@ class GuidedActionExecutionContractTest(unittest.TestCase):
         env._render_obs = lambda init: {"obs_str": "next"}
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         _obs, reward, done, info = env._sync_step(
             _raw_response(0),
@@ -257,7 +259,7 @@ class GuidedActionRemoteTransportTest(unittest.TestCase):
         env._session_id = "session-a"
         env._check_connected = lambda _method: None
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         env._call = AsyncMock(
             return_value=(
@@ -293,7 +295,7 @@ class GuidedActionRemoteTransportTest(unittest.TestCase):
                 raise AssertionError("not used")
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         fake_env = SimpleNamespace(step=AsyncMock())
         handler = _Handler()
@@ -322,7 +324,7 @@ class GuidedActionRemoteTransportTest(unittest.TestCase):
         from vagen.joint_policy import GuidedActionExecutionRequest
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         bad_info = _guided_info(request)
         bad_info["executed_action_ids"] = [request.prior_action_id]
@@ -353,7 +355,7 @@ class GuidedActionRemoteTransportTest(unittest.TestCase):
         from vagen.joint_policy import GuidedActionExecutionRequest
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
 
         class _Handler(BaseGymHandler):
@@ -379,7 +381,7 @@ class GuidedActionRemoteTransportTest(unittest.TestCase):
         from vagen.joint_policy import GuidedActionExecutionRequest
 
         request = GuidedActionExecutionRequest.from_behavior(
-            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID
+            _behavior(), raw_response=_raw_response(0), response_trace_id=_RESPONSE_TRACE_ID, action_draw_record_id=_ACTION_DRAW_RECORD_ID
         )
         fake_env = SimpleNamespace(
             guided_step=AsyncMock(

@@ -27,8 +27,9 @@ Current scope:
   defaults;
 - `execution.py` defines the Navigation-only authorization envelope needed to
   preserve the exact raw LLM response while executing a separately sampled
-  guided action. Schema v2 binds the full behavior record, raw-response SHA-256,
-  and the parent-validated identity-bearing response-trace digest; remote
+  guided action. Schema v3 binds the full behavior record, raw-response SHA-256,
+  parent-validated identity-bearing response-trace digest, and external action-
+  draw record digest; remote
   transport uses a distinct `step_guided` method and validates the
   executed-action echo on both server and client;
 - the behavior contract binds action names, action token ids, score dtype,
