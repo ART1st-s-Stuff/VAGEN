@@ -25,6 +25,7 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
             temperature=0.0,
             top_p=1.0,
             gpu_memory_utilization=0.6,
+            tensor_parallel_size=8,
             env_timeout=300.0,
         )
 
@@ -37,6 +38,15 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
         config = build_config(self._args(Path("/output.json")))
         text = str(config)
         self.assertEqual(config.actor_rollout_ref.rollout.name, "nimloth_vllm")
+        self.assertEqual(
+            config.actor_rollout_ref.rollout.tensor_model_parallel_size,
+            8,
+        )
+        self.assertEqual(config.trainer.n_gpus_per_node, 8)
+        self.assertEqual(
+            config.actor_rollout_ref.rollout.engine_kwargs.vllm.mm_encoder_tp_mode,
+            "data",
+        )
         self.assertEqual(config.actor_rollout_ref.rollout.agent.num_workers, 1)
         self.assertTrue(config.decision_ledger.enabled)
         self.assertFalse(config.joint_policy.enabled)

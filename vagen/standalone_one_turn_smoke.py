@@ -51,7 +51,7 @@ def build_config(args: argparse.Namespace) -> Any:
                     "enforce_eager": True,
                     "free_cache_engine": False,
                     "load_format": "auto",
-                    "tensor_model_parallel_size": 1,
+                    "tensor_model_parallel_size": args.tensor_parallel_size,
                     "data_parallel_size": 1,
                     "pipeline_model_parallel_size": 1,
                     "expert_parallel_size": 1,
@@ -60,7 +60,9 @@ def build_config(args: argparse.Namespace) -> Any:
                     "max_num_seqs": 1,
                     "enable_chunked_prefill": True,
                     "enable_prefix_caching": False,
-                    "engine_kwargs": {"vllm": {}},
+                    "engine_kwargs": {
+                        "vllm": {"mm_encoder_tp_mode": "data"}
+                    },
                     "agent": {
                         "_target_": "verl.workers.config.AgentLoopConfig",
                         "num_workers": 1,
@@ -96,7 +98,7 @@ def build_config(args: argparse.Namespace) -> Any:
                 },
             },
             "trainer": {
-                "n_gpus_per_node": 1,
+                "n_gpus_per_node": args.tensor_parallel_size,
                 "nnodes": 1,
                 "project_name": "nimloth-rl",
                 "experiment_name": args.run_name,
@@ -363,6 +365,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--env-timeout", type=float, default=500.0)
     args = parser.parse_args(argv)
     if args.latent_token_count < 1:
@@ -375,6 +378,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--top-p must be in (0, 1]")
     if not 0.0 < args.gpu_memory_utilization < 1.0:
         parser.error("--gpu-memory-utilization must be in (0, 1)")
+    if args.tensor_parallel_size < 1:
+        parser.error("--tensor-parallel-size must be positive")
     if not args.model.is_dir() or not (args.model / "config.json").is_file():
         parser.error("--model must be a complete local HF checkpoint")
     if not args.agent_loop_config.is_file():
