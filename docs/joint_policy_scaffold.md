@@ -83,6 +83,10 @@ are implemented, but Q-guided operational rollout remains disabled:
   generated K latent hidden rows and raw action-boundary logits without a second
   transformer replay; a two-phase TP protocol validates every rank before the
   LM-head collective, and the sidecar is bound to request/token identities;
+- a pure behavior-replay helper revalidates one homogeneous contract/snapshot
+  batch, uses only each rollout record's persisted frozen-Q vector, and exposes
+  the selected current/behavior guided log-probabilities while preserving the
+  current-prior gradient; it is not yet connected to actor FSDP replay;
 - capture currently requires `data_parallel_size=1` and eager vLLM execution;
   unsupported DP routing and conflicting engine overrides fail closed;
 - `joint_policy.enabled=true` fails closed while Q ownership, rollout sampling,

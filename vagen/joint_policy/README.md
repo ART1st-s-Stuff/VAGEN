@@ -12,10 +12,15 @@ Current scope:
   versioned behavior record, contract identity, and numerical audit reference;
 - `torch_policy.py` implements the tensor distribution while always detaching Q
   and preserving the confirmed prior-to-LLM actor gradient;
+- `replay.py` revalidates an immutable behavior-record batch and replays the
+  selected guided-action log-prob from current prior logits plus only the
+  rollout-persisted frozen Q; callers must provide the expected contract and
+  snapshot identities;
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities.
 
 The package does not yet own a ValueHead, critic snapshot service, guided
-rollout sampler, PPO loss, or checkpoint lifecycle. Enabling `joint_policy` therefore
-fails closed instead of silently running stock PPO. Remaining integration steps
+rollout sampler, integrated PPO loss, or checkpoint lifecycle. The pure replay
+helper is not wired to the actor worker or trainer. Enabling `joint_policy`
+therefore fails closed instead of silently running stock PPO. Remaining integration steps
 are described in `docs/joint_policy_scaffold.md`.

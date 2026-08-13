@@ -7,6 +7,7 @@ from .contract import (
     guided_log_probs_reference,
     parse_joint_policy_section,
 )
+from .replay import replay_guided_behavior_log_probs
 from .torch_policy import frozen_q_guided_log_probs
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "guided_log_probs_reference",
     "parse_joint_policy_section",
     "frozen_q_guided_log_probs",
+    "replay_guided_behavior_log_probs",
 ]
