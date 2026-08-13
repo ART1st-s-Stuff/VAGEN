@@ -2,9 +2,10 @@
 
 ## Status
 
-This document records the framework boundary while state ownership and rollout
-integration remain undecided. Milestone M1 implements no actor logits or PPO
-loss; the M2 contract fixes the confirmed Scheme-B gradient semantics.
+This document records the framework boundary while production rollout
+integration remains incomplete. Milestone M1 implements no actor logits or PPO
+loss; the M2 contract fixes the confirmed Scheme-B gradient semantics and the
+human-approved rollout ownership described below.
 
 ## Confirmed provisional policy
 
@@ -53,6 +54,23 @@ critic state and snapshot owner are implemented.
 persisted guidance scores and snapshot identity rather than recomputing them
 after a critic update.
 
+The rollout coordinator owns a stateless deterministic keyed draw. Its key binds
+the run seed, policy step, stable rollout sample/repeat identity, turn index,
+snapshot id, contract id, and RNG schema. The same logical decision therefore
+keeps the same uniform draw across Ray scheduling, worker restart, and retry;
+an explicitly new logical decision receives a new key. Worker-local RNG streams
+and the vLLM token-sampling RNG are not used for guided-action selection.
+
+A dedicated CPU Ray actor, created by `AgentLoopManager` before agent-loop
+workers, owns the active read-only frozen critic snapshot. The trainable current
+critic and its optimizer remain trainer-owned. After one complete global joint
+update succeeds, the trainer stages a new immutable snapshot and atomically
+activates it for the next rollout batch. A snapshot is never refreshed inside a
+batch or inside PPO minibatches, and old behavior records continue to use their
+persisted old Q and snapshot identity. Disk checkpoint cadence may be less
+frequent, but a complete checkpoint must bind the current critic, optimizer,
+active snapshot, global step, and draw-key state needed for exact resume.
+
 ## Deferred policy decisions
 
 The following still require explicit decisions before M2/M3 are complete:
@@ -61,8 +79,7 @@ The following still require explicit decisions before M2/M3 are complete:
   coefficient, and any warmup or KL target;
 - critic coverage/calibration for action slots not executed in a given state;
 - how simulated tail actions are generated and which non-PPO auxiliary objective,
-  if any, trains them;
-- checkpoint and refresh timing for the frozen critic snapshot.
+  if any, trains them.
 
 ## M2 contract status
 
@@ -103,7 +120,9 @@ are implemented, but Q-guided operational rollout remains disabled:
 - a pure inverse-CDF sampler accepts a uniform draw from an external RNG owner,
   selects using half-open Scheme-B probability intervals, and records the draw,
   full distribution inputs, contract, selected action, and behavior log-prob.
-  It does not create randomness or call the environment;
+  It does not create randomness or call the environment. The confirmed owner is
+  the rollout coordinator's deterministic keyed-draw service; its provenance
+  contract and agent-loop wiring are not yet implemented;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the
@@ -121,8 +140,9 @@ Nimloth `ValueHead`. Its existing token critic is scalar per response token, and
 its transition reward predictor is an immediate-reward model. Neither is used
 as a substitute. The chosen critic state is the mean of the per-slot outputs from the existing
 `SharedSlotProjector` applied to same-generation K-slot hidden rows. The parent
-critic/snapshot/scoring foundation now validates that path, but VAGEN still has
-no production Ray owner, refresh lifecycle, optimizer, or guided sampler.
+critic/snapshot/scoring foundation now validates that path. The CPU Ray owner,
+per-global-update atomic refresh lifecycle, optimizer, and keyed guided sampler
+have confirmed ownership but are not yet implemented or wired.
 
 ## M1: decision ledger
 
@@ -221,6 +241,7 @@ behavior/ledger schema identity, overflow handling, and fail-closed wiring.
 Complete CPU dependencies validate request-scoped/out-of-order capture, partial
 TP failure before LM-head collectives, error cleanup, request/token identity,
 and DataProto propagation. The older direct-vLLM path has separate GPU evidence,
-but the new async transport itself has not yet run on GPU. Q ownership, guided
-action replacement, PPO, checkpoint, and GPU capture validation remain outside
-the completed scope.
+and the async same-generation transport passed its target TP8 GPU capture gate.
+That gate did not score Q or execute a guided action. Production Q ownership,
+guided rollout wiring, PPO, and checkpoint/resume remain outside the completed
+scope.
