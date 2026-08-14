@@ -247,11 +247,13 @@ interface.
 ### M2: guided-policy protocol and checkpoint ownership
 
 The optimizer-free guided rollout portion is complete. The current training
-candidate additionally compiles strict outcome-only discounted returns and
-rollout-time Frozen-V GAE, trains a GPU DP8 replicated current action-value
-critic on the actually executed action, publishes source-step+1 snapshots only
-after every rank completes, and saves the current critic/optimizer plus active
-snapshot in an atomic global-update checkpoint.
+candidate additionally compiles discounted environment rewards and rollout-time
+Frozen-V GAE, trains a GPU DP8 replicated current action-value critic on the
+actually executed action, publishes source-step+1 snapshots only after every
+rank completes, and saves the current critic/optimizer plus active snapshot in
+an atomic global-update checkpoint. Environment configs own reward shaping;
+the compiler validates trajectory topology without forcing intermediate rewards
+to zero.
 
 ### M3: joint PPO
 
@@ -259,9 +261,11 @@ The custom FSDP actor candidate replays current action-boundary logits from the
 same transformer forward used for token reference KL. It applies PPO ratio and
 clipping only to the executed guided action, always detaches rollout-persisted
 frozen Q, and keeps token low-variance KL separate from guided-action entropy.
-Task-limit failure is terminal with zero outcome return. Infrastructure failures
-produce no training row. A terminal observation stores a separate real
-CoT+K-slot trace ending at action-start, without an executed action.
+Task-limit failure is terminal; its configured environment rewards remain in the
+discounted return (the ID169 smoke explicitly configures all failure rewards to
+zero). Infrastructure failures produce no training row. A terminal observation
+stores a separate real CoT+K-slot trace ending at action-start, without an
+executed action.
 
 This is still a gated implementation candidate. It must pass complete Torch,
 Ray, DP8 short-update, snapshot-publication, and interrupted-resume tests before

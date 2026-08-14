@@ -398,10 +398,11 @@ def compile_outcome_returns_and_frozen_v_gae(
     config: JointTrainingConfig,
     selected_action_q_baseline: bool = False,
 ) -> JointTrainingTargets:
-    """Compile outcome-only returns and behavior-frozen GAE for real turns.
+    """Compile discounted environment rewards and behavior-frozen GAE.
 
-    Task-horizon exhaustion is an explicit zero-return failure.  Infrastructure
-    truncation is invalid data and never becomes a policy outcome.
+    Reward shaping is an environment/config policy and may assign finite rewards
+    to any real turn. Infrastructure truncation is invalid data and never becomes
+    a policy outcome.
     """
 
     if selected_action_q_baseline:
@@ -508,7 +509,7 @@ def compile_outcome_returns_and_frozen_v_gae(
                 "joint training trajectory turn indices must be contiguous from zero: "
                 f"trajectory={identity}, actual={actual_turns}"
             )
-        _validate_outcome_sequence(trajectory)
+        _validate_trajectory_sequence(trajectory)
 
         running_return = 0.0
         running_advantage = 0.0
@@ -595,14 +596,12 @@ def _validated_guided_ledger(raw: Any) -> Mapping[str, Any]:
     return raw
 
 
-def _validate_outcome_sequence(trajectory: list[dict[str, Any]]) -> None:
+def _validate_trajectory_sequence(trajectory: list[dict[str, Any]]) -> None:
     for item in trajectory[:-1]:
         if item["stop_reason"] != "continue":
             raise ValueError("only the final trajectory turn may carry an outcome")
         if item["terminated"] or item["truncated"]:
             raise ValueError("non-final trajectory turn cannot be terminal or truncated")
-        if item["reward"] != 0.0:
-            raise ValueError("outcome-only training requires zero intermediate rewards")
     final = trajectory[-1]
     reason = final["stop_reason"]
     if reason == "continue":
@@ -610,20 +609,14 @@ def _validate_outcome_sequence(trajectory: list[dict[str, Any]]) -> None:
     if reason == "success":
         if not final["terminated"] or final["truncated"]:
             raise ValueError("success must be an environment terminal outcome")
-        if final["reward"] <= 0.0:
-            raise ValueError("success outcome reward must be positive")
     elif reason == "environment_failure":
         if not final["terminated"] or final["truncated"]:
             raise ValueError("environment failure must be terminal")
-        if final["reward"] != 0.0:
-            raise ValueError("failure outcome return must be zero")
     elif reason == "task_failure":
         if final["terminated"] or not final["truncated"]:
             raise ValueError(
                 "task failure must preserve environment non-terminal/truncated facts"
             )
-        if final["reward"] != 0.0:
-            raise ValueError("failure outcome return must be zero")
     else:
         raise ValueError(f"invalid final rollout outcome: {reason!r}")
 

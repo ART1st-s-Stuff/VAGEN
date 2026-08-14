@@ -269,6 +269,28 @@ class FrozenVGAETest(unittest.TestCase):
         self.assertEqual(result.discounted_returns, (9.0, 10.0))
         self.assertEqual(result.executed_action_ids, (0, 0))
 
+    def test_intermediate_rewards_are_discounted_into_returns_and_frozen_v_gae(self) -> None:
+        from vagen.joint_policy.training_contract import (
+            compile_outcome_returns_and_frozen_v_gae,
+            parse_joint_training_section,
+        )
+
+        config = parse_joint_training_section(_config())
+        rows = [
+            _row(0, stop_reason="continue", reward=0.25),
+            _row(1, stop_reason="success", reward=1.0, terminated=True),
+        ]
+        result = compile_outcome_returns_and_frozen_v_gae(rows, config=config)
+        self.assertEqual(result.discounted_returns, (1.15, 1.0))
+        expected_v = result.frozen_state_values[0]
+        self.assertTrue(
+            math.isclose(
+                result.raw_advantages[0],
+                0.25 + config.gamma * expected_v - expected_v
+                + config.gamma * config.gae_lambda * (1.0 - expected_v),
+            )
+        )
+
     def test_multiple_trajectories_restore_input_order_before_global_normalization(self) -> None:
         from vagen.joint_policy.training_contract import (
             compile_outcome_returns_and_frozen_v_gae,
@@ -289,7 +311,7 @@ class FrozenVGAETest(unittest.TestCase):
         self.assertEqual(len(result.advantages), 4)
         self.assertTrue(math.isclose(sum(result.advantages), 0.0, abs_tol=1e-9))
 
-    def test_rejects_infrastructure_truncation_and_nonzero_failure_reward(self) -> None:
+    def test_rejects_infrastructure_truncation(self) -> None:
         from vagen.joint_policy.training_contract import (
             compile_outcome_returns_and_frozen_v_gae,
             parse_joint_training_section,
@@ -301,11 +323,18 @@ class FrozenVGAETest(unittest.TestCase):
                 [_row(0, stop_reason="infrastructure_truncation", truncated=True)],
                 config=config,
             )
-        with self.assertRaisesRegex(ValueError, "failure.*zero"):
-            compile_outcome_returns_and_frozen_v_gae(
-                [_row(0, stop_reason="task_failure", reward=1.0, truncated=True)],
-                config=config,
-            )
+
+    def test_task_failure_can_retain_configured_shaping_reward(self) -> None:
+        from vagen.joint_policy.training_contract import (
+            compile_outcome_returns_and_frozen_v_gae,
+            parse_joint_training_section,
+        )
+
+        result = compile_outcome_returns_and_frozen_v_gae(
+            [_row(0, stop_reason="task_failure", reward=0.25, truncated=True)],
+            config=parse_joint_training_section(_config()),
+        )
+        self.assertEqual(result.discounted_returns, (0.25,))
 
     def test_rejects_action_dependent_q_baseline_and_malformed_sequences(self) -> None:
         from vagen.joint_policy.training_contract import (

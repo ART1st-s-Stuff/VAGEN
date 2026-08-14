@@ -46,8 +46,9 @@ Current scope:
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities;
 - `training_contract.py`, `outcome.py`, and `terminal_state.py` define valid
-  task outcomes, real terminal CoT+K-slot traces, outcome-only returns, and
-  rollout-time Frozen-V GAE without using selected-action Q as a state baseline;
+  task outcomes, real terminal CoT+K-slot traces, discounted environment-reward
+  returns, and rollout-time Frozen-V GAE without using selected-action Q as a
+  state baseline; reward shaping is selected explicitly by environment config;
 - `training_batch.py` compiles only identity-complete rollout evidence and
   excludes duplicated padding rows from actor, critic, and metrics;
 - `actor.py` is the custom FSDP actor candidate. It uses current action-boundary
