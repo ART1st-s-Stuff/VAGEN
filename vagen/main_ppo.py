@@ -158,48 +158,48 @@ def _validate_joint_integration_gate_runtime(
         or critic_optim.eps != 1.0e-8
         or critic_optim.weight_decay != 0.01
     ):
-        raise ValueError("ID170 integration gate numerical contract mismatch")
+        raise ValueError("ID171 integration gate numerical contract mismatch")
     if int(trainer.total_training_steps) != gate.expected_total_training_steps:
-        raise ValueError("ID170 integration gate total_training_steps mismatch")
+        raise ValueError("ID171 integration gate total_training_steps mismatch")
     if int(trainer.total_epochs) != gate.expected_total_training_steps:
-        raise ValueError("ID170 integration gate total_epochs mismatch")
+        raise ValueError("ID171 integration gate total_epochs mismatch")
     if trainer.resume_mode != gate.expected_resume_mode:
-        raise ValueError("ID170 integration gate resume_mode mismatch")
+        raise ValueError("ID171 integration gate resume_mode mismatch")
     if trainer.project_name != "vagen" or not str(
         trainer.experiment_name
-    ).startswith("170_smoke_vagenlite_jointupdate_dp8_tp8_"):
-        raise ValueError("ID170 integration gate W&B identity mismatch")
+    ).startswith("171_smoke_vagenlite_jointupdate_dp8_tp8_"):
+        raise ValueError("ID171 integration gate W&B identity mismatch")
     if set(logger_names) != {"console", "wandb"}:
-        raise ValueError("ID170 integration gate requires console and W&B logging")
+        raise ValueError("ID171 integration gate requires console and W&B logging")
     if trainer.val_before_train or int(trainer.test_freq) != -1:
-        raise ValueError("ID170 integration gate forbids validation rollout")
+        raise ValueError("ID171 integration gate forbids validation rollout")
     if not str(trainer.default_local_dir).endswith("/checkpoints"):
-        raise ValueError("ID170 integration gate checkpoint directory mismatch")
+        raise ValueError("ID171 integration gate checkpoint directory mismatch")
     if int(config.data.train_batch_size) != 8 or int(rollout.n) != 1:
-        raise ValueError("ID170 integration gate requires 8 trajectories and rollout n=1")
+        raise ValueError("ID171 integration gate requires 8 trajectories and rollout n=1")
     if not str(config.data.train_files).endswith(
-        "train_navigation_joint_id170.yaml"
+        "train_navigation_joint_id171.yaml"
     ):
-        raise ValueError("ID170 integration gate train split config mismatch")
+        raise ValueError("ID171 integration gate train split config mismatch")
     if not bool(actor.freeze_vision_tower):
-        raise ValueError("ID170 integration gate requires frozen vision tower")
+        raise ValueError("ID171 integration gate requires frozen vision tower")
     if str(model.path) != expected_model or training.critic_checkpoint != expected_model:
-        raise ValueError("ID170 integration gate checkpoint initialization mismatch")
+        raise ValueError("ID171 integration gate checkpoint initialization mismatch")
     if int(actor.ppo_mini_batch_size) != 8 or int(
         actor.ppo_micro_batch_size_per_gpu
     ) != 1:
-        raise ValueError("ID170 integration gate PPO batch layout mismatch")
+        raise ValueError("ID171 integration gate PPO batch layout mismatch")
     if not bool(rollout.enforce_eager):
-        raise ValueError("ID170 integration gate requires eager vLLM")
+        raise ValueError("ID171 integration gate requires eager vLLM")
     engine_kwargs = rollout.get("engine_kwargs", {})
     if engine_kwargs.get("vllm", {}).get("mm_encoder_tp_mode") != "data":
-        raise ValueError("ID170 integration gate requires mm_encoder_tp_mode=data")
+        raise ValueError("ID171 integration gate requires mm_encoder_tp_mode=data")
     from vagen.agent_loop.decision_ledger import parse_decision_ledger_enabled
 
     if not parse_decision_ledger_enabled(config.get("decision_ledger")):
-        raise ValueError("ID170 integration gate requires decision ledger")
+        raise ValueError("ID171 integration gate requires decision ledger")
     if trainer.get("concat_multi_turn", True):
-        raise ValueError("ID170 integration gate requires no-concat training")
+        raise ValueError("ID171 integration gate requires no-concat training")
 
 
 def _configure_joint_actor_extension(config):
