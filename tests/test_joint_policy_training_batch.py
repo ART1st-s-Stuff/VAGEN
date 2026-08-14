@@ -200,6 +200,15 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
             },
         )
 
+    def _dataproto(self):
+        from verl import DataProto
+
+        raw = self._batch()
+        return DataProto.from_dict(
+            tensors=raw.batch,
+            non_tensors=raw.non_tensor_batch,
+        )
+
     def test_compiles_strict_rollout_evidence_into_tensor_targets(self) -> None:
         import torch
 
@@ -208,7 +217,7 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
             prepare_joint_training_batch,
         )
 
-        batch = self._batch()
+        batch = self._dataproto()
         targets = prepare_joint_training_batch(batch, config=self._config())
         self.assertEqual(targets.discounted_returns, (0.0, 0.0))
         self.assertEqual(batch.batch["joint_critic_hidden"].shape, (2, 1, 2))
@@ -224,11 +233,11 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
     def test_rejects_trace_token_or_terminal_identity_tampering(self) -> None:
         from vagen.joint_policy.training_batch import prepare_joint_training_batch
 
-        batch = self._batch()
+        batch = self._dataproto()
         batch.batch["responses"][0, 1] = 101
         with self.assertRaisesRegex(ValueError, "response IDs"):
             prepare_joint_training_batch(batch, config=self._config())
-        batch = self._batch()
+        batch = self._dataproto()
         batch.non_tensor_batch["terminal_state_trace"][0] = batch.non_tensor_batch[
             "terminal_state_trace"
         ][1]
