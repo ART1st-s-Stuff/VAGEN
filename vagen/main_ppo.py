@@ -102,11 +102,112 @@ def run_ppo(config, task_runner_class=None) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
+def _validate_joint_integration_gate_runtime(
+    config,
+    *,
+    training,
+    policy,
+    gate,
+) -> None:
+    """Keep the temporary escape hatch narrower than a production run."""
+
+    actor = config.actor_rollout_ref.actor
+    rollout = config.actor_rollout_ref.rollout
+    trainer = config.trainer
+    model = config.actor_rollout_ref.model
+    logger_names = list(trainer.logger)
+    expected_model = (
+        "/project/peilab/atst/nimloth/outputs/experiments/"
+        "vagen_legacy_wm_k16_grid/2026-08-02/sft2/"
+        "74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_"
+        "ws16n3g844lw844_px100352/train_ws16/epoch_001"
+    )
+    actor_optim = training.actor_optimizer
+    critic_optim = training.critic_optimizer
+    if (
+        policy.alpha != 1.0
+        or policy.beta != 1.0
+        or policy.prior_temperature != 1.0
+        or policy.score_dtype != "float32"
+        or training.run_seed != 42001
+        or training.gamma != 0.99
+        or training.gae_lambda != 0.95
+        or training.ppo_clip_ratio != 0.2
+        or training.token_kl_coefficient != 0.01
+        or training.guided_entropy_coefficient != 0.01
+        or training.checkpoint_frequency != 1
+        or training.initial_snapshot_source_step != 776
+        or training.critic_qwen_hidden_dim != 2048
+        or training.critic_grid_tokens != 16
+        or training.critic_state_dim != 1024
+        or training.critic_action_count != 8
+        or training.critic_huber_delta != 1.0
+        or training.critic_grad_clip != 1.0
+        or actor_optim.lr != 1.0e-7
+        or actor_optim.betas != (0.9, 0.95)
+        or actor_optim.eps != 1.0e-8
+        or actor_optim.weight_decay != 0.01
+        or actor_optim.grad_clip != 1.0
+        or actor_optim.lr_scheduler_type != "constant"
+        or actor_optim.lr_warmup_steps != 0
+        or actor_optim.lr_warmup_steps_ratio != 0.0
+        or actor_optim.min_lr_ratio is not None
+        or actor_optim.num_cycles != 0.5
+        or critic_optim.lr != 1.0e-4
+        or critic_optim.betas != (0.9, 0.95)
+        or critic_optim.eps != 1.0e-8
+        or critic_optim.weight_decay != 0.01
+    ):
+        raise ValueError("ID165 integration gate numerical contract mismatch")
+    if int(trainer.total_training_steps) != gate.expected_total_training_steps:
+        raise ValueError("ID165 integration gate total_training_steps mismatch")
+    if int(trainer.total_epochs) != gate.expected_total_training_steps:
+        raise ValueError("ID165 integration gate total_epochs mismatch")
+    if trainer.resume_mode != gate.expected_resume_mode:
+        raise ValueError("ID165 integration gate resume_mode mismatch")
+    if trainer.project_name != "vagen" or not str(
+        trainer.experiment_name
+    ).startswith("165_smoke_vagenlite_jointupdate_dp8_tp8_"):
+        raise ValueError("ID165 integration gate W&B identity mismatch")
+    if set(logger_names) != {"console", "wandb"}:
+        raise ValueError("ID165 integration gate requires console and W&B logging")
+    if trainer.val_before_train or int(trainer.test_freq) != -1:
+        raise ValueError("ID165 integration gate forbids validation rollout")
+    if not str(trainer.default_local_dir).endswith("/checkpoints"):
+        raise ValueError("ID165 integration gate checkpoint directory mismatch")
+    if int(config.data.train_batch_size) != 8 or int(rollout.n) != 1:
+        raise ValueError("ID165 integration gate requires 8 trajectories and rollout n=1")
+    if not str(config.data.train_files).endswith(
+        "train_navigation_joint_id165.yaml"
+    ):
+        raise ValueError("ID165 integration gate train split config mismatch")
+    if not bool(actor.freeze_vision_tower):
+        raise ValueError("ID165 integration gate requires frozen vision tower")
+    if str(model.path) != expected_model or training.critic_checkpoint != expected_model:
+        raise ValueError("ID165 integration gate checkpoint initialization mismatch")
+    if int(actor.ppo_mini_batch_size) != 8 or int(
+        actor.ppo_micro_batch_size_per_gpu
+    ) != 1:
+        raise ValueError("ID165 integration gate PPO batch layout mismatch")
+    if not bool(rollout.enforce_eager):
+        raise ValueError("ID165 integration gate requires eager vLLM")
+    engine_kwargs = rollout.get("engine_kwargs", {})
+    if engine_kwargs.get("vllm", {}).get("mm_encoder_tp_mode") != "data":
+        raise ValueError("ID165 integration gate requires mm_encoder_tp_mode=data")
+    from vagen.agent_loop.decision_ledger import parse_decision_ledger_enabled
+
+    if not parse_decision_ledger_enabled(config.get("decision_ledger")):
+        raise ValueError("ID165 integration gate requires decision ledger")
+    if trainer.get("concat_multi_turn", True):
+        raise ValueError("ID165 integration gate requires no-concat training")
+
+
 def _configure_joint_actor_extension(config):
     """Install the explicit custom actor without enabling stock PPO fallback."""
 
     from omegaconf import OmegaConf, open_dict
     from vagen.joint_policy import parse_joint_policy_section
+    from vagen.joint_policy.integration_gate import parse_joint_integration_gate
     from vagen.joint_policy.training_contract import parse_joint_training_section
 
     raw_training = config.get("joint_training", {"enabled": False})
@@ -117,14 +218,24 @@ def _configure_joint_actor_extension(config):
         raw_policy = OmegaConf.to_container(raw_policy, resolve=True)
     training = parse_joint_training_section(raw_training)
     policy = parse_joint_policy_section(raw_policy)
+    raw_gate = config.get("joint_integration_gate", {"enabled": False})
+    if OmegaConf.is_config(raw_gate):
+        raw_gate = OmegaConf.to_container(raw_gate, resolve=True)
+    integration_gate = parse_joint_integration_gate(raw_gate)
     if (training is None) != (policy is None):
         raise ValueError(
             "joint_policy and joint_training must be enabled or disabled together"
         )
     if training is None:
+        if integration_gate is not None:
+            raise ValueError("joint integration gate requires enabled joint training")
         return None
     actor = config.actor_rollout_ref.actor
     model = config.actor_rollout_ref.model
+    if config.actor_rollout_ref.rollout.name != "nimloth_vllm":
+        raise ValueError("joint training requires rollout.name=nimloth_vllm")
+    import vagen.rollout.nimloth_vllm  # noqa: F401 -- register driver replica
+
     if actor.strategy not in {"fsdp", "fsdp2"}:
         raise ValueError("joint training supports only FSDP actor strategy")
     if int(actor.get("ulysses_sequence_parallel_size", 1)) != 1:
@@ -160,6 +271,13 @@ def _configure_joint_actor_extension(config):
         raise ValueError("joint training does not support post-return row filtering")
     if config.trainer.default_hdfs_dir is not None:
         raise ValueError("joint exact checkpoint/resume currently requires local shared storage")
+    if integration_gate is not None:
+        _validate_joint_integration_gate_runtime(
+            config,
+            training=training,
+            policy=policy,
+            gate=integration_gate,
+        )
     if config.trainer.get("remove_previous_ckpt_in_save", False):
         raise ValueError("joint checkpointing forbids remove_previous_ckpt_in_save")
     keep = config.trainer.get("max_actor_ckpt_to_keep", None)

@@ -66,6 +66,7 @@ from vagen.agent_loop.decision_ledger import (
     validate_decision_ledger_reward_rows,
 )
 from vagen.joint_policy import parse_joint_policy_section
+from vagen.joint_policy.integration_gate import parse_joint_integration_gate
 from vagen.joint_policy.training_contract import parse_joint_training_section
 from vagen.utils.image_dump_actor import ImageDumpActor
 from vagen.utils.upload_hugging_face import HFUploadManager
@@ -427,12 +428,20 @@ class RayPPOTrainer:
         self.joint_training_config = parse_joint_training_section(
             self.config.get("joint_training", {"enabled": False})
         )
+        self.joint_integration_gate = parse_joint_integration_gate(
+            self.config.get("joint_integration_gate", {"enabled": False})
+        )
         if (self.joint_policy_config is None) != (
             self.joint_training_config is None
         ):
             raise ValueError(
                 "joint_policy and joint_training must be enabled together"
             )
+        if (
+            self.joint_integration_gate is not None
+            and self.joint_training_config is None
+        ):
+            raise ValueError("joint integration gate requires joint training")
         if self.joint_policy_config is not None and not ledger_enabled:
             raise ValueError(
                 "joint_policy.enabled requires decision_ledger.enabled=true"
@@ -457,11 +466,12 @@ class RayPPOTrainer:
                 raise ValueError(
                     "joint token KL requires a frozen reference policy worker"
                 )
-            raise NotImplementedError(
-                "joint update and atomic resume paths exist but have not passed "
-                "the required Torch/Ray/distributed integration gates; "
-                "refusing production training"
-            )
+            if self.joint_integration_gate is None:
+                raise NotImplementedError(
+                    "joint update and atomic resume paths exist but have not passed "
+                    "the required Torch/Ray/distributed integration gates; "
+                    "refusing production training"
+                )
 
         # HuggingFace Hub upload
         self._hf_upload_manager = HFUploadManager(config)

@@ -69,6 +69,14 @@ joint_policy:
 
 # Joint training has no numeric defaults. Every null must be explicitly
 # overridden before enabled=true; disabled parsing rejects populated values.
+# Non-production escape hatch is restricted in code to the human-approved
+# ID165 two-phase DP8 smoke. It cannot enable a general training run.
+joint_integration_gate:
+  enabled: false
+  implementation: null
+  experiment_id: null
+  phase: null
+
 joint_training:
   enabled: false
   implementation: null
