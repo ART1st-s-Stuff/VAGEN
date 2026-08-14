@@ -148,6 +148,12 @@ algorithm:
 filter:
   enable: false
 
+huggingface_hub:
+  hf_save_freq: null
+  repo_id: vagen-training
+  private: false
+  upload_contents: [hf_model]
+
 trainer:
   project_name: vagen
   experiment_name: ${oc.env:ID165_RUN_NAME}
