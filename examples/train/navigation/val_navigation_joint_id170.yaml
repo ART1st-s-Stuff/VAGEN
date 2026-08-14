@@ -1,0 +1,19 @@
+# Required non-empty validation dataset; ID170 disables validation rollout.
+envs:
+  - name: RemoteEnv
+    n_envs: 1
+    data_source: navigation
+    seed: [0, 1]
+    max_turns: 2
+    response_length_per_turn: 128
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: base
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.0
+      format_reward: 0.0
+      success_reward: 1.0
