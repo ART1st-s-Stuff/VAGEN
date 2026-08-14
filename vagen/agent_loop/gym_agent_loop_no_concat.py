@@ -650,7 +650,10 @@ class GymAgentLoop(AgentLoopBase):
                 # action_start is a forced boundary token, not an action. vLLM
                 # returns immediately after its same-generation hidden is seen.
                 "stop_token_ids": [spec.injected_token_ids[-1]],
-                "extra_args": spec.to_extra_args(),
+                "extra_args": {
+                    **spec.to_extra_args(),
+                    "nimloth_policy_state_capture_mode": "terminal_latent_only",
+                },
             }
         )
         with simple_timer("generate_sequences", agent_data.metrics):
@@ -676,14 +679,20 @@ class GymAgentLoop(AgentLoopBase):
         latent_hidden = policy_state.get("latent_hidden")
         latent_ids = list(spec.injected_token_ids[:-1])
         if (
-            policy_state.get("schema") != "nimloth_policy_state_v2"
+            set(policy_state)
+            != {
+                "schema",
+                "request_id",
+                "generation_id",
+                "latent_token_ids",
+                "latent_hidden",
+            }
+            or policy_state.get("schema") != "nimloth_terminal_latent_state_v1"
             or policy_state.get("request_id") != agent_data.request_id
             or not isinstance(generation_id, str)
             or not generation_id
             or generation_id == agent_data.request_id
             or policy_state.get("latent_token_ids") != latent_ids
-            or policy_state.get("action_start_token_id")
-            != spec.injected_token_ids[-1]
             or not isinstance(latent_hidden, list)
             or len(latent_hidden) != len(latent_ids)
         ):

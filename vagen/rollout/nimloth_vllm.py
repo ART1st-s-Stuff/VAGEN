@@ -15,6 +15,9 @@ from verl.workers.rollout.vllm_rollout.vllm_async_server import (
 )
 
 _POLICY_STATE_SCHEMA = "nimloth_policy_state_v2"
+_TERMINAL_LATENT_STATE_SCHEMA = "nimloth_terminal_latent_state_v1"
+_CAPTURE_MODE_KEY = "nimloth_policy_state_capture_mode"
+_TERMINAL_CAPTURE_MODE = "terminal_latent_only"
 _WORKER_EXTENSION = (
     "nimloth.backbone.qwen25vl.vllm_hidden."
     "PolicyStateCaptureWorkerExtension"
@@ -30,6 +33,31 @@ def _capture_token_ids(spec: Any) -> tuple[tuple[int, ...], int, tuple[int, ...]
     return injected[:-1], injected[-1], tuple(
         int(value) for value in spec.action_token_ids
     )
+
+
+def _terminal_latent_state_payload(
+    request_id: str,
+    generation_id: str,
+    latent_hidden: Any,
+    *,
+    latent_token_ids: tuple[int, ...],
+) -> dict[str, Any]:
+    hidden = latent_hidden.tolist()
+    if (
+        not isinstance(hidden, list)
+        or not hidden
+        or len(hidden) != len(latent_token_ids)
+        or any(not isinstance(row, list) or not row for row in hidden)
+        or any(not math.isfinite(float(value)) for row in hidden for value in row)
+    ):
+        raise RuntimeError("Nimloth vLLM returned an invalid terminal latent state")
+    return {
+        "schema": _TERMINAL_LATENT_STATE_SCHEMA,
+        "request_id": str(request_id),
+        "generation_id": str(generation_id),
+        "latent_token_ids": list(latent_token_ids),
+        "latent_hidden": hidden,
+    }
 
 
 def _policy_state_payload(
@@ -124,6 +152,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
         from nimloth.backbone.qwen25vl.turn_generation import TurnGenerationSpec
         from nimloth.backbone.qwen25vl.vllm_hidden import (
             async_abort_policy_state_capture_for_request,
+            async_pop_latent_state_capture_for_request,
             async_pop_policy_state_capture_for_request,
             async_start_policy_state_capture_for_request,
         )
@@ -146,6 +175,9 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
             raise ValueError(
                 "Nimloth capture generation_id must differ from session_request_id"
             )
+        capture_mode = extra_args.get(_CAPTURE_MODE_KEY, "policy_and_action_logits")
+        if capture_mode not in {"policy_and_action_logits", _TERMINAL_CAPTURE_MODE}:
+            raise ValueError(f"unsupported Nimloth policy-state capture mode: {capture_mode!r}")
         generation_id = request_id
         session_id = session_request_id
         latent_ids, action_start_id, action_ids = _capture_token_ids(spec)
@@ -164,10 +196,40 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                 request_id=request_id,
                 image_data=image_data,
             )
-            state = await async_pop_policy_state_capture_for_request(
-                self.engine,
-                request_id=request_id,
-            )
+            if capture_mode == _TERMINAL_CAPTURE_MODE:
+                latent_hidden = await async_pop_latent_state_capture_for_request(
+                    self.engine,
+                    request_id=request_id,
+                )
+                policy_state = _terminal_latent_state_payload(
+                    session_id,
+                    generation_id,
+                    latent_hidden,
+                    latent_token_ids=latent_ids,
+                )
+            else:
+                state = await async_pop_policy_state_capture_for_request(
+                    self.engine,
+                    request_id=request_id,
+                )
+                if len(state.latent_hidden) != len(latent_ids):
+                    raise RuntimeError(
+                        "Nimloth vLLM returned the wrong latent row count: "
+                        f"{len(state.latent_hidden)} != {len(latent_ids)}"
+                    )
+                if tuple(state.action_logits.shape) != (len(action_ids),):
+                    raise RuntimeError(
+                        "Nimloth vLLM returned the wrong action-logit shape: "
+                        f"{tuple(state.action_logits.shape)}"
+                    )
+                policy_state = _policy_state_payload(
+                    session_id,
+                    generation_id,
+                    state,
+                    latent_token_ids=latent_ids,
+                    action_start_token_id=action_start_id,
+                    action_token_ids=action_ids,
+                )
         except BaseException:
             try:
                 await async_abort_policy_state_capture_for_request(
@@ -177,28 +239,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
             except BaseException:
                 pass
             raise
-        if len(state.latent_hidden) != len(latent_ids):
-            raise RuntimeError(
-                "Nimloth vLLM returned the wrong latent row count: "
-                f"{len(state.latent_hidden)} != {len(latent_ids)}"
-            )
-        if tuple(state.action_logits.shape) != (len(action_ids),):
-            raise RuntimeError(
-                "Nimloth vLLM returned the wrong action-logit shape: "
-                f"{tuple(state.action_logits.shape)}"
-            )
-        return output.model_copy(
-            update={
-                "policy_state": _policy_state_payload(
-                    session_id,
-                    generation_id,
-                    state,
-                    latent_token_ids=latent_ids,
-                    action_start_token_id=action_start_id,
-                    action_token_ids=action_ids,
-                )
-            }
-        )
+        return output.model_copy(update={"policy_state": policy_state})
 
 
 class NimlothVLLMReplica(vLLMReplica):
