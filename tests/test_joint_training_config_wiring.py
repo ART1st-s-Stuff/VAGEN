@@ -128,6 +128,12 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
         self.assertEqual(tuple(optim.betas), (0.9, 0.95))
         self.assertEqual(optim.override_optimizer_config, {"eps": 1e-8})
         self.assertEqual(config.actor_rollout_ref.actor.grad_clip, 1.0)
+        from verl.utils.import_utils import load_extern_type
+        from verl.workers.actor.dp_actor import DataParallelPPOActor
+
+        custom = config.actor_rollout_ref.actor.custom_cls
+        actor_type = load_extern_type(custom.path, custom.name)
+        self.assertTrue(issubclass(actor_type, DataParallelPPOActor))
 
     def test_rejects_non_target_parallel_layout(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension
