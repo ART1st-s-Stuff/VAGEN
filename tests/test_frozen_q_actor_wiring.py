@@ -100,7 +100,11 @@ class FrozenQActorWiringTest(unittest.TestCase):
         with patch(
             "vagen.agent_loop.agent_loop_no_concat.ray.nodes",
             return_value=[
-                {"NodeID": "node-1", "Alive": True, "Resources": {"CPU": 1}}
+                {
+                    "NodeID": "01" * 28,
+                    "Alive": True,
+                    "Resources": {"CPU": 1},
+                }
             ],
         ):
             manager._init_agent_loop_workers()

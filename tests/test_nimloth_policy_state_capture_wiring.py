@@ -367,7 +367,10 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
             / "vagen/agent_loop/gym_agent_loop_no_concat.py"
         ).read_text(encoding="utf-8")
         self.assertIn("agent_data.turn_policy_state = output.policy_state", source)
-        self.assertIn('"policy_state": agent_data.turn_policy_state', source)
+        self.assertIn(
+            'extra_fields["policy_state"] = agent_data.turn_policy_state',
+            source,
+        )
         manager_source = (
             Path(__file__).resolve().parents[1]
             / "vagen/agent_loop/agent_loop_no_concat.py"

@@ -84,7 +84,7 @@ class JointPolicyProductionWiringTest(unittest.TestCase):
         self.assertIn("finally:", method)
         self.assertIn("self.frozen_q_owner.unpin_batch.remote", method)
         self.assertLess(
-            method.index("pin_batch.remote"),
+            method.index("self._pin_frozen_q_batch(prompts)"),
             method.index("worker.generate_sequences.remote"),
         )
         self.assertGreater(
