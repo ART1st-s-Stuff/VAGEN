@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 
 
@@ -193,6 +196,18 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
             config.trainer.default_local_dir = "/outputs/id166/checkpoints"
             config.trainer.concat_multi_turn = False
         return config
+
+    def test_external_lib_registers_worker_rollout_class_in_fresh_process(self) -> None:
+        script = """
+from verl.utils.import_utils import import_external_libs
+from verl.workers.rollout.base import get_rollout_class
+import_external_libs('vagen.rollout.nimloth_vllm')
+cls = get_rollout_class('nimloth_vllm', 'async')
+assert cls.__name__ == 'vLLMAsyncRollout', cls
+"""
+        env = dict(os.environ)
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        subprocess.run([sys.executable, "-c", script], check=True, env=env)
 
     def test_id166_config_constructs_disabled_hf_upload_manager(self) -> None:
         from omegaconf import OmegaConf
