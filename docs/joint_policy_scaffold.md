@@ -291,10 +291,15 @@ ID163 had produced no model or rollout evidence because a preflight-created
 `external/le-wm/__pycache__` correctly tripped the clean-worktree gate; ID164
 used a new numeric ID, empty output, and fresh production worktree.
 
-The later training candidate is VAGEN `f4fdd83f` with VERL `d952ad16`. Local
-source/dependency-light checks passed (`40` tests with `8` dependency skips and
-636-file AST parsing), but the available local environment has no Torch. Server
-SSH failed before worktree creation with `Connection closed by UNKNOWN port
-65535`, so no complete-dependency, Ray, DP8, or interrupted-resume result exists
-yet. `RayPPOTrainer` therefore still refuses production joint training before
-worker creation.
+The current training candidate is VAGEN `2a32f2f` with VERL `42cb2f12`.
+Fresh server worktrees at the exact parent/VAGEN/VERL commits passed `72` focused
+Torch/contract/update/checkpoint tests plus `40` subtests, and an expanded suite
+passed `309` tests plus `115` subtests. This includes a real TensorDict/DataProto
+compiler, one CPU distributed actor+current-critic update, current critic and
+optimizer export/restore, atomic sidecar digest checks, custom-class resolution,
+and a real local Ray frozen-owner restore. These gates found and fixed a
+TensorDict key-iteration bug and scalar Adam step fingerprint bug.
+
+Target-DP8 FSDP/vLLM execution and an interrupted distributed trainer resume
+have not run. `RayPPOTrainer` therefore still refuses production joint training
+before worker creation.
