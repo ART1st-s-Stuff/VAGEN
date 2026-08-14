@@ -227,7 +227,7 @@ def joint_data_metrics(batch: Any) -> dict[str, float]:
         "token_level_rewards",
         "response_mask",
     }
-    missing = required - set(batch.batch)
+    missing = required - set(batch.batch.keys())
     if missing:
         raise ValueError(f"joint data metrics missing tensors: {sorted(missing)}")
     valid = batch.batch["joint_valid_mask"].to(dtype=torch.bool)

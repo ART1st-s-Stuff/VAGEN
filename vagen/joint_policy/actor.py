@@ -140,7 +140,7 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         }
         if self.joint_training.token_kl_coefficient > 0.0:
             required.add("joint_reference_token_log_probs")
-        missing = required - set(data.batch)
+        missing = required - set(data.batch.keys())
         if missing:
             raise ValueError(f"joint actor batch is missing tensors: {sorted(missing)}")
         if self.config.use_kl_loss or self.config.entropy_coeff != 0:
