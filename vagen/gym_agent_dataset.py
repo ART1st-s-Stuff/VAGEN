@@ -2,6 +2,7 @@
 # NOTE: Code comments in English.
 
 import hashlib
+import json
 import random
 from typing import List, Optional, Sequence
 
@@ -134,6 +135,35 @@ def _generate_from_len_three(
     return seeds
 
 
+def _rollout_sample_id(
+    *,
+    spec: EnvSpec,
+    spec_idx: int,
+    env_idx: int,
+    env_seed: int,
+    data_source: str,
+) -> str:
+    """Build a restart-stable identity for one dataset environment record."""
+
+    payload = json.dumps(
+        {
+            "schema": "vagen_rollout_sample_identity_v1",
+            "spec_index": spec_idx,
+            "environment_index": env_idx,
+            "environment_name": spec.name,
+            "environment_seed": env_seed,
+            "data_source": data_source,
+            "config": spec.config,
+            "max_turns": spec.max_turns,
+            "response_length_per_turn": spec.response_length_per_turn,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
 def _generate_seeds_for_spec(
     spec: EnvSpec,
     base_seed: int,
@@ -192,12 +222,20 @@ class AgenticDataset(Dataset):
                 base_seed,
                 spec_idx,
             )
-            for env_seed in seeds:
-                # Each record contains env metadata and the resolved RNG seed
+            for env_idx, env_seed in enumerate(seeds):
+                # Each record contains env metadata and the resolved RNG seed.
                 data_source = getattr(spec, "data_source", "default")
+                rollout_sample_id = _rollout_sample_id(
+                    spec=spec,
+                    spec_idx=spec_idx,
+                    env_idx=env_idx,
+                    env_seed=env_seed,
+                    data_source=data_source,
+                )
                 self.items.append(
                     {
                         "env_name": spec.name,
+                        "rollout_sample_id": rollout_sample_id,
                         "seed": env_seed,
                         "config": spec.config,
                         "max_turns": spec.max_turns,

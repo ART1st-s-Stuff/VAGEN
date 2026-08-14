@@ -34,14 +34,21 @@ Current scope:
   draw record digest; remote
   transport uses a distinct `step_guided` method and validates the
   executed-action echo on both server and client;
+- `frozen_q_actor.py` wraps the parent immutable snapshot owner in one explicit
+  CPU/zero-GPU Ray actor, limits PyTorch native thread pools, and serializes batch
+  pin, scoring, stage/activate CAS, and clean checkpoint operations;
+- `AgentLoopManager` pins one active snapshot around a complete distributed
+  rollout batch and preallocates deterministic per-turn keys from restart-stable
+  dataset sample ids. The no-concat Gym loop performs capture validation, CPU Q
+  scoring, keyed draw, response-trace/behavior assembly, guided environment
+  execution, and ledger/DataProto persistence without rewriting the original
+  response;
 - the behavior contract binds action names, action token ids, score dtype,
   frozen-Q snapshot identity, selected action, and recorded log-probabilities.
 
-The parent Nimloth layer has a pure `SharedSlotProjector`/`ValueHead` snapshot
-and capture-to-Q scorer, but this package does not yet own a production critic
-service, snapshot refresh lifecycle, integrated PPO loss, or checkpoint
-lifecycle. The keyed sampler contract exists, but the agent loop does not yet
-create its stable sample/repeat/turn keys or execution envelope, and the pure
-scorer/replay helpers are not wired to the actor worker or trainer. Enabling `joint_policy`
-therefore fails closed instead of silently running stock PPO. Remaining integration steps
-are described in `docs/joint_policy_scaffold.md`.
+This optimizer-free rollout path is available only to an explicit standalone
+caller that supplies the snapshot and all policy/run values. `RayPPOTrainer`
+still fails closed before worker creation: actor FSDP replay, current-critic
+optimizer and return compiler, post-global-update snapshot publication, and the
+complete trainer checkpoint/resume transaction are not wired. Remaining
+integration steps are described in `docs/joint_policy_scaffold.md`.

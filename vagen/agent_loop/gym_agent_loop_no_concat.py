@@ -6,6 +6,8 @@ import logging
 import math
 import os
 import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -14,12 +16,20 @@ from PIL import Image
 from .agent_loop_no_concat import AgentLoopBase, AgentLoopOutput, register
 from .decision_ledger import (
     build_decision_ledger_from_env_info,
+    build_guided_decision_ledger,
     parse_decision_ledger_enabled,
 )
 from verl.utils.profiler import simple_timer
 from verl.utils.rollout_trace import rollout_trace_op
 from ..envs.gym_image_env import GymImageEnv
 from omegaconf import OmegaConf
+from vagen.joint_policy import (
+    FrozenQGuidedPolicyConfig,
+    GuidedActionDrawKey,
+    parse_joint_policy_section,
+    sample_frozen_q_guided_action,
+    validate_guided_action_execution_result,
+)
 import traceback
 import importlib
 logger = logging.getLogger(__file__)
@@ -123,6 +133,155 @@ def _strip_trailing_generation_terminators(
     return trimmed
 
 
+@dataclass(frozen=True)
+class JointGuidedTurnArtifacts:
+    """Complete immutable provenance for one authorized environment step."""
+
+    batch_pin: Any
+    scoring_record: Any
+    response_trace: Any
+    action_draw: Any
+    execution: Any
+
+
+async def _build_joint_guided_execution(
+    *,
+    frozen_q_owner: Any,
+    batch_pin: Mapping[str, Any],
+    expected_draw_key: Mapping[str, Any],
+    policy_config: FrozenQGuidedPolicyConfig,
+    policy_state: Mapping[str, Any],
+    response_ids: Sequence[int],
+    response_mask: Sequence[int | bool],
+    response_logprobs: Sequence[float],
+    raw_response: str,
+    generation_spec: Any,
+    tokenizer: Any,
+    action_space: str,
+    action_space_names: Sequence[str],
+) -> JointGuidedTurnArtifacts:
+    """Score capture, consume a coordinator key, and authorize one action."""
+
+    from nimloth.training.rl.joint_behavior import (
+        NimlothPolicyResponseTrace,
+        build_guided_execution_from_scoring,
+    )
+    from nimloth.training.rl.joint_frozen_q_owner import (
+        FROZEN_Q_OWNER_SCORE_REQUEST_SCHEMA,
+        FrozenQBatchPin,
+        FrozenQOwnerScoringResult,
+    )
+
+    if frozen_q_owner is None:
+        raise RuntimeError("joint guided execution requires a frozen Q owner")
+    if not isinstance(policy_config, FrozenQGuidedPolicyConfig):
+        raise ValueError(
+            "joint guided execution requires FrozenQGuidedPolicyConfig"
+        )
+    if not isinstance(policy_state, Mapping):
+        raise ValueError("joint guided execution policy_state must be a mapping")
+    pin = FrozenQBatchPin.from_mapping(batch_pin)
+    draw_key = GuidedActionDrawKey.from_mapping(expected_draw_key)
+    config = FrozenQGuidedPolicyConfig.from_mapping(
+        {
+            field: getattr(policy_config, field)
+            for field in policy_config.__dataclass_fields__
+        }
+    )
+    if (
+        draw_key.policy_step != pin.policy_step
+        or draw_key.snapshot_id != pin.snapshot_id
+        or draw_key.contract_id != pin.contract_id
+    ):
+        raise ValueError(
+            "guided action draw key does not match the pinned rollout batch"
+        )
+    expected_contract = config.contract_id(
+        action_space,
+        action_space_names,
+        generation_spec.action_token_ids,
+    )
+    if expected_contract != pin.contract_id:
+        raise ValueError(
+            "joint policy config and action table do not match frozen Q contract"
+        )
+    request_id = policy_state.get("request_id")
+    generation_id = policy_state.get("generation_id")
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(generation_id, str)
+        or not generation_id
+        or request_id == generation_id
+    ):
+        raise ValueError(
+            "joint guided execution requires distinct request and generation identities"
+        )
+    score_result = FrozenQOwnerScoringResult.from_mapping(
+        await frozen_q_owner.score.remote(
+            {
+                "schema": FROZEN_Q_OWNER_SCORE_REQUEST_SCHEMA,
+                "batch_pin": pin.to_mapping(),
+                "policy_state": dict(policy_state),
+                "expected_request_id": request_id,
+                "expected_generation_id": generation_id,
+                "expected_latent_token_ids": list(
+                    generation_spec.injected_token_ids[:-1]
+                ),
+                "expected_action_start_token_id": (
+                    generation_spec.injected_token_ids[-1]
+                ),
+                "expected_action_token_ids": list(
+                    generation_spec.action_token_ids
+                ),
+                "expected_contract_id": pin.contract_id,
+            }
+        )
+    )
+    if score_result.batch_pin != pin:
+        raise ValueError("frozen Q scoring result does not match rollout batch pin")
+    score = score_result.scoring_record
+    trace = NimlothPolicyResponseTrace.build(
+        request_id=request_id,
+        generation_id=generation_id,
+        response_ids=response_ids,
+        response_mask=response_mask,
+        response_logprobs=response_logprobs,
+        raw_response=raw_response,
+        generation_spec=generation_spec,
+        tokenizer=tokenizer,
+    )
+    draw = sample_frozen_q_guided_action(
+        action_space=action_space,
+        action_space_names=action_space_names,
+        action_token_ids=score.action_token_ids,
+        prior_logits=score.prior_logits,
+        frozen_all_action_q=score.frozen_all_action_q,
+        draw_key=draw_key,
+        config=config,
+    )
+    execution = build_guided_execution_from_scoring(
+        scoring_record=score,
+        expected_draw_key=draw_key,
+        action_draw=draw,
+        response_trace=trace,
+        generation_spec=generation_spec,
+        tokenizer=tokenizer,
+        expected_request_id=request_id,
+        expected_generation_id=generation_id,
+        expected_snapshot_id=pin.snapshot_id,
+        expected_contract_id=pin.contract_id,
+        expected_generation_spec_id=trace.generation_spec_id,
+    )
+    return JointGuidedTurnArtifacts(
+        batch_pin=pin,
+        scoring_record=score,
+        response_trace=trace,
+        action_draw=draw,
+        execution=execution,
+    )
+
+
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -145,6 +304,10 @@ class AgentData:
         cur_images: Optional[List[Image.Image]] = None,
         group_idx: int = 0,
         traj_idx: int = 0,
+        joint_policy_batch_pin: Optional[Mapping[str, Any]] = None,
+        guided_action_draw_keys: Optional[Sequence[Mapping[str, Any]]] = None,
+        rollout_sample_id: Optional[str] = None,
+        rollout_repeat_index: Optional[int] = None,
     ):
         self.sys_msg: Optional[Dict[str, Any]] = sys_msg
         self.sys_images: Optional[List[Image.Image]] = sys_images
@@ -159,6 +322,10 @@ class AgentData:
         self.env_name = env_name
         self.group_idx = group_idx
         self.traj_idx = traj_idx
+        self.joint_policy_batch_pin = joint_policy_batch_pin
+        self.guided_action_draw_keys = guided_action_draw_keys
+        self.rollout_sample_id = rollout_sample_id
+        self.rollout_repeat_index = rollout_repeat_index
         # Token buffers
         self.turn_prompt_ids: Optional[List[int]] = None
         self.turn_response_ids: Optional[List[int]] = None
@@ -166,6 +333,8 @@ class AgentData:
         self.turn_response_logprobs: Optional[List[float]] = None
         self.turn_policy_state: Optional[Dict[str, Any]] = None
         self.turn_generation_id: Optional[str] = None
+        self.turn_generation_spec: Optional[Any] = None
+        self.turn_guided_artifacts: Optional[JointGuidedTurnArtifacts] = None
 
         # Env stats
         self.env_turns: int = 0
@@ -199,7 +368,21 @@ class GymAgentLoop(AgentLoopBase):
         cls.decision_ledger_enabled = parse_decision_ledger_enabled(
             config.get("decision_ledger")
         )
-        
+        raw_joint_policy = config.get("joint_policy")
+        if OmegaConf.is_config(raw_joint_policy):
+            raw_joint_policy = OmegaConf.to_container(
+                raw_joint_policy,
+                resolve=True,
+            )
+        cls.joint_policy_config = (
+            None
+            if raw_joint_policy is None
+            else parse_joint_policy_section(raw_joint_policy)
+        )
+        if cls.joint_policy_config is not None and not cls.decision_ledger_enabled:
+            raise ValueError(
+                "joint guided rollout requires decision_ledger.enabled=true"
+            )
 
     @rollout_trace_op
     async def run(self, sampling_params: Dict[str, Any], **kwargs) -> AgentLoopOutput:
@@ -220,11 +403,47 @@ class GymAgentLoop(AgentLoopBase):
         self.env_max_turns = kwargs.get("max_turns", None)
         env: GymImageEnv = env_cls(env_config=env_config)
         try:
+            prompt_format = env_config.get("prompt_format", "free_think")
+            latent_token_count = env_config.get("latent_token_count")
+            joint_enabled = self.joint_policy_config is not None
+            if joint_enabled:
+                if self.frozen_q_owner is None:
+                    raise RuntimeError(
+                        "joint guided rollout requires the frozen Q owner"
+                    )
+                if prompt_format != "nimloth":
+                    raise ValueError(
+                        "joint guided rollout supports only prompt_format=nimloth"
+                    )
+                if not isinstance(kwargs.get("joint_policy_batch_pin"), Mapping):
+                    raise ValueError(
+                        "joint guided rollout requires a manager-issued batch pin"
+                    )
+                draw_keys = kwargs.get("guided_action_draw_keys")
+                if (
+                    isinstance(draw_keys, (str, bytes, Mapping))
+                    or not isinstance(draw_keys, Sequence)
+                    or len(draw_keys) != int(kwargs["max_turns"])
+                ):
+                    raise ValueError(
+                        "joint guided rollout requires one manager-issued draw key per turn"
+                    )
+                if (
+                    not isinstance(kwargs.get("rollout_sample_id"), str)
+                    or not kwargs["rollout_sample_id"]
+                    or kwargs.get("rollout_repeat_index") is None
+                ):
+                    raise ValueError(
+                        "joint guided rollout requires stable sample and repeat identity"
+                    )
+            elif self.frozen_q_owner is not None:
+                raise RuntimeError(
+                    "frozen Q owner cannot be attached while joint policy is disabled"
+                )
+
             # Bootstrap: reset -> system_prompt (message order: system, then initial user)
             init_obs, info = await env.reset(seed=seed)
             sys_obs = await env.system_prompt()
-            prompt_format = env_config.get("prompt_format", "free_think")
-            latent_token_count = env_config.get("latent_token_count")
             if prompt_format == "nimloth" and (
                 isinstance(latent_token_count, bool)
                 or not isinstance(latent_token_count, int)
@@ -258,6 +477,10 @@ class GymAgentLoop(AgentLoopBase):
                 env_name=kwargs["env_name"],
                 group_idx=kwargs["group_idx"],
                 traj_idx=kwargs["traj_idx"],
+                joint_policy_batch_pin=kwargs.get("joint_policy_batch_pin"),
+                guided_action_draw_keys=kwargs.get("guided_action_draw_keys"),
+                rollout_sample_id=kwargs.get("rollout_sample_id"),
+                rollout_repeat_index=kwargs.get("rollout_repeat_index"),
             )
 
             if prompt_format == "nimloth":
@@ -335,6 +558,8 @@ class GymAgentLoop(AgentLoopBase):
         self, agent_data: AgentData, sampling_params: Dict[str, Any]
     ) -> AgentState:
         """Generate assistant output and mark generated tokens with mask=1."""
+        agent_data.turn_guided_artifacts = None
+        agent_data.turn_generation_spec = None
         sampling_params_for_turn = sampling_params.copy()
         max_new_tokens=sampling_params_for_turn.get("max_new_tokens", None) or agent_data.response_limit
         max_new_tokens = min(max_new_tokens, agent_data.response_limit)
@@ -348,6 +573,7 @@ class GymAgentLoop(AgentLoopBase):
                 latent_token_count=agent_data.env.config["latent_token_count"],
                 max_response_tokens=max_new_tokens,
             )
+            agent_data.turn_generation_spec = nimloth_spec
             sampling_params_for_turn.update(
                 {
                     "max_new_tokens": nimloth_spec.max_output_tokens,
@@ -445,6 +671,36 @@ class GymAgentLoop(AgentLoopBase):
             if nimloth_spec is not None
             else assistant_message
         )
+        if self.joint_policy_config is not None:
+            if nimloth_spec is None or agent_data.turn_policy_state is None:
+                raise RuntimeError(
+                    "joint guided rollout requires validated Nimloth capture"
+                )
+            if agent_data.turn_response_logprobs is None:
+                raise RuntimeError(
+                    "joint guided rollout requires rollout response log-probabilities"
+                )
+            if agent_data.env_turns >= len(agent_data.guided_action_draw_keys):
+                raise RuntimeError("joint guided rollout exhausted manager draw keys")
+            from vagen.envs.navigation.utils.nimloth_format import ACTION_NAMES
+
+            agent_data.turn_guided_artifacts = await _build_joint_guided_execution(
+                frozen_q_owner=self.frozen_q_owner,
+                batch_pin=agent_data.joint_policy_batch_pin,
+                expected_draw_key=(
+                    agent_data.guided_action_draw_keys[agent_data.env_turns]
+                ),
+                policy_config=self.joint_policy_config,
+                policy_state=agent_data.turn_policy_state,
+                response_ids=agent_data.turn_response_ids,
+                response_mask=agent_data.turn_response_mask,
+                response_logprobs=agent_data.turn_response_logprobs,
+                raw_response=agent_data.last_assistant_text,
+                generation_spec=nimloth_spec,
+                tokenizer=self.tokenizer,
+                action_space="navigation_v1",
+                action_space_names=ACTION_NAMES,
+            )
         return AgentState.INTERACTING
 
     async def _handle_env_state(self, agent_data: AgentData, **kwargs) -> AgentState:
@@ -454,18 +710,36 @@ class GymAgentLoop(AgentLoopBase):
         so the episode ends on an assistant turn.
         """
         action_str = agent_data.last_assistant_text or ""
-        try:
-            obs, reward, done, info = await agent_data.env.step(action_str)
-            # traceback
-        except Exception as exc:
-            logger.error(
-                "Environment step failed in '%s' with action %r: %s",
-                agent_data.env_name,
+        artifacts = agent_data.turn_guided_artifacts
+        if artifacts is not None:
+            guided_action_execution = artifacts.execution.to_mapping()
+            # Guided contract errors must escape; fabricating a terminal fallback
+            # would hide whether the authorized action was actually executed.
+            obs, reward, done, info = await agent_data.env.guided_step(
                 action_str,
-                exc,
+                guided_action_execution=guided_action_execution,
             )
-            logger.error("Environment traceback:\n%s", traceback.format_exc())
-            obs, reward, done, info = {"obs_str":"Environment Error"}, 0.0, True, {"traj_success": False}
+            validate_guided_action_execution_result(
+                info,
+                artifacts.execution,
+            )
+        else:
+            try:
+                obs, reward, done, info = await agent_data.env.step(action_str)
+            except Exception as exc:
+                logger.error(
+                    "Environment step failed in '%s' with action %r: %s",
+                    agent_data.env_name,
+                    action_str,
+                    exc,
+                )
+                logger.error("Environment traceback:\n%s", traceback.format_exc())
+                obs, reward, done, info = (
+                    {"obs_str": "Environment Error"},
+                    0.0,
+                    True,
+                    {"traj_success": False},
+                )
 
         traj_success = extract_success(info)
         agent_data.env_turns += 1
@@ -485,12 +759,26 @@ class GymAgentLoop(AgentLoopBase):
 
         decision_ledger = None
         if self.decision_ledger_enabled:
-            decision_ledger = build_decision_ledger_from_env_info(
-                info,
-                env_turn_reward=reward,
-                env_terminated=done,
-                rollout_truncated=last_turn and not done,
-            )
+            if artifacts is None:
+                decision_ledger = build_decision_ledger_from_env_info(
+                    info,
+                    env_turn_reward=reward,
+                    env_terminated=done,
+                    rollout_truncated=last_turn and not done,
+                )
+            else:
+                format_valid = info.get("format_correct")
+                if not isinstance(format_valid, bool):
+                    raise ValueError(
+                        "guided environment info format_correct must be bool"
+                    )
+                decision_ledger = build_guided_decision_ledger(
+                    behavior=artifacts.execution.behavior_record,
+                    env_turn_reward=reward,
+                    env_terminated=done,
+                    rollout_truncated=last_turn and not done,
+                    format_valid=format_valid,
+                )
 
         turn_images=agent_data.sys_images+agent_data.cur_images
         
@@ -498,6 +786,32 @@ class GymAgentLoop(AgentLoopBase):
         response_ids = agent_data.turn_prompt_ids[-resp_len:] if resp_len else []
         prompt_ids = agent_data.turn_prompt_ids[: len(agent_data.turn_prompt_ids) - resp_len]
         multi_modal_data = {"image": turn_images} if turn_images else {}
+        extra_fields: Dict[str, Any] = {
+            "reward_extra_info": {"traj_success": float(traj_success)},
+            "image_data": turn_images,
+            "last_turn": last_turn,
+            "group_idx": agent_data.group_idx,
+            "traj_idx": agent_data.traj_idx,
+            "turn_idx": agent_data.env_turns,
+        }
+        if decision_ledger is not None:
+            extra_fields["decision_ledger"] = decision_ledger
+        if agent_data.turn_policy_state is not None:
+            extra_fields["policy_state"] = agent_data.turn_policy_state
+        if agent_data.rollout_sample_id is not None:
+            extra_fields["rollout_sample_id"] = agent_data.rollout_sample_id
+        if agent_data.rollout_repeat_index is not None:
+            extra_fields["rollout_repeat_index"] = agent_data.rollout_repeat_index
+        if artifacts is not None:
+            extra_fields.update(
+                {
+                    "joint_policy_batch_pin": artifacts.batch_pin.to_mapping(),
+                    "frozen_q_scoring": artifacts.scoring_record.to_mapping(),
+                    "policy_response_trace": artifacts.response_trace.to_mapping(),
+                    "guided_action_draw": artifacts.action_draw.to_mapping(),
+                    "guided_action_execution": artifacts.execution.to_mapping(),
+                }
+            )
         output = AgentLoopOutput(
             prompt_ids=prompt_ids[-self.prompt_length:],
             response_ids=response_ids[: self.response_length],
@@ -509,25 +823,7 @@ class GymAgentLoop(AgentLoopBase):
             reward_score=float(reward),
             num_turns=1,
             metrics=agent_data.metrics,
-            extra_fields={"reward_extra_info": {
-                "traj_success": float(traj_success)},
-                "image_data": turn_images,
-                "last_turn": last_turn,
-                **(
-                    {"decision_ledger": decision_ledger}
-                    if decision_ledger is not None
-                    else {}
-                ),
-                **(
-                    {"policy_state": agent_data.turn_policy_state}
-                    if agent_data.turn_policy_state is not None
-                    else {}
-                ),
-                "group_idx": agent_data.group_idx,
-                "traj_idx": agent_data.traj_idx,
-                "turn_idx": agent_data.env_turns,
-                          
-            },
+            extra_fields=extra_fields,
         )
         agent_data.outputs.append(output)
         

@@ -455,6 +455,19 @@ class GymImageEnvClient(GymImageEnv):
 
         return obs, reward, done, info
 
+    async def guided_step(
+        self,
+        action_str: str,
+        *,
+        guided_action_execution: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        """Use the dedicated remote step_guided protocol."""
+
+        return await self.step(
+            action_str,
+            guided_action_execution=guided_action_execution,
+        )
+
     async def close(self) -> None:
         """Close remote environment and cleanup session."""
         if self._session_id is not None:

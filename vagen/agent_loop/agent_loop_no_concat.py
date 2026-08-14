@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import hashlib
 import heapq
+import json
 import logging
 import os
 import random
 from abc import ABC, abstractmethod
+from numbers import Integral
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -208,6 +211,7 @@ class AgentLoopBase(ABC):
         server_manager: AsyncLLMServerManager,
         tokenizer: AutoTokenizer,
         processor: AutoProcessor,
+        frozen_q_owner: Optional[ray.actor.ActorHandle] = None,
         **kwargs,
     ):
         """Initialize agent loop, each sample will have its own loop instance.
@@ -223,6 +227,7 @@ class AgentLoopBase(ABC):
         self.server_manager = server_manager
         self.tokenizer = tokenizer
         self.processor = processor
+        self.frozen_q_owner = frozen_q_owner
         self.loop = asyncio.get_running_loop()
 
     @classmethod
@@ -280,6 +285,7 @@ class AgentLoopWorkerBase:
         config: DictConfig,
         server_handles: list[ray.actor.ActorHandle],
         reward_router_address: str = None,
+        frozen_q_owner: Optional[ray.actor.ActorHandle] = None,
     ):
         """Initialize agent loop manager.
 
@@ -294,6 +300,7 @@ class AgentLoopWorkerBase:
             self.server_manager = AsyncLLMServerManager(config, server_handles)
 
         self.reward_router_address = reward_router_address
+        self.frozen_q_owner = frozen_q_owner
 
         model_path = config.actor_rollout_ref.model.path
         self.model_name = "/".join(model_path.split("/")[-2:])
@@ -367,7 +374,9 @@ class AgentLoopWorkerBase:
             default_agent_loop = config.agent.default_agent_loop
             batch.non_tensor_batch["agent_name"] = np.array([default_agent_loop] * len(batch), dtype=object)
 
-        if "index" in batch.non_tensor_batch:
+        if "rollout_sample_id" in batch.non_tensor_batch:
+            index = batch.non_tensor_batch["rollout_sample_id"]
+        elif "index" in batch.non_tensor_batch:
             index = batch.non_tensor_batch["index"]
         else:
             index = np.arange(len(batch))
@@ -408,13 +417,18 @@ class AgentLoopWorkerBase:
             )
 
             agent_loop_config = _agent_loop_registry[agent_name]
-            agent_loop = hydra.utils.instantiate(
-                config=agent_loop_config,
-                trainer_config=_DummyConfig(config=self.config),
-                server_manager=self.server_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-            )
+            instantiate_kwargs = {
+                "config": agent_loop_config,
+                "trainer_config": _DummyConfig(config=self.config),
+                "server_manager": self.server_manager,
+                "tokenizer": self.tokenizer,
+                "processor": self.processor,
+            }
+            # Preserve the historical custom AgentLoop constructor signature
+            # when joint rollout is disabled.
+            if self.frozen_q_owner is not None:
+                instantiate_kwargs["frozen_q_owner"] = self.frozen_q_owner
+            agent_loop = hydra.utils.instantiate(**instantiate_kwargs)
             outputs: list[AgentLoopOutput] = await agent_loop.run(sampling_params, **kwargs)
 
             # Some AgentLoop may have already computed the reward score, e.g SWE-agent.
@@ -660,7 +674,11 @@ class AgentLoopWorker(AgentLoopWorkerBase):
     """Agent loop worker takes a batch of messages and run each message in an agent loop."""
 
     def __init__(
-        self, config: DictConfig, server_handles: list[ray.actor.ActorHandle], reward_router_address: str = None
+        self,
+        config: DictConfig,
+        server_handles: list[ray.actor.ActorHandle],
+        reward_router_address: str = None,
+        frozen_q_owner: Optional[ray.actor.ActorHandle] = None,
     ):
         """Initialize agent loop manager.
         Args:
@@ -668,7 +686,12 @@ class AgentLoopWorker(AgentLoopWorkerBase):
             server_handles (List[ray.actor.ActorHandle]): OpenAI compatible LLM server actor handles.
             reward_router_address (str): reward router address.
         """
-        super().__init__(config, server_handles, reward_router_address)
+        super().__init__(
+            config,
+            server_handles,
+            reward_router_address,
+            frozen_q_owner,
+        )
 
 
 async def get_trajectory_info(step, index, validate):
@@ -693,10 +716,60 @@ async def get_trajectory_info(step, index, validate):
     return trajectory_info
 
 
+def _nonnegative_integral(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral) or int(value) < 0:
+        raise ValueError(f"guided rollout {field} must be a non-negative integer")
+    return int(value)
+
+
+def _positive_integral(value: object, field: str) -> int:
+    result = _nonnegative_integral(value, field)
+    if result == 0:
+        raise ValueError(f"guided rollout {field} must be positive")
+    return result
+
+
+def _frozen_q_batch_id(
+    *,
+    run_seed: int,
+    policy_step: int,
+    is_validation: bool,
+    snapshot_id: str,
+    activation_version: int,
+    contract_id: str,
+    trajectories: list[dict[str, Any]],
+) -> str:
+    payload = json.dumps(
+        {
+            "schema": "vagen_frozen_q_rollout_batch_identity_v1",
+            "run_seed": run_seed,
+            "policy_step": policy_step,
+            "is_validation": is_validation,
+            "snapshot_id": snapshot_id,
+            "activation_version": activation_version,
+            "contract_id": contract_id,
+            "trajectories": trajectories,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
 class AgentLoopManager:
     """Agent loop manager that manages a group of agent loop workers."""
 
-    def __init__(self, config: DictConfig, worker_group: RayWorkerGroup = None, rm_wg: RayWorkerGroup = None):
+    def __init__(
+        self,
+        config: DictConfig,
+        worker_group: RayWorkerGroup = None,
+        rm_wg: RayWorkerGroup = None,
+        *,
+        initial_frozen_q_snapshot_state: Optional[dict[str, Any]] = None,
+        frozen_q_activation_version: int = 0,
+        guided_draw_run_seed: Optional[int] = None,
+    ):
         """Initialize agent loop manager.
 
         Args:
@@ -705,6 +778,11 @@ class AgentLoopManager:
         """
         self.config = config
         self.worker_group = worker_group
+        self.joint_policy_config = self._parse_joint_policy_config()
+        self.guided_draw_run_seed = self._validate_joint_runtime_inputs(
+            initial_frozen_q_snapshot_state,
+            guided_draw_run_seed,
+        )
         self.reward_model_manager = None
         self.reward_router_address = None
         if self.config.reward_model.enable and self.config.reward_model.enable_resource_pool:
@@ -720,11 +798,51 @@ class AgentLoopManager:
             self.agent_loop_workers_class = AgentLoopWorker
 
         self._initialize_llm_servers()
+        self._init_frozen_q_owner(
+            initial_frozen_q_snapshot_state,
+            frozen_q_activation_version,
+        )
         self._init_agent_loop_workers()
 
         # Initially we're in sleep mode.
         if self.config.actor_rollout_ref.rollout.free_cache_engine:
             self.sleep()
+
+    def _parse_joint_policy_config(self):
+        raw = self.config.get("joint_policy")
+        if raw is None:
+            return None
+        from vagen.joint_policy import parse_joint_policy_section
+
+        if OmegaConf.is_config(raw):
+            raw = OmegaConf.to_container(raw, resolve=True)
+        return parse_joint_policy_section(raw)
+
+    def _validate_joint_runtime_inputs(
+        self,
+        initial_snapshot_state: Optional[dict[str, Any]],
+        guided_draw_run_seed: Optional[int],
+    ) -> Optional[int]:
+        enabled = self.joint_policy_config is not None
+        if not enabled:
+            if initial_snapshot_state is not None or guided_draw_run_seed is not None:
+                raise ValueError(
+                    "frozen Q runtime inputs require joint_policy.enabled=true"
+                )
+            return None
+        if initial_snapshot_state is None:
+            raise ValueError(
+                "joint_policy.enabled=true requires an initial frozen Q snapshot state"
+            )
+        if (
+            isinstance(guided_draw_run_seed, bool)
+            or not isinstance(guided_draw_run_seed, Integral)
+            or int(guided_draw_run_seed) < 0
+        ):
+            raise ValueError(
+                "joint_policy.enabled=true requires a non-negative guided draw run seed"
+            )
+        return int(guided_draw_run_seed)
 
     def _initialize_llm_servers(self):
         rollout_world_size = (
@@ -765,6 +883,33 @@ class AgentLoopManager:
                 raise ValueError("PROMETHEUS needs disable_log_stats==False, but it is currently True.")
             update_prometheus_config(rollout_config.prometheus, self.server_addresses)
 
+    def _init_frozen_q_owner(
+        self,
+        initial_frozen_q_snapshot_state: Optional[dict[str, Any]],
+        activation_version: int,
+    ) -> None:
+        self.frozen_q_owner = None
+        if initial_frozen_q_snapshot_state is None:
+            return
+        from vagen.joint_policy.frozen_q_actor import FrozenQScoringActor
+
+        owner = FrozenQScoringActor.remote(
+            initial_frozen_q_snapshot_state,
+            activation_version=activation_version,
+        )
+        try:
+            # Construction, CPU/thread resource validation, and snapshot restore
+            # must finish before any worker can receive the handle.
+            status = ray.get(owner.status.remote())
+            if status["score_dtype"] != self.joint_policy_config.score_dtype:
+                raise ValueError(
+                    "frozen Q snapshot score_dtype does not match joint policy config"
+                )
+        except BaseException:
+            ray.kill(owner, no_restart=True)
+            raise
+        self.frozen_q_owner = owner
+
     def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
         num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
@@ -779,43 +924,229 @@ class AgentLoopManager:
                     scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                         node_id=node_id, soft=True
                     ),
-                ).remote(self.config, self.server_handles, self.reward_router_address)
+                ).remote(
+                    self.config,
+                    self.server_handles,
+                    self.reward_router_address,
+                    *(
+                        (self.frozen_q_owner,)
+                        if self.frozen_q_owner is not None
+                        else ()
+                    ),
+                )
             )
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
-        """Split input batch and dispatch to agent loop workers.
+        """Pin one snapshot around the complete distributed rollout batch."""
 
-        Args:
-            prompts (DataProto): Input batch.
+        rollout_awake = False
+        reward_awake = False
+        joint_policy_batch_pin = None
+        try:
+            if self.config.actor_rollout_ref.rollout.free_cache_engine:
+                self.wake_up()
+                rollout_awake = True
+            if (
+                self.reward_model_manager
+                and self.config.reward_model.rollout.free_cache_engine
+            ):
+                self.reward_model_manager.wake_up()
+                reward_awake = True
 
-        Returns:
-            DataProto: Output batch.
-        """
+            if self.frozen_q_owner is not None:
+                joint_policy_batch_pin = self._pin_frozen_q_batch(prompts)
 
-        if self.config.actor_rollout_ref.rollout.free_cache_engine:
-            self.wake_up()
-        if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
-            self.reward_model_manager.wake_up()
+            chunks = prompts.chunk(len(self.agent_loop_workers))
+            outputs = ray.get(
+                [
+                    worker.generate_sequences.remote(chunk)
+                    for worker, chunk in zip(
+                        self.agent_loop_workers,
+                        chunks,
+                        strict=True,
+                    )
+                ]
+            )
+            output = DataProto.concat(outputs)
 
-        chunkes = prompts.chunk(len(self.agent_loop_workers))
-        outputs = ray.get(
-            [
-                worker.generate_sequences.remote(chunk)
-                for worker, chunk in zip(self.agent_loop_workers, chunkes, strict=True)
+            metrics = [
+                item.meta_info.pop("metrics") for item in outputs
             ]
+            timing = self._performance_metrics(metrics, output)
+            output.meta_info = {"timing": timing, **outputs[0].meta_info}
+            return output
+        finally:
+            try:
+                if joint_policy_batch_pin is not None:
+                    ray.get(
+                        self.frozen_q_owner.unpin_batch.remote(
+                            joint_policy_batch_pin
+                        )
+                    )
+            finally:
+                if reward_awake:
+                    self.reward_model_manager.sleep()
+                if rollout_awake:
+                    self.sleep()
+
+    def _pin_frozen_q_batch(self, prompts: DataProto) -> dict[str, Any]:
+        """Allocate authoritative per-turn draw keys and pin the active Q."""
+
+        if self.frozen_q_owner is None or self.guided_draw_run_seed is None:
+            raise RuntimeError("frozen Q batch pin requested while runtime is disabled")
+        if len(prompts) <= 0:
+            raise ValueError("frozen Q rollout batch must be non-empty")
+        policy_step = _nonnegative_integral(
+            prompts.meta_info.get("global_steps"),
+            "global_steps",
         )
-        output = DataProto.concat(outputs)
-        if self.config.actor_rollout_ref.rollout.free_cache_engine:
-            self.sleep()
-        if self.reward_model_manager and self.config.reward_model.rollout.free_cache_engine:
-            self.reward_model_manager.sleep()
+        is_validation = prompts.meta_info.get("validate", False)
+        if not isinstance(is_validation, bool):
+            raise ValueError("guided rollout validate metadata must be bool")
+        required = {
+            "rollout_sample_id",
+            "rollout_repeat_index",
+            "max_turns",
+        }
+        missing = required - set(prompts.non_tensor_batch)
+        if missing:
+            raise ValueError(
+                "guided rollout batch is missing stable identity fields: "
+                f"{sorted(missing)}"
+            )
 
-        # calculate performance metrics
-        metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
-        timing = self._performance_metrics(metrics, output)
+        sample_ids: list[str] = []
+        repeat_indices: list[int] = []
+        max_turns: list[int] = []
+        for row in range(len(prompts)):
+            sample_id = prompts.non_tensor_batch["rollout_sample_id"][row]
+            if not isinstance(sample_id, str) or not sample_id:
+                raise ValueError("guided rollout sample identity must be non-empty str")
+            repeat_index = _nonnegative_integral(
+                prompts.non_tensor_batch["rollout_repeat_index"][row],
+                "rollout_repeat_index",
+            )
+            turn_count = _positive_integral(
+                prompts.non_tensor_batch["max_turns"][row],
+                "max_turns",
+            )
+            sample_ids.append(sample_id)
+            repeat_indices.append(repeat_index)
+            max_turns.append(turn_count)
+        trajectory_ids = list(zip(sample_ids, repeat_indices, strict=True))
+        if len(set(trajectory_ids)) != len(trajectory_ids):
+            raise ValueError(
+                "guided rollout batch contains duplicate sample/repeat identities"
+            )
 
-        output.meta_info = {"timing": timing, **outputs[0].meta_info}
-        return output
+        status = ray.get(self.frozen_q_owner.status.remote())
+        batch_id = _frozen_q_batch_id(
+            run_seed=self.guided_draw_run_seed,
+            policy_step=policy_step,
+            is_validation=is_validation,
+            snapshot_id=status["active_snapshot_id"],
+            activation_version=status["activation_version"],
+            contract_id=status["contract_id"],
+            trajectories=[
+                {
+                    "rollout_sample_id": sample_id,
+                    "rollout_repeat_index": repeat_index,
+                    "max_turns": turn_count,
+                }
+                for sample_id, repeat_index, turn_count in zip(
+                    sample_ids,
+                    repeat_indices,
+                    max_turns,
+                    strict=True,
+                )
+            ],
+        )
+
+        from nimloth.training.rl.joint_frozen_q_owner import FrozenQBatchPin
+        from vagen.joint_policy import GuidedActionDrawCoordinator
+
+        expected_pin = FrozenQBatchPin(
+            schema="nimloth_frozen_q_batch_pin_v1",
+            batch_id=batch_id,
+            policy_step=policy_step,
+            snapshot_id=status["active_snapshot_id"],
+            snapshot_source_step=status["active_source_step"],
+            contract_id=status["contract_id"],
+            activation_version=status["activation_version"],
+        )
+        coordinator = GuidedActionDrawCoordinator(self.guided_draw_run_seed)
+        draw_key_rows: list[list[dict[str, Any]]] = []
+        for sample_id, repeat_index, turn_count in zip(
+            sample_ids,
+            repeat_indices,
+            max_turns,
+            strict=True,
+        ):
+            draw_key_rows.append(
+                [
+                    coordinator.key_for(
+                        policy_step=policy_step,
+                        rollout_sample_id=sample_id,
+                        rollout_repeat_index=repeat_index,
+                        turn_index=turn_index,
+                        is_validation=is_validation,
+                        snapshot_id=expected_pin.snapshot_id,
+                        contract_id=expected_pin.contract_id,
+                    ).to_mapping()
+                    for turn_index in range(turn_count)
+                ]
+            )
+
+        pin_rows = np.empty(len(prompts), dtype=object)
+        pin_rows[:] = [expected_pin.to_mapping() for _ in range(len(prompts))]
+        key_rows = np.empty(len(prompts), dtype=object)
+        key_rows[:] = draw_key_rows
+
+        raw_pin = ray.get(
+            self.frozen_q_owner.pin_batch.remote(
+                {
+                    "batch_id": batch_id,
+                    "policy_step": policy_step,
+                    "expected_snapshot_id": status["active_snapshot_id"],
+                    "expected_activation_version": status["activation_version"],
+                }
+            )
+        )
+        try:
+            actual_pin = FrozenQBatchPin.from_mapping(raw_pin)
+            if actual_pin != expected_pin:
+                raise RuntimeError(
+                    "frozen Q owner returned an unexpected batch pin"
+                )
+            prompts.non_tensor_batch["joint_policy_batch_pin"] = pin_rows
+            prompts.non_tensor_batch["guided_action_draw_keys"] = key_rows
+        except BaseException:
+            ray.get(self.frozen_q_owner.unpin_batch.remote(raw_pin))
+            raise
+        return actual_pin.to_mapping()
+
+    def frozen_q_status(self) -> dict[str, Any]:
+        if self.frozen_q_owner is None:
+            raise RuntimeError("frozen Q owner is disabled")
+        return ray.get(self.frozen_q_owner.status.remote())
+
+    def stage_frozen_q_snapshot(self, request: dict[str, Any]) -> dict[str, Any]:
+        if self.frozen_q_owner is None:
+            raise RuntimeError("frozen Q owner is disabled")
+        return ray.get(self.frozen_q_owner.stage_snapshot.remote(request))
+
+    def activate_staged_frozen_q_snapshot(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.frozen_q_owner is None:
+            raise RuntimeError("frozen Q owner is disabled")
+        return ray.get(self.frozen_q_owner.activate_staged.remote(request))
+
+    def frozen_q_checkpoint_state(self) -> dict[str, Any]:
+        if self.frozen_q_owner is None:
+            raise RuntimeError("frozen Q owner is disabled")
+        return ray.get(self.frozen_q_owner.checkpoint_state.remote())
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
         timing = {}

@@ -2,10 +2,12 @@
 
 ## Status
 
-This document records the framework boundary while production rollout
-integration remains incomplete. Milestone M1 implements no actor logits or PPO
-loss; the M2 contract fixes the confirmed Scheme-B gradient semantics and the
-human-approved rollout ownership described below.
+This document records the framework boundary. The optimizer-free production
+rollout integration now has a complete implementation candidate, while joint
+training remains deliberately disabled until its replay, optimizer, return, and
+checkpoint boundaries are complete. Milestone M1 implements no actor logits or
+PPO loss; the M2 contract fixes the confirmed Scheme-B gradient semantics and
+the human-approved rollout ownership described below.
 
 ## Confirmed provisional policy
 
@@ -47,8 +49,9 @@ discounted return constructed from real environment rewards. An
 immediate reward alone is not the Q target, an advantage is not the Q target,
 and unexecuted action slots receive no fabricated counterfactual target.
 Terminal trajectories bootstrap with zero. A rollout truncation must use an
-explicit rollout-time frozen-critic bootstrap; this remains blocked until the
-critic state and snapshot owner are implemented.
+explicit rollout-time frozen-critic bootstrap. The snapshot owner now preserves
+that rollout-time identity, but the training return compiler that consumes it is
+still not implemented.
 
 `\bar Q` must be a frozen rollout-time snapshot; replay must use the rollout-
 persisted guidance scores and snapshot identity rather than recomputing them
@@ -83,8 +86,9 @@ The following still require explicit decisions before M2/M3 are complete:
 
 ## M2 contract status
 
-The dependency-light Scheme-B contract and same-generation capture transport
-are implemented, but Q-guided operational rollout remains disabled:
+The dependency-light Scheme-B contract, same-generation capture transport, and
+optimizer-free production rollout wiring are implemented as one candidate. The
+training entry remains disabled:
 
 - all probability semantics (`alpha`, `beta`, prior temperature, score dtype,
   and the required LLM gradient path) are explicit and enter a hashed contract
@@ -108,7 +112,8 @@ are implemented, but Q-guided operational rollout remains disabled:
   frozen snapshot's parameter dtype, and emits an immutable record containing
   raw prior logits and all-action frozen Q. The output score dtype is hashed into
   the policy contract and snapshot identity rather than selected per scoring
-  call; this scorer is not connected to environment action selection;
+  call. `AgentLoopManager` now routes validated same-generation captures to the
+  pinned CPU owner before any environment mutation;
 - a Navigation-only guided execution envelope now binds the complete behavior
   record, raw LLM response SHA-256, and identity-bearing response-trace digest
   while authorizing a separately selected environment action. The parent pure
@@ -116,15 +121,17 @@ are implemented, but Q-guided operational rollout remains disabled:
   canonical response mask/log-probs, and accepts the guided action as an
   external input without owning RNG. Remote execution uses an explicit `step_guided` method,
   revalidates before mutation, and checks the environment's action echo on both
-  server and client. The agent loop does not yet create this envelope;
+  server and client. The no-concat agent loop now creates this envelope and
+  executes it only through the explicit guided capability;
 - the rollout coordinator's stateless keyed-draw contract binds run seed,
   policy step, stable sample/repeat identity, turn, validation mode, snapshot,
   contract, and schema. Canonical SHA-256 maps each key to one exact 53-bit
   uniform value; the public sampler accepts the full key rather than a caller-
   chosen draw, applies half-open inverse-CDF selection, and persists/revalidates
   the complete provenance in action-draw schema v2. It imports no RNG and never
-  calls the environment. Agent-loop construction of production keys is not yet
-  wired;
+  calls the environment. `AgentLoopManager` now pins one snapshot around the
+  complete distributed rollout batch and allocates every per-turn key from the
+  stable dataset sample id and explicit repeat index before dispatching workers;
 - a pure behavior-replay helper revalidates one homogeneous contract/snapshot
   batch, uses only each rollout record's persisted frozen-Q vector, and exposes
   the selected current/behavior guided log-probabilities while preserving the
@@ -132,20 +139,35 @@ are implemented, but Q-guided operational rollout remains disabled:
 - a pure selected-action Huber helper gathers only the actually executed action
   and detaches the return target; Huber delta and reduction remain mandatory
   caller inputs, and no critic optimizer or return compiler is connected;
+- a dedicated one-CPU/zero-GPU Ray actor owns the immutable active snapshot,
+  limits PyTorch intra-op and inter-op threads to one, pins open batches, scores
+  captures, stages newer dtype/architecture-compatible snapshots, activates by
+  compare-and-swap only with no open batch, and exports only clean checkpoint
+  state. Disabled mode does not alter legacy custom worker or agent-loop
+  constructor signatures;
+- every guided turn persists the batch pin, scoring record, response trace,
+  action draw, execution envelope, guided ledger, stable trajectory identity,
+  raw response IDs/mask/log-probs, and actual environment reward into
+  `DataProto`; manager failure paths unpin the batch before returning;
 - capture currently requires `data_parallel_size=1` and eager vLLM execution;
   unsupported DP routing and conflicting engine overrides fail closed;
-- `joint_policy.enabled=true` fails closed while Q ownership, rollout sampling,
-  replay, and checkpoint refresh are not connected.
+- `RayPPOTrainer` still rejects `joint_policy.enabled=true` before worker
+  creation. Only the explicit optimizer-free standalone entry may construct the
+  guided runtime, with all policy values, run seed, critic dimensions, and
+  snapshot source step supplied by the caller. Actor replay, critic optimization,
+  return compilation, global-update snapshot publication, and complete
+  checkpoint/resume remain unconnected.
 
 VAGEN-Lite currently has no `[B,A]` action-value head equivalent to the old
 Nimloth `ValueHead`. Its existing token critic is scalar per response token, and
 its transition reward predictor is an immediate-reward model. Neither is used
 as a substitute. The chosen critic state is the mean of the per-slot outputs from the existing
 `SharedSlotProjector` applied to same-generation K-slot hidden rows. The parent
-critic/snapshot/scoring foundation now validates that path. The keyed sampler
-contract is implemented but not wired in the agent loop. The CPU Ray owner,
-per-global-update atomic refresh lifecycle, and optimizer have confirmed
-ownership but are not yet implemented or wired.
+critic/snapshot/scoring foundation now validates that path. The keyed sampler,
+CPU Ray owner, batch pin, agent-loop execution, and DataProto provenance are now
+wired for optimizer-free rollout. Trainer-owned current-critic optimization,
+per-global-update publication, actor replay, and complete checkpoint/resume are
+still absent.
 
 ## M1: decision ledger
 
@@ -245,6 +267,8 @@ Complete CPU dependencies validate request-scoped/out-of-order capture, partial
 TP failure before LM-head collectives, error cleanup, request/token identity,
 and DataProto propagation. The older direct-vLLM path has separate GPU evidence,
 and the async same-generation transport passed its target TP8 GPU capture gate.
-That gate did not score Q or execute a guided action. Production Q ownership,
-guided rollout wiring, PPO, and checkpoint/resume remain outside the completed
-scope.
+That gate did not score Q or execute a guided action. The new optimizer-free
+production wiring candidate must pass its consolidated CPU/Ray regression,
+independent review, and a target TP8 guided one-turn gate before it is considered
+complete. PPO, critic optimization, global-update snapshot publication, and
+checkpoint/resume remain outside this milestone.

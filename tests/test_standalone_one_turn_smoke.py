@@ -70,6 +70,26 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
                 f"unexpected {forbidden} config key",
             )
 
+    def test_guided_smoke_requires_explicit_policy_contract(self) -> None:
+        try:
+            from vagen.standalone_one_turn_smoke import build_config
+        except ImportError as exc:
+            self.skipTest(f"smoke dependencies unavailable: {exc}")
+
+        args = self._args(Path("/output.json"))
+        args.guided = True
+        args.joint_alpha = 1.25
+        args.joint_beta = 0.75
+        args.joint_prior_temperature = 0.9
+        args.joint_score_dtype = "float32"
+        config = build_config(args)
+        self.assertTrue(config.joint_policy.enabled)
+        self.assertEqual(config.joint_policy.alpha, 1.25)
+        self.assertEqual(config.joint_policy.beta, 0.75)
+        self.assertEqual(config.joint_policy.prior_temperature, 0.9)
+        self.assertEqual(config.joint_policy.score_dtype, "float32")
+        self.assertNotIn("run_seed", config.joint_policy)
+
     def test_input_config_matches_current_navigation_profile(self) -> None:
         try:
             from vagen.standalone_one_turn_smoke import build_input
@@ -108,6 +128,11 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
 
         row = build_input(self._args(Path("/output.json")))
         seed = row.non_tensor_batch["seed"][0]
+        self.assertEqual(
+            row.non_tensor_batch["rollout_sample_id"][0],
+            "standalone:navigation:base:0",
+        )
+        self.assertEqual(row.non_tensor_batch["rollout_repeat_index"][0], 0)
         self.assertIs(type(seed), int)
         _boundary, body = encode_multipart(
             {"seed": seed, "config": row.non_tensor_batch["config"][0]}

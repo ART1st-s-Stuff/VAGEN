@@ -715,6 +715,18 @@ class RayPPOTrainer:
         traj_idx = np.tile(np.arange(num_traj_per_sample), batch_size // num_traj_per_sample)
         gen_batch.non_tensor_batch["traj_idx"] = traj_idx
 
+        # The UUID-backed group_idx remains an internal GAE grouping key.  A
+        # guided draw instead uses the dataset's restart-stable sample identity
+        # plus this explicit repeat index.
+        if "rollout_sample_id" in gen_batch.non_tensor_batch:
+            sample_ids = gen_batch.non_tensor_batch["rollout_sample_id"]
+            if len(sample_ids) != batch_size:
+                raise ValueError("rollout_sample_id batch size mismatch")
+            if any(not isinstance(value, str) or not value for value in sample_ids):
+                raise ValueError("rollout_sample_id must contain non-empty strings")
+            gen_batch.non_tensor_batch["rollout_sample_id"] = sample_ids
+            gen_batch.non_tensor_batch["rollout_repeat_index"] = traj_idx.copy()
+
 
     def _post_process_no_concat_batch(self, batch: DataProto, gen_batch_output: DataProto) -> DataProto:
         """Re-align and union batch with gen_batch_output in no-concat mode.

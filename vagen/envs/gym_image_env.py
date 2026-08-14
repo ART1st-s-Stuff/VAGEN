@@ -79,6 +79,18 @@ class GymImageEnv(GymBaseEnv):
         """
         super().__init__(env_config)
 
+    async def guided_step(
+        self,
+        action_str: str,
+        *,
+        guided_action_execution: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
+        """Execute an independently authorized action when supported."""
+
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support guided action execution"
+        )
+
     @abstractmethod
     async def close(self) -> None:
         """

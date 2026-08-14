@@ -15,6 +15,7 @@ from omegaconf import OmegaConf
 
 from vagen.agent_loop.decision_ledger import (
     DECISION_LEDGER_SCHEMA,
+    GUIDED_DECISION_LEDGER_SCHEMA,
     summarize_decision_ledger_batch,
     validate_decision_ledger_reward_rows,
 )
@@ -22,6 +23,20 @@ from vagen.agent_loop.decision_ledger import (
 
 def build_config(args: argparse.Namespace) -> Any:
     """Construct only model/rollout/environment config; no optimizer exists."""
+
+    joint_policy: dict[str, Any]
+    if getattr(args, "guided", False):
+        joint_policy = {
+            "enabled": True,
+            "implementation": "frozen_q_guided_v1",
+            "alpha": args.joint_alpha,
+            "beta": args.joint_beta,
+            "prior_temperature": args.joint_prior_temperature,
+            "backprop_to_llm": True,
+            "score_dtype": args.joint_score_dtype,
+        }
+    else:
+        joint_policy = {"enabled": False}
 
     return OmegaConf.create(
         {
@@ -114,7 +129,7 @@ def build_config(args: argparse.Namespace) -> Any:
                 "RemoteEnv": "vagen.envs_remote.GymImageEnvClient"
             },
             "decision_ledger": {"enabled": True},
-            "joint_policy": {"enabled": False},
+            "joint_policy": joint_policy,
         }
     )
 
@@ -132,6 +147,11 @@ def build_input(args: argparse.Namespace) -> Any:
         ),
         "group_idx": np.array([args.run_name], dtype=object),
         "traj_idx": np.array([0]),
+        "rollout_sample_id": np.array(
+            [f"standalone:navigation:{args.eval_set}:{int(args.seed)}"],
+            dtype=object,
+        ),
+        "rollout_repeat_index": np.array([0]),
         "data_source": np.array(["navigation"], dtype=object),
         "config": np.array(
             [
@@ -168,7 +188,10 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     metrics = summarize_decision_ledger_batch(
         ledgers,
         expected_batch_size=1,
-        allowed_schemas={DECISION_LEDGER_SCHEMA},
+        allowed_schemas={
+            DECISION_LEDGER_SCHEMA,
+            GUIDED_DECISION_LEDGER_SCHEMA,
+        },
     )
     response_masks = result.batch["response_mask"].detach().cpu().tolist()
     reward_rows = result.batch["rm_scores"].detach().cpu().tolist()
@@ -191,10 +214,26 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     if (
         ledger["action_space"] != "navigation_v1"
         or ledger["action_space_names"] != expected_action_names
-        or ledger["decision_sources"] != ["llm_text"]
-        or ledger["decision_is_policy_sampled"] != [False]
     ):
-        raise RuntimeError("ledger does not match the Navigation M1 action contract")
+        raise RuntimeError("ledger does not match the Navigation action contract")
+    is_guided = ledger["schema"] == GUIDED_DECISION_LEDGER_SCHEMA
+    if is_guided:
+        if (
+            ledger["decision_sources"] != ["frozen_q_guided"]
+            or ledger["decision_is_policy_sampled"] != [True]
+        ):
+            raise RuntimeError("guided ledger has invalid action ownership")
+        behavior = ledger["behavior_record"]
+        prior_action_id = int(behavior["prior_action_id"])
+        if ledger["executed_action_ids"] != [int(behavior["guided_action_id"])]:
+            raise RuntimeError("guided ledger did not bind the executed action")
+    else:
+        if (
+            ledger["decision_sources"] != ["llm_text"]
+            or ledger["decision_is_policy_sampled"] != [False]
+        ):
+            raise RuntimeError("ledger does not match the Navigation M1 action contract")
+        prior_action_id = int(ledger["executed_action_ids"][0])
     if not ledger["format_valid"] or len(ledger["executed_action_ids"]) != 1:
         raise RuntimeError(
             "K-slot response was not accepted as exactly one environment action"
@@ -251,9 +290,19 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     ):
         raise RuntimeError("rollout token log-probabilities are missing or non-finite")
     environment_response = "<think>" + continuation_text
-    action_token = f"<|action_({ledger['executed_action_ids'][0]})|>"
+    action_token = f"<|action_({prior_action_id})|>"
     if action_token not in environment_response:
-        raise RuntimeError("executed action does not match generated action token")
+        raise RuntimeError("prior action does not match generated action token")
+    if is_guided:
+        for field in (
+            "joint_policy_batch_pin",
+            "frozen_q_scoring",
+            "policy_response_trace",
+            "guided_action_draw",
+            "guided_action_execution",
+        ):
+            if field not in result.non_tensor_batch:
+                raise RuntimeError(f"guided smoke is missing provenance field {field}")
     return {
         "status": "passed",
         "optimizer": None,
@@ -319,6 +368,56 @@ def build_ray_runtime_env() -> dict[str, Any]:
     return runtime_env
 
 
+def build_initial_frozen_q_snapshot(
+    args: argparse.Namespace,
+    config: Any,
+    tokenizer: Any,
+) -> dict[str, Any]:
+    """Load the explicitly supplied critic sidecars for a guided smoke."""
+
+    import torch
+
+    from nimloth.latent import LatentActionTokens, special_token_ids
+    from nimloth.training.rl.joint_critic import (
+        create_frozen_critic_snapshot,
+        export_frozen_critic_snapshot,
+        load_joint_action_value_critic,
+    )
+    from vagen.envs.navigation.utils.nimloth_format import ACTION_NAMES
+    from vagen.joint_policy import parse_joint_policy_section
+
+    raw_policy = OmegaConf.to_container(config.joint_policy, resolve=True)
+    policy = parse_joint_policy_section(raw_policy)
+    if policy is None:
+        raise RuntimeError("guided snapshot bootstrap requires enabled joint policy")
+    tokens = LatentActionTokens()
+    token_ids = special_token_ids(
+        tokenizer,
+        latent_token_count=args.latent_token_count,
+    )
+    action_token_ids = tuple(token_ids[token] for token in tokens.action_tokens)
+    critic = load_joint_action_value_critic(
+        checkpoint_root=args.critic_checkpoint,
+        expected_qwen_hidden_dim=args.critic_qwen_hidden_dim,
+        expected_grid_tokens=args.latent_token_count,
+        expected_state_dim=args.critic_state_dim,
+        expected_action_count=len(ACTION_NAMES),
+        device=torch.device("cpu"),
+        trainable=False,
+    )
+    snapshot = create_frozen_critic_snapshot(
+        critic,
+        source_step=args.joint_snapshot_source_step,
+        contract_id=policy.contract_id(
+            "navigation_v1",
+            ACTION_NAMES,
+            action_token_ids,
+        ),
+        score_dtype=policy.score_dtype,
+    )
+    return export_frozen_critic_snapshot(snapshot).to_mapping()
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import ray
     import vagen.rollout.nimloth_vllm  # noqa: F401 -- registers replica
@@ -339,15 +438,28 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         ray.init(**ray_init_kwargs)
         config = build_config(args)
-        manager = AgentLoopManager(config, worker_group=None)
-        result = manager.generate_sequences(build_input(args))
         tokenizer = hf_tokenizer(str(args.model), trust_remote_code=True)
+        manager_kwargs: dict[str, Any] = {}
+        if getattr(args, "guided", False):
+            manager_kwargs = {
+                "initial_frozen_q_snapshot_state": (
+                    build_initial_frozen_q_snapshot(args, config, tokenizer)
+                ),
+                "guided_draw_run_seed": args.joint_run_seed,
+            }
+        manager = AgentLoopManager(
+            config,
+            worker_group=None,
+            **manager_kwargs,
+        )
+        result = manager.generate_sequences(build_input(args))
         payload = validate_result(result, tokenizer)
         payload["model"] = str(args.model)
         payload["env_url"] = args.env_url
         payload["eval_set"] = args.eval_set
         payload["seed"] = args.seed
         payload["latent_token_count"] = args.latent_token_count
+        payload["guided"] = bool(getattr(args, "guided", False))
         atomic_write_json(args.output, payload)
         return payload
     finally:
@@ -372,6 +484,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.6)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--env-timeout", type=float, default=500.0)
+    parser.add_argument("--guided", action="store_true")
+    parser.add_argument("--critic-checkpoint", type=Path)
+    parser.add_argument("--critic-qwen-hidden-dim", type=int)
+    parser.add_argument("--critic-state-dim", type=int)
+    parser.add_argument("--joint-alpha", type=float)
+    parser.add_argument("--joint-beta", type=float)
+    parser.add_argument("--joint-prior-temperature", type=float)
+    parser.add_argument(
+        "--joint-score-dtype",
+        choices=("float32", "bfloat16", "float64"),
+    )
+    parser.add_argument("--joint-run-seed", type=int)
+    parser.add_argument("--joint-snapshot-source-step", type=int)
     args = parser.parse_args(argv)
     if args.latent_token_count < 1:
         parser.error("--latent-token-count must be positive")
@@ -389,6 +514,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--model must be a complete local HF checkpoint")
     if not args.agent_loop_config.is_file():
         parser.error("--agent-loop-config must exist")
+    if args.guided:
+        required = {
+            "--critic-checkpoint": args.critic_checkpoint,
+            "--critic-qwen-hidden-dim": args.critic_qwen_hidden_dim,
+            "--critic-state-dim": args.critic_state_dim,
+            "--joint-alpha": args.joint_alpha,
+            "--joint-beta": args.joint_beta,
+            "--joint-prior-temperature": args.joint_prior_temperature,
+            "--joint-score-dtype": args.joint_score_dtype,
+            "--joint-run-seed": args.joint_run_seed,
+            "--joint-snapshot-source-step": args.joint_snapshot_source_step,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            parser.error(
+                "--guided requires explicit values for " + ", ".join(missing)
+            )
+        if not args.critic_checkpoint.is_dir():
+            parser.error("--critic-checkpoint must be a checkpoint directory")
+        if args.critic_qwen_hidden_dim < 1 or args.critic_state_dim < 1:
+            parser.error("critic dimensions must be positive")
+        if not math.isfinite(args.joint_alpha) or args.joint_alpha <= 0.0:
+            parser.error("--joint-alpha must be finite and positive")
+        if not math.isfinite(args.joint_beta) or args.joint_beta < 0.0:
+            parser.error("--joint-beta must be finite and non-negative")
+        if (
+            not math.isfinite(args.joint_prior_temperature)
+            or args.joint_prior_temperature <= 0.0
+        ):
+            parser.error("--joint-prior-temperature must be finite and positive")
+        if args.joint_run_seed < 0 or args.joint_snapshot_source_step < 0:
+            parser.error("joint run seed and snapshot source step must be non-negative")
     return args
 
 
