@@ -133,7 +133,7 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
             "behavior_record": behavior.to_mapping(),
         }
         ledgers = [dict(ledger_base), dict(ledger_base)]
-        ledgers[1]["env_terminated"] = True
+        ledgers[1]["rollout_truncated"] = True
         pin = FrozenQBatchPin(
             schema="nimloth_frozen_q_batch_pin_v1",
             batch_id="batch-1",
