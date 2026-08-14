@@ -102,6 +102,99 @@ def run_ppo(config, task_runner_class=None) -> None:
         ray.timeline(filename=timeline_json_file)
 
 
+def _configure_joint_actor_extension(config):
+    """Install the explicit custom actor without enabling stock PPO fallback."""
+
+    from omegaconf import OmegaConf, open_dict
+    from vagen.joint_policy import parse_joint_policy_section
+    from vagen.joint_policy.training_contract import parse_joint_training_section
+
+    raw_training = config.get("joint_training", {"enabled": False})
+    raw_policy = config.get("joint_policy", {"enabled": False})
+    if OmegaConf.is_config(raw_training):
+        raw_training = OmegaConf.to_container(raw_training, resolve=True)
+    if OmegaConf.is_config(raw_policy):
+        raw_policy = OmegaConf.to_container(raw_policy, resolve=True)
+    training = parse_joint_training_section(raw_training)
+    policy = parse_joint_policy_section(raw_policy)
+    if (training is None) != (policy is None):
+        raise ValueError(
+            "joint_policy and joint_training must be enabled or disabled together"
+        )
+    if training is None:
+        return None
+    actor = config.actor_rollout_ref.actor
+    model = config.actor_rollout_ref.model
+    if actor.strategy not in {"fsdp", "fsdp2"}:
+        raise ValueError("joint training supports only FSDP actor strategy")
+    if actor.ppo_epochs != 1:
+        raise ValueError("joint training requires exactly one PPO epoch")
+    if config.trainer.critic_warmup != 0:
+        raise ValueError("joint training requires trainer.critic_warmup=0")
+    if actor.use_dynamic_bsz:
+        raise ValueError("joint training dynamic actor batching is not implemented")
+    if actor.use_kl_loss or float(actor.entropy_coeff) != 0.0:
+        raise ValueError(
+            "joint training requires stock actor KL and entropy to be disabled"
+        )
+    if bool(model.get("use_fused_kernels", False)) or bool(
+        actor.get("use_fused_kernels", False)
+    ):
+        raise ValueError("joint training requires actor fused kernels disabled")
+    if config.algorithm.use_kl_in_reward:
+        raise ValueError("joint training forbids stock KL-in-reward")
+    if config.filter.get("enable", False):
+        raise ValueError("joint training does not support post-return row filtering")
+    if config.trainer.default_hdfs_dir is not None:
+        raise ValueError("joint exact checkpoint/resume currently requires local shared storage")
+    if config.trainer.get("remove_previous_ckpt_in_save", False):
+        raise ValueError("joint checkpointing forbids remove_previous_ckpt_in_save")
+    keep = config.trainer.get("max_actor_ckpt_to_keep", None)
+    if keep is not None and keep < 2:
+        raise ValueError("joint checkpointing must retain at least two actor checkpoints")
+    custom_policy = {
+        field: raw_policy[field]
+        for field in (
+            "implementation",
+            "alpha",
+            "beta",
+            "prior_temperature",
+            "backprop_to_llm",
+            "score_dtype",
+        )
+    }
+    with open_dict(config.critic):
+        config.critic.enable = False
+    with open_dict(config.trainer):
+        config.trainer.save_freq = training.checkpoint_frequency
+    actor_optim = training.actor_optimizer
+    with open_dict(actor.optim):
+        actor.optim.optimizer = "AdamW"
+        actor.optim.optimizer_impl = "torch.optim"
+        actor.optim.lr = actor_optim.lr
+        actor.optim.betas = list(actor_optim.betas)
+        actor.optim.weight_decay = actor_optim.weight_decay
+        actor.optim.clip_grad = actor_optim.grad_clip
+        actor.optim.grad_clip = None
+        actor.optim.lr_scheduler_type = actor_optim.lr_scheduler_type
+        actor.optim.lr_warmup_steps = actor_optim.lr_warmup_steps
+        actor.optim.lr_warmup_steps_ratio = actor_optim.lr_warmup_steps_ratio
+        actor.optim.min_lr_ratio = actor_optim.min_lr_ratio
+        actor.optim.num_cycles = actor_optim.num_cycles
+        actor.optim.override_optimizer_config = {"eps": actor_optim.eps}
+    with open_dict(actor):
+        actor.grad_clip = actor_optim.grad_clip
+        actor.custom_cls = {
+            "path": "pkg://vagen.joint_policy.actor",
+            "name": "JointDataParallelPPOActor",
+        }
+        actor.custom_config = {
+            "joint_policy": custom_policy,
+            "joint_training": raw_training,
+        }
+    return training
+
+
 class TaskRunner:
     """Ray remote class for executing distributed PPO training tasks.
 
@@ -121,14 +214,22 @@ class TaskRunner:
         """Add actor rollout worker based on the actor strategy."""
         from verl.single_controller.ray import RayWorkerGroup
 
+        joint_enabled = bool(config.get("joint_training", {}).get("enabled", False))
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
 
-            actor_rollout_cls = (
-                AsyncActorRolloutRefWorker
-                if config.actor_rollout_ref.rollout.mode == "async"
-                else ActorRolloutRefWorker
-            )
+            if joint_enabled:
+                if config.actor_rollout_ref.rollout.mode != "async":
+                    raise ValueError("joint training requires async actor rollout worker")
+                from vagen.joint_policy.worker import JointAsyncActorRolloutRefWorker
+
+                actor_rollout_cls = JointAsyncActorRolloutRefWorker
+            else:
+                actor_rollout_cls = (
+                    AsyncActorRolloutRefWorker
+                    if config.actor_rollout_ref.rollout.mode == "async"
+                    else ActorRolloutRefWorker
+                )
             ray_worker_group_cls = RayWorkerGroup
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":
@@ -228,7 +329,14 @@ class TaskRunner:
         """Add reference policy worker if KL loss or KL reward is used."""
         from verl.trainer.ppo.ray_trainer import Role
 
-        if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
+        joint_token_kl = float(
+            config.get("joint_training", {}).get("token_kl_coefficient", 0.0)
+        )
+        if (
+            config.algorithm.use_kl_in_reward
+            or config.actor_rollout_ref.actor.use_kl_loss
+            or joint_token_kl > 0.0
+        ):
             self.role_worker_mapping[Role.RefPolicy] = ray.remote(ref_policy_cls)
             self.mapping[Role.RefPolicy] = "global_pool"
 
@@ -252,9 +360,11 @@ class TaskRunner:
         print(f"TaskRunner hostname: {socket.gethostname()}, PID: {os.getpid()}")
         pprint(OmegaConf.to_container(config, resolve=True))
         OmegaConf.resolve(config)
+        joint_training = _configure_joint_actor_extension(config)
 
         actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
-        self.add_critic_worker(config)
+        if joint_training is None:
+            self.add_critic_worker(config)
 
         # We should adopt a multi-source reward function here:
         # - for rule-based rm, we directly call a reward score
@@ -267,11 +377,14 @@ class TaskRunner:
         # Add a reference policy worker if KL loss or KL reward is used.
         self.add_ref_policy_worker(config, actor_rollout_cls)
 
-        # validate config
+        # Keep stock actor/data validation, but never create its scalar critic
+        # when the replicated action-value critic extension is enabled.
         validate_config(
             config=config,
             use_reference_policy=need_reference_policy(self.role_worker_mapping),
-            use_critic=need_critic(config),
+            use_critic=(
+                need_critic(config) if joint_training is None else False
+            ),
         )
 
         # Download the checkpoint from HDFS to the local machine.

@@ -1165,6 +1165,16 @@ class AgentLoopManager:
             raise RuntimeError("frozen Q owner is disabled")
         return ray.get(self.frozen_q_owner.checkpoint_state.remote())
 
+    def restore_frozen_q_checkpoint_state(
+        self,
+        checkpoint_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.frozen_q_owner is None:
+            raise RuntimeError("frozen Q owner is disabled")
+        return ray.get(
+            self.frozen_q_owner.restore_checkpoint_state.remote(checkpoint_state)
+        )
+
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
         timing = {}
         t_generate_sequences = np.array([metric["generate_sequences"] for chunk in metrics for metric in chunk])

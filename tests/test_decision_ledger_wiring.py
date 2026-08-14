@@ -57,7 +57,7 @@ class DecisionLedgerWiringTest(unittest.TestCase):
             source,
         )
         self.assertIn(
-            '"and replay are not connected; refusing to run stock PPO"',
+            '"but atomic checkpoint/resume is not connected; refusing production training"',
             source,
         )
 

@@ -25,7 +25,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pprint import pprint
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import ray
@@ -60,11 +60,13 @@ from verl.utils.seqlen_balancing import calculate_workload, get_seqlen_balanced_
 from verl.utils.torch_functional import masked_mean
 from vagen.agent_loop.decision_ledger import (
     DECISION_LEDGER_SCHEMA,
+    GUIDED_DECISION_LEDGER_SCHEMA,
     parse_decision_ledger_enabled,
     summarize_decision_ledger_batch,
     validate_decision_ledger_reward_rows,
 )
 from vagen.joint_policy import parse_joint_policy_section
+from vagen.joint_policy.training_contract import parse_joint_training_section
 from vagen.utils.image_dump_actor import ImageDumpActor
 from vagen.utils.upload_hugging_face import HFUploadManager
 from vagen.utils.image_validation_logger import ValidationGenerationsLogger
@@ -422,6 +424,15 @@ class RayPPOTrainer:
         self.joint_policy_config = parse_joint_policy_section(
             self.config.get("joint_policy", {"enabled": False})
         )
+        self.joint_training_config = parse_joint_training_section(
+            self.config.get("joint_training", {"enabled": False})
+        )
+        if (self.joint_policy_config is None) != (
+            self.joint_training_config is None
+        ):
+            raise ValueError(
+                "joint_policy and joint_training must be enabled together"
+            )
         if self.joint_policy_config is not None and not ledger_enabled:
             raise ValueError(
                 "joint_policy.enabled requires decision_ledger.enabled=true"
@@ -434,10 +445,21 @@ class RayPPOTrainer:
                 "decision_ledger.enabled requires async rollout with "
                 "trainer.concat_multi_turn=false"
             )
-        if self.joint_policy_config is not None:
+        if self.joint_training_config is not None:
+            if self.use_critic:
+                raise ValueError(
+                    "joint training must disable the stock scalar critic role"
+                )
+            if (
+                self.joint_training_config.token_kl_coefficient > 0.0
+                and not self.use_reference_policy
+            ):
+                raise ValueError(
+                    "joint token KL requires a frozen reference policy worker"
+                )
             raise NotImplementedError(
-                "joint_policy contract exists, but guided rollout, frozen-Q owner, "
-                "and replay are not connected; refusing to run stock PPO"
+                "joint update contracts and replicated actor/critic workers exist, "
+                "but atomic checkpoint/resume is not connected; refusing production training"
             )
 
         # HuggingFace Hub upload
@@ -807,7 +829,11 @@ class RayPPOTrainer:
             summarize_decision_ledger_batch(
                 ledgers,
                 expected_batch_size=len(batch),
-                allowed_schemas={DECISION_LEDGER_SCHEMA},
+                allowed_schemas=(
+                    {DECISION_LEDGER_SCHEMA, GUIDED_DECISION_LEDGER_SCHEMA}
+                    if self.joint_training_config is not None
+                    else {DECISION_LEDGER_SCHEMA}
+                ),
             )
         )
         if "rm_scores" not in batch.batch:
@@ -1133,9 +1159,57 @@ class RayPPOTrainer:
             else:
                 from .agent_loop.agent_loop_no_concat import AgentLoopManager
                 self.concat_multi_turn = False
-            self.async_rollout_manager = AgentLoopManager(
-                    config=self.config, worker_group=self.actor_rollout_wg, rm_wg=self.rm_wg
+            manager_kwargs: dict[str, Any] = {}
+            if self.joint_training_config is not None:
+                from vagen.joint_policy.bootstrap import (
+                    build_initial_joint_snapshot_state,
                 )
+
+                manager_kwargs = {
+                    "initial_frozen_q_snapshot_state": (
+                        build_initial_joint_snapshot_state(
+                            tokenizer=self.tokenizer,
+                            policy_config=self.joint_policy_config,
+                            training_config=self.joint_training_config,
+                        )
+                    ),
+                    "guided_draw_run_seed": self.joint_training_config.run_seed,
+                }
+            self.async_rollout_manager = AgentLoopManager(
+                config=self.config,
+                worker_group=self.actor_rollout_wg,
+                rm_wg=self.rm_wg,
+                **manager_kwargs,
+            )
+
+    def _publish_joint_snapshot_after_update(self, batch: DataProto) -> dict[str, Any]:
+        """Publish only after every replicated actor/critic rank completed."""
+
+        if self.joint_training_config is None:
+            raise RuntimeError("joint snapshot publication requires joint training")
+        expected_source = int(batch.meta_info["joint_snapshot_source_step"])
+        expected_version = int(batch.meta_info["joint_activation_version"])
+        expected_snapshot = str(batch.meta_info["joint_snapshot_id"])
+        exports = self.actor_rollout_wg.export_joint_critic_snapshot(
+            {
+                "source_step": expected_source + 1,
+                "contract_id": str(batch.meta_info["joint_contract_id"]),
+                "score_dtype": self.joint_policy_config.score_dtype,
+            }
+        )
+        from vagen.joint_policy.update_transaction import (
+            publish_replicated_joint_snapshot,
+        )
+
+        activated = publish_replicated_joint_snapshot(
+            manager=self.async_rollout_manager,
+            rank_exports=exports,
+            expected_world_size=self.actor_rollout_wg.world_size,
+            expected_active_snapshot_id=expected_snapshot,
+            expected_active_source_step=expected_source,
+            expected_activation_version=expected_version,
+        )
+        return activated
 
     def _save_checkpoint(self):
         from verl.utils.fs import local_mkdir_safe
@@ -1188,7 +1262,56 @@ class RayPPOTrainer:
         local_mkdir_safe(local_global_step_folder)
         dataloader_local_path = os.path.join(local_global_step_folder, "data.pt")
         dataloader_state_dict = self.train_dataloader.state_dict()
-        torch.save(dataloader_state_dict, dataloader_local_path)
+        if self.joint_training_config is not None:
+            dataloader_temp_path = f"{dataloader_local_path}.tmp.{os.getpid()}"
+            try:
+                with open(dataloader_temp_path, "wb") as handle:
+                    torch.save(dataloader_state_dict, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(dataloader_temp_path, dataloader_local_path)
+            finally:
+                if os.path.exists(dataloader_temp_path):
+                    os.unlink(dataloader_temp_path)
+        else:
+            torch.save(dataloader_state_dict, dataloader_local_path)
+
+        if self.joint_training_config is not None:
+            from vagen.joint_policy.checkpoint import (
+                assemble_joint_checkpoint,
+                save_atomic_joint_checkpoint,
+                sha256_file,
+            )
+
+            owner_state = self.async_rollout_manager.frozen_q_checkpoint_state()
+            active = owner_state["active_snapshot_state"]
+            rank_exports = self.actor_rollout_wg.export_joint_checkpoint(
+                {
+                    "source_step": active["source_step"],
+                    "contract_id": active["contract_id"],
+                    "score_dtype": active["score_dtype"],
+                }
+            )
+            from vagen.joint_policy.training_contract import (
+                joint_training_contract_id,
+            )
+
+            joint_payload = assemble_joint_checkpoint(
+                global_step=self.global_steps,
+                run_seed=self.joint_training_config.run_seed,
+                rank_exports=rank_exports,
+                owner_checkpoint_state=owner_state,
+                expected_world_size=self.actor_rollout_wg.world_size,
+                dataloader_sha256=sha256_file(dataloader_local_path),
+                training_contract_id=joint_training_contract_id(
+                    self.joint_training_config,
+                    self.joint_policy_config,
+                ),
+            )
+            save_atomic_joint_checkpoint(
+                local_global_step_folder,
+                joint_payload,
+            )
 
         # latest checkpointed iteration tracker (for atomic usage)
         local_latest_checkpointed_iteration = os.path.join(
@@ -1211,7 +1334,16 @@ class RayPPOTrainer:
             if not os.path.isabs(checkpoint_folder):
                 working_dir = os.getcwd()
                 checkpoint_folder = os.path.join(working_dir, checkpoint_folder)
-            global_step_folder = find_latest_ckpt_path(checkpoint_folder)  # None if no latest
+            if self.joint_training_config is not None:
+                from vagen.joint_policy.checkpoint import (
+                    find_latest_complete_joint_checkpoint,
+                )
+
+                global_step_folder = find_latest_complete_joint_checkpoint(
+                    checkpoint_folder
+                )
+            else:
+                global_step_folder = find_latest_ckpt_path(checkpoint_folder)  # None if no latest
 
         # find global_step_folder
         if self.config.trainer.resume_mode == "auto":
@@ -1229,6 +1361,19 @@ class RayPPOTrainer:
                 if not os.path.isabs(global_step_folder):
                     working_dir = os.getcwd()
                     global_step_folder = os.path.join(working_dir, global_step_folder)
+                if self.joint_training_config is not None:
+                    from vagen.joint_policy.checkpoint import (
+                        JOINT_COMPLETION_FILENAME,
+                    )
+
+                    marker = os.path.join(
+                        global_step_folder,
+                        JOINT_COMPLETION_FILENAME,
+                    )
+                    if not os.path.isfile(marker):
+                        raise ValueError(
+                            "joint resume_path is not a complete global-update checkpoint"
+                        )
         print(f"Load from checkpoint folder: {global_step_folder}")
         # set global step
         self.global_steps = int(global_step_folder.split("global_step_")[-1])
@@ -1247,6 +1392,46 @@ class RayPPOTrainer:
             self.critic_wg.load_checkpoint(
                 critic_path, del_local_after_load=self.config.trainer.del_local_ckpt_after_load
             )
+        if self.joint_training_config is not None:
+            from vagen.joint_policy.checkpoint import (
+                load_complete_joint_checkpoint,
+            )
+
+            joint = load_complete_joint_checkpoint(global_step_folder)
+            from vagen.joint_policy.training_contract import (
+                joint_training_contract_id,
+            )
+
+            if (
+                joint["global_step"] != self.global_steps
+                or joint["training_contract_id"]
+                != joint_training_contract_id(
+                    self.joint_training_config,
+                    self.joint_policy_config,
+                )
+                or joint["run_seed"] != self.joint_training_config.run_seed
+                or joint["world_size"] != self.actor_rollout_wg.world_size
+            ):
+                raise ValueError("joint checkpoint run identity mismatch")
+            restored_owner = self.async_rollout_manager.restore_frozen_q_checkpoint_state(
+                joint["frozen_q_owner"]
+            )
+            restored_ranks = self.actor_rollout_wg.load_joint_checkpoint(
+                joint["actor_critic"]
+            )
+            expected_ranks = list(range(self.actor_rollout_wg.world_size))
+            if sorted(row["rank"] for row in restored_ranks) != expected_ranks:
+                raise ValueError("joint checkpoint did not restore every actor rank")
+            for row in restored_ranks:
+                if (
+                    row["source_step"] != restored_owner["active_source_step"]
+                    or row["snapshot_id"] != restored_owner["active_snapshot_id"]
+                    or row["completed_updates"]
+                    != restored_owner["activation_version"]
+                    or row["optimizer_fingerprint"]
+                    != joint["actor_critic"]["critic_optimizer_fingerprint"]
+                ):
+                    raise ValueError("joint actor and frozen Q restore state mismatch")
 
         # load dataloader,
         # TODO: from remote not implemented yet
@@ -1255,6 +1440,10 @@ class RayPPOTrainer:
             dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
+            if self.joint_training_config is not None:
+                raise ValueError(
+                    f"joint checkpoint is missing dataloader state: {dataloader_local_path}"
+                )
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
 
     def _start_profiling(self, do_profile: bool) -> None:
@@ -1455,7 +1644,19 @@ class RayPPOTrainer:
                         batch.batch["response_mask"] = compute_response_mask(batch)
                     if not self.concat_multi_turn:
                         self._validate_decision_ledger_batch(batch, metrics)
-                    
+                    if self.joint_training_config is not None:
+                        from vagen.joint_policy.training_batch import (
+                            prepare_joint_training_batch,
+                        )
+
+                        prepare_joint_training_batch(
+                            batch,
+                            config=self.joint_training_config,
+                        )
+                        batch.meta_info["temperature"] = float(
+                            self.config.actor_rollout_ref.rollout.temperature
+                        )
+
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
@@ -1465,6 +1666,12 @@ class RayPPOTrainer:
                             divisor_size = self.actor_rollout_wg.world_size
                             batch_size = len(batch.batch["attention_mask"])
                             batch, pad_size = pad_dataproto_to_divisor(batch, divisor_size)
+                            if self.joint_training_config is not None:
+                                from vagen.joint_policy.training_batch import (
+                                    mark_joint_padding_invalid,
+                                )
+
+                                mark_joint_padding_invalid(batch, pad_size)
                             print(f"Pad {pad_size} samples to make batch size {batch_size} divisible by {divisor_size} dp_workers")
                         self._balance_batch(batch, metrics=metrics)
 
@@ -1490,7 +1697,11 @@ class RayPPOTrainer:
                     #   Note: π_old computed once per data batch, serves as stable reference during mini-batch updates
                     rollout_corr_config = self.config.algorithm.get("rollout_correction", None)
                     bypass_recomputing_logprobs = rollout_corr_config and rollout_corr_config.get("bypass_mode", False)
-                    if bypass_recomputing_logprobs:  # Use `rollout_log_probs`
+                    if self.joint_training_config is not None:
+                        # Guided behavior log-prob is persisted in the rollout
+                        # ledger; stock token old-log-prob replay is unrelated.
+                        pass
+                    elif bypass_recomputing_logprobs:  # Use `rollout_log_probs`
                         from verl.trainer.ppo.rollout_corr_helper import apply_rollout_correction
 
                         apply_rollout_correction(
@@ -1517,7 +1728,8 @@ class RayPPOTrainer:
 
                                 metrics.update(calculate_debug_metrics(batch))
 
-                    assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
+                    if self.joint_training_config is None:
+                        assert "old_log_probs" in batch.batch, f'"old_log_prob" not in {batch.batch.keys()=}'
 
                     if self.use_reference_policy:
                         # compute reference log_prob
@@ -1527,6 +1739,10 @@ class RayPPOTrainer:
                             else:
                                 ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
                             batch = batch.union(ref_log_prob)
+                            if self.joint_training_config is not None:
+                                batch.batch["joint_reference_token_log_probs"] = (
+                                    batch.batch["ref_log_prob"]
+                                )
 
                     # compute values
                     if self.use_critic:
@@ -1565,7 +1781,8 @@ class RayPPOTrainer:
                         # Only runs in decoupled mode (computes once per batch using stable π_old)
                         # In bypass mode, this is skipped - actor computes metrics from evolving π_θ vs π_rollout
                         if (
-                            rollout_corr_config is not None
+                            self.joint_training_config is None
+                            and rollout_corr_config is not None
                             and "rollout_log_probs" in batch.batch
                             and not bypass_recomputing_logprobs  # Only in decoupled mode
                         ):
@@ -1581,23 +1798,28 @@ class RayPPOTrainer:
                             "norm_adv_by_std_in_grpo", True
                         )  # GRPO adv normalization factor
 
-                        batch = compute_advantage(
-                            batch,
-                            adv_estimator=self.config.algorithm.adv_estimator,
-                            gamma=self.config.algorithm.gamma,
-                            lam=self.config.algorithm.lam,
-                            num_repeat=self.config.actor_rollout_ref.rollout.n,
-                            norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                            config=self.config.algorithm,
-                        )
+                        if self.joint_training_config is None:
+                            batch = compute_advantage(
+                                batch,
+                                adv_estimator=self.config.algorithm.adv_estimator,
+                                gamma=self.config.algorithm.gamma,
+                                lam=self.config.algorithm.lam,
+                                num_repeat=self.config.actor_rollout_ref.rollout.n,
+                                norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
+                                config=self.config.algorithm,
+                            )
 
-                    if self.config.algorithm.adv_estimator in ["no_concat_gae_last", "no_concat_gae_first"]:
+                    if (
+                        self.joint_training_config is None
+                        and self.config.algorithm.adv_estimator in ["no_concat_gae_last", "no_concat_gae_first"]
+                    ):
                         batch.batch["value_mask"] = compute_value_mask(batch)
 
                     # compute custom metrics
                     with marked_timer("custom_metrics", timing_raw, color="magenta"):
-                        custom_train_metrics = compute_custom_metrics(batch, prefix="custom_metrics/train")
-                        metrics.update(custom_train_metrics)
+                        if self.joint_training_config is None:
+                            custom_train_metrics = compute_custom_metrics(batch, prefix="custom_metrics/train")
+                            metrics.update(custom_train_metrics)
 
                     
                     
@@ -1627,6 +1849,18 @@ class RayPPOTrainer:
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
                         metrics.update(actor_output_metrics)
+                        if self.joint_training_config is not None:
+                            activated = self._publish_joint_snapshot_after_update(batch)
+                            metrics.update(
+                                {
+                                    "joint/active_source_step": float(
+                                        activated["active_source_step"]
+                                    ),
+                                    "joint/activation_version": float(
+                                        activated["activation_version"]
+                                    ),
+                                }
+                            )
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

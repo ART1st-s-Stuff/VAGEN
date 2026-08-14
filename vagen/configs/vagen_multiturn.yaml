@@ -67,6 +67,31 @@ joint_policy:
   backprop_to_llm: null
   score_dtype: null
 
+# Joint training has no numeric defaults. Every null must be explicitly
+# overridden before enabled=true; disabled parsing rejects populated values.
+joint_training:
+  enabled: false
+  implementation: null
+  run_seed: null
+  gamma: null
+  gae_lambda: null
+  ppo_clip_ratio: null
+  normalize_advantages: null
+  token_kl_coefficient: null
+  token_kl_type: null
+  guided_entropy_coefficient: null
+  checkpoint_frequency: null
+  actor_optimizer: null
+  critic_checkpoint: null
+  initial_snapshot_source_step: null
+  critic_qwen_hidden_dim: null
+  critic_grid_tokens: null
+  critic_state_dim: null
+  critic_action_count: null
+  critic_huber_delta: null
+  critic_grad_clip: null
+  critic_optimizer: null
+
 # ============================================================================
 # Algorithm Configuration
 # ============================================================================

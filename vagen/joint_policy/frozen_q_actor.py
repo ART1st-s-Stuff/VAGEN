@@ -100,6 +100,17 @@ class FrozenQScoringActor:
     def checkpoint_state(self) -> dict[str, Any]:
         return self._owner.checkpoint_state()
 
+    def restore_checkpoint_state(self, raw: Mapping[str, Any]) -> dict[str, Any]:
+        status = self._owner.status()
+        if status["open_batch_count"] != 0 or status["staged_snapshot_id"] is not None:
+            raise ValueError(
+                "cannot restore frozen Q owner with open pins or staged candidate"
+            )
+        self._owner = FrozenQSnapshotOwner.from_checkpoint_state(
+            _mapping(raw, "restore_checkpoint_state")
+        )
+        return self.status()
+
 
 def _mapping(
     value: Mapping[str, Any],

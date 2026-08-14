@@ -110,6 +110,30 @@ def _nimloth_response_mask(response_ids: List[int], spec: Any) -> List[int]:
     return mask
 
 
+def _nimloth_terminal_response_mask(
+    response_ids: List[int],
+    spec: Any,
+) -> List[int]:
+    """Require real CoT+K16 ending at action_start, without an action token."""
+
+    from nimloth.backbone.qwen25vl.turn_generation import find_token_subsequence
+
+    injected_start = find_token_subsequence(response_ids, spec.injected_token_ids)
+    if injected_start is None:
+        raise RuntimeError("terminal Nimloth response did not inject latent state")
+    injected_end = injected_start + len(spec.injected_token_ids)
+    if injected_end != len(response_ids):
+        raise RuntimeError(
+            "terminal Nimloth response must stop at action_start without an action"
+        )
+    mask = [0] * len(response_ids)
+    for index in range(min(injected_start, spec.max_reasoning_tokens)):
+        mask[index] = 1
+    if not any(mask):
+        raise RuntimeError("terminal Nimloth response contains no real CoT tokens")
+    return mask
+
+
 def _strip_trailing_generation_terminators(
     token_ids: List[int],
     tokenizer: Any,
@@ -499,7 +523,11 @@ class GymAgentLoop(AgentLoopBase):
                 elif state == AgentState.GENERATING:
                     state = await self._handle_generating_state(agent_data, sampling_params)
                 elif state == AgentState.INTERACTING:
-                    state = await self._handle_env_state(agent_data, **kwargs)
+                    state = await self._handle_env_state(
+                        agent_data,
+                        sampling_params=sampling_params,
+                        **kwargs,
+                    )
                 else:
                     logger.error(f"Invalid state: {state}")
                     state = AgentState.TERMINATED
@@ -554,6 +582,135 @@ class GymAgentLoop(AgentLoopBase):
         return AgentState.GENERATING
 
     
+    async def _capture_terminal_state(
+        self,
+        agent_data: AgentData,
+        sampling_params: Dict[str, Any],
+        *,
+        rollout_stop_reason: str,
+    ) -> dict[str, Any]:
+        """Generate real final-observation CoT+K16 and stop before any action."""
+
+        image_data = agent_data.sys_images + agent_data.cur_images
+        messages = [
+            agent_data.sys_msg,
+            agent_data.cur_msg,
+            {"role": "assistant", "content": "<think>"},
+        ]
+        chat_template_args = {
+            "add_generation_prompt": False,
+            "continue_final_message": True,
+            **self.apply_chat_template_kwargs,
+        }
+        if self.processor is not None:
+            raw_prompt = await self.loop.run_in_executor(
+                None,
+                lambda: self.processor.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    **chat_template_args,
+                ),
+            )
+            model_inputs = self.processor(
+                text=[raw_prompt],
+                images=image_data,
+                return_tensors="pt",
+            )
+            prompt_ids = model_inputs.pop("input_ids").squeeze(0).tolist()
+        else:
+            if image_data:
+                raise ValueError(
+                    "terminal observation returned images but processor is None"
+                )
+            prompt_ids = await self.loop.run_in_executor(
+                None,
+                lambda: self.tokenizer.apply_chat_template(
+                    [_flatten_text_only_content(message) for message in messages],
+                    tokenize=True,
+                    return_dict=False,
+                    **chat_template_args,
+                ),
+            )
+        if len(prompt_ids) > self.prompt_length:
+            raise ValueError("terminal observation prompt exceeds prompt_length")
+
+        sampling = sampling_params.copy()
+        max_new_tokens = sampling.get("max_new_tokens") or agent_data.response_limit
+        max_new_tokens = min(int(max_new_tokens), agent_data.response_limit)
+        spec = _nimloth_turn_generation_spec(
+            self.tokenizer,
+            latent_token_count=agent_data.env.config["latent_token_count"],
+            max_response_tokens=max_new_tokens,
+        )
+        sampling.update(
+            {
+                "max_new_tokens": spec.max_output_tokens,
+                "logprobs": len(spec.action_token_ids),
+                "ignore_eos": True,
+                # action_start is a forced boundary token, not an action. vLLM
+                # returns immediately after its same-generation hidden is seen.
+                "stop_token_ids": [spec.injected_token_ids[-1]],
+                "extra_args": spec.to_extra_args(),
+            }
+        )
+        with simple_timer("generate_sequences", agent_data.metrics):
+            output = await self.server_manager.generate(
+                request_id=agent_data.request_id,
+                require_unique_generation=True,
+                prompt_ids=prompt_ids,
+                sampling_params=sampling,
+                image_data=image_data,
+            )
+        response_ids = list(output.token_ids)
+        response_mask = _nimloth_terminal_response_mask(response_ids, spec)
+        if output.log_probs is None or len(output.log_probs) != len(response_ids):
+            raise RuntimeError(
+                "terminal Nimloth state requires aligned rollout log-probabilities"
+            )
+        if any(not math.isfinite(float(value)) for value in output.log_probs):
+            raise RuntimeError("terminal Nimloth state log-probabilities must be finite")
+        policy_state = output.policy_state
+        if not isinstance(policy_state, Mapping):
+            raise RuntimeError("terminal Nimloth state requires same-generation capture")
+        generation_id = policy_state.get("generation_id")
+        latent_hidden = policy_state.get("latent_hidden")
+        latent_ids = list(spec.injected_token_ids[:-1])
+        if (
+            policy_state.get("schema") != "nimloth_policy_state_v2"
+            or policy_state.get("request_id") != agent_data.request_id
+            or not isinstance(generation_id, str)
+            or not generation_id
+            or generation_id == agent_data.request_id
+            or policy_state.get("latent_token_ids") != latent_ids
+            or policy_state.get("action_start_token_id")
+            != spec.injected_token_ids[-1]
+            or not isinstance(latent_hidden, list)
+            or len(latent_hidden) != len(latent_ids)
+        ):
+            raise RuntimeError("terminal Nimloth state capture identity mismatch")
+        decoded = await self.loop.run_in_executor(
+            None,
+            lambda: self.tokenizer.decode(
+                response_ids,
+                skip_special_tokens=False,
+            ),
+        )
+        from vagen.joint_policy.terminal_state import TerminalStateTrace
+
+        trace = TerminalStateTrace.build(
+            request_id=agent_data.request_id,
+            generation_id=generation_id,
+            rollout_stop_reason=rollout_stop_reason,
+            raw_response=f"<think>{decoded}",
+            response_ids=response_ids,
+            response_mask=response_mask,
+            response_logprobs=output.log_probs,
+            latent_token_ids=latent_ids,
+            action_start_token_id=spec.injected_token_ids[-1],
+            latent_hidden=latent_hidden,
+        )
+        return trace.to_mapping()
+
     async def _handle_generating_state(
         self, agent_data: AgentData, sampling_params: Dict[str, Any]
     ) -> AgentState:
@@ -703,7 +860,13 @@ class GymAgentLoop(AgentLoopBase):
             )
         return AgentState.INTERACTING
 
-    async def _handle_env_state(self, agent_data: AgentData, **kwargs) -> AgentState:
+    async def _handle_env_state(
+        self,
+        agent_data: AgentData,
+        *,
+        sampling_params: Dict[str, Any],
+        **kwargs,
+    ) -> AgentState:
         """
         Step the environment with last assistant action; always collect reward first.
         If terminal (done/success/turn-limit/token-limit), stop WITHOUT appending user suffix,
@@ -743,19 +906,40 @@ class GymAgentLoop(AgentLoopBase):
 
         traj_success = extract_success(info)
         agent_data.env_turns += 1
-        last_turn=False
-        
-        
-        
-        if done:
-            last_turn = True
+        response_limit_exhausted = (
+            len(agent_data.turn_response_mask) >= self.response_length
+        )
+        if self.joint_policy_config is not None:
+            from vagen.joint_policy.outcome import classify_rollout_stop_reason
 
-        if self.env_max_turns is not None and agent_data.env_turns >= int(self.env_max_turns):
-            last_turn = True
-
-        
-        if len(agent_data.turn_response_mask) >= self.response_length:
-            last_turn = True
+            if (
+                isinstance(self.env_max_turns, bool)
+                or not isinstance(self.env_max_turns, int)
+                or self.env_max_turns < 1
+            ):
+                raise ValueError(
+                    "joint guided rollout requires explicit positive max_turns"
+                )
+            rollout_stop_reason = classify_rollout_stop_reason(
+                success=traj_success,
+                env_terminated=done,
+                turn_count=agent_data.env_turns,
+                max_turns=self.env_max_turns,
+                response_limit_exhausted=response_limit_exhausted,
+            )
+        elif done:
+            rollout_stop_reason = (
+                "success" if traj_success else "environment_failure"
+            )
+        elif self.env_max_turns is not None and agent_data.env_turns >= int(
+            self.env_max_turns
+        ):
+            rollout_stop_reason = "task_failure"
+        elif response_limit_exhausted:
+            rollout_stop_reason = "infrastructure_truncation"
+        else:
+            rollout_stop_reason = "continue"
+        last_turn = rollout_stop_reason != "continue"
 
         decision_ledger = None
         if self.decision_ledger_enabled:
@@ -793,6 +977,7 @@ class GymAgentLoop(AgentLoopBase):
             "group_idx": agent_data.group_idx,
             "traj_idx": agent_data.traj_idx,
             "turn_idx": agent_data.env_turns,
+            "rollout_stop_reason": rollout_stop_reason,
         }
         if decision_ledger is not None:
             extra_fields["decision_ledger"] = decision_ledger
@@ -841,6 +1026,17 @@ class GymAgentLoop(AgentLoopBase):
         agent_data.cur_msg = cur_msg
         agent_data.cur_images = cur_images
         if last_turn:
+            if artifacts is not None and rollout_stop_reason in {
+                "success",
+                "task_failure",
+                "environment_failure",
+            }:
+                terminal_trace = await self._capture_terminal_state(
+                    agent_data,
+                    sampling_params,
+                    rollout_stop_reason=rollout_stop_reason,
+                )
+                output.extra_fields["terminal_state_trace"] = terminal_trace
             return AgentState.TERMINATED
 
         return AgentState.PENDING
