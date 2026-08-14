@@ -1,7 +1,12 @@
 # Human-approved non-production ID165 DP8 update/resume smoke.
 # These values are protocol-test parameters and are not production defaults.
+hydra:
+  searchpath:
+    - file:../../verl/verl/trainer/config
+
 defaults:
-  - vagen_multiturn
+  - ppo_trainer
+  - env_registry
   - _self_
 
 joint_integration_gate:
@@ -71,8 +76,16 @@ data:
   max_response_length: 128
   dataloader_num_workers: 0
   validation_shuffle: false
+  return_raw_chat: true
+  return_multi_modal_inputs: true
+  apply_chat_template_kwargs:
+    enable_thinking: false
+  custom_cls:
+    path: vagen/gym_agent_dataset.py
+    name: AgenticDataset
 
 actor_rollout_ref:
+  hybrid_engine: true
   model:
     path: ${oc.env:ID165_MODEL}
     trust_remote_code: true
@@ -158,6 +171,12 @@ trainer:
   rollout_data_dir: ${oc.env:ID165_RUN_OUT}/rollout_data
   validation_data_dir: ${oc.env:ID165_RUN_OUT}/validation
   log_val_generations: 0
+  skip_pad_tokens: true
+  replace_image_tokens_for_logging: true
+  log_image:
+    enable: false
+    max_pending: 2
+    png_compress_level: 0
 
 critic:
   enable: false
