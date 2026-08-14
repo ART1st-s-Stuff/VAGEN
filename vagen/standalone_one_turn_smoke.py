@@ -7,6 +7,7 @@ import json
 import math
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,47 @@ def build_input(args: argparse.Namespace) -> Any:
     )
 
 
+_GUIDED_PROVENANCE_FIELDS = (
+    "joint_policy_batch_pin",
+    "frozen_q_scoring",
+    "policy_response_trace",
+    "guided_action_draw",
+    "guided_action_execution",
+)
+
+
+def extract_guided_provenance(
+    result: Any,
+    *,
+    is_guided: bool,
+) -> dict[str, Any]:
+    """Extract the exact one-row guided audit records for the result JSON."""
+
+    if not is_guided:
+        return {}
+    records: dict[str, Any] = {}
+    for field in _GUIDED_PROVENANCE_FIELDS:
+        if field not in result.non_tensor_batch:
+            raise RuntimeError(f"guided smoke is missing provenance field {field}")
+        values = result.non_tensor_batch[field]
+        if len(values) != 1 or not isinstance(values[0], Mapping):
+            raise RuntimeError(
+                f"guided smoke provenance field {field} must contain one mapping"
+            )
+        records[field] = dict(values[0])
+    if "guided_turn_index" not in result.non_tensor_batch:
+        raise RuntimeError("guided smoke is missing provenance field guided_turn_index")
+    guided_turn_index = result.non_tensor_batch["guided_turn_index"]
+    if len(guided_turn_index) != 1:
+        raise RuntimeError("guided smoke must contain one guided turn index")
+    records["guided_turn_index"] = int(guided_turn_index[0])
+    if records["guided_turn_index"] != (
+        int(result.non_tensor_batch["turn_idx"][0]) - 1
+    ):
+        raise RuntimeError("guided and legacy turn indices do not align")
+    return records
+
+
 def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     if len(result) != 1:
         raise ValueError(f"one-turn smoke expected one row, got {len(result)}")
@@ -293,21 +335,10 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
     action_token = f"<|action_({prior_action_id})|>"
     if action_token not in environment_response:
         raise RuntimeError("prior action does not match generated action token")
-    if is_guided:
-        for field in (
-            "guided_turn_index",
-            "joint_policy_batch_pin",
-            "frozen_q_scoring",
-            "policy_response_trace",
-            "guided_action_draw",
-            "guided_action_execution",
-        ):
-            if field not in result.non_tensor_batch:
-                raise RuntimeError(f"guided smoke is missing provenance field {field}")
-        if int(result.non_tensor_batch["guided_turn_index"][0]) != (
-            int(result.non_tensor_batch["turn_idx"][0]) - 1
-        ):
-            raise RuntimeError("guided and legacy turn indices do not align")
+    guided_provenance = extract_guided_provenance(
+        result,
+        is_guided=is_guided,
+    )
     return {
         "status": "passed",
         "optimizer": None,
@@ -322,6 +353,7 @@ def validate_result(result: Any, tokenizer: Any) -> dict[str, Any]:
         "response_token_count": response_length,
         "policy_state": policy_state,
         "metrics": metrics,
+        **guided_provenance,
     }
 
 

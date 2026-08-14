@@ -6,6 +6,7 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from omegaconf import OmegaConf
 
@@ -89,6 +90,34 @@ class StandaloneOneTurnSmokeTest(unittest.TestCase):
         self.assertEqual(config.joint_policy.prior_temperature, 0.9)
         self.assertEqual(config.joint_policy.score_dtype, "float32")
         self.assertNotIn("run_seed", config.joint_policy)
+
+    def test_guided_result_extracts_complete_audit_provenance(self) -> None:
+        try:
+            from vagen.standalone_one_turn_smoke import (
+                _GUIDED_PROVENANCE_FIELDS,
+                extract_guided_provenance,
+            )
+        except ImportError as exc:
+            self.skipTest(f"smoke dependencies unavailable: {exc}")
+
+        non_tensors = {
+            field: [{"schema": f"test-{field}"}]
+            for field in _GUIDED_PROVENANCE_FIELDS
+        }
+        non_tensors.update({"guided_turn_index": [0], "turn_idx": [1]})
+        result = SimpleNamespace(non_tensor_batch=non_tensors)
+        records = extract_guided_provenance(result, is_guided=True)
+        self.assertEqual(records["guided_turn_index"], 0)
+        for field in _GUIDED_PROVENANCE_FIELDS:
+            self.assertEqual(records[field], non_tensors[field][0])
+        self.assertEqual(
+            extract_guided_provenance(result, is_guided=False),
+            {},
+        )
+
+        del non_tensors["guided_action_draw"]
+        with self.assertRaisesRegex(RuntimeError, "guided_action_draw"):
+            extract_guided_provenance(result, is_guided=True)
 
     def test_input_config_matches_current_navigation_profile(self) -> None:
         try:
