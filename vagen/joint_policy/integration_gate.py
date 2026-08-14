@@ -1,4 +1,4 @@
-"""Human-approved non-production escape hatch for ID166 DP8 smoke only."""
+"""Human-approved non-production escape hatch for ID167 DP8 smoke only."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-JOINT_INTEGRATION_GATE_IMPLEMENTATION = "id166_dp8_resume_smoke_v1"
+JOINT_INTEGRATION_GATE_IMPLEMENTATION = "id167_dp8_resume_smoke_v1"
 
 
 @dataclass(frozen=True)
@@ -18,8 +18,8 @@ class JointIntegrationGate:
     def __post_init__(self) -> None:
         if self.implementation != JOINT_INTEGRATION_GATE_IMPLEMENTATION:
             raise ValueError("unsupported joint integration gate implementation")
-        if self.experiment_id != 166:
-            raise ValueError("joint integration gate is restricted to experiment 166")
+        if self.experiment_id != 167:
+            raise ValueError("joint integration gate is restricted to experiment 167")
         if self.phase not in {"update_1", "resume_update_2"}:
             raise ValueError("joint integration gate phase is invalid")
 
