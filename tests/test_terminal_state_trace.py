@@ -1,7 +1,19 @@
+from pathlib import Path
 import unittest
 
 
 class TerminalStateTraceTest(unittest.TestCase):
+    def test_terminal_generation_requests_latent_only_capture(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "vagen/agent_loop/gym_agent_loop_no_concat.py"
+        ).read_text()
+        self.assertIn(
+            '"nimloth_policy_state_capture_mode": "terminal_latent_only"',
+            source,
+        )
+        self.assertIn('"nimloth_terminal_latent_state_v1"', source)
+
     def _kwargs(self):
         return {
             "request_id": "request-1",

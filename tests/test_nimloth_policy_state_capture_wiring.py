@@ -30,6 +30,11 @@ class _PolicyState:
         )
 
 
+class _LatentState:
+    def __init__(self) -> None:
+        self.latent_hidden = _FakeTensor([[1.0, 2.0], [3.0, 4.0]])
+
+
 class _Engine:
     async def generate(self, **kwargs):
         yield SimpleNamespace(
@@ -219,6 +224,77 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
         self.assertEqual(len(output.policy_state["action_logits"]), 8)
         self.assertNotIn("nimloth_policy_state", sampling["extra_args"])
         self.assertTrue(all(math.isfinite(value) for value in output.log_probs))
+
+    def test_terminal_mode_returns_latent_only_state_without_action_evidence(self) -> None:
+        try:
+            from vagen.rollout.nimloth_vllm import NimlothVLLMHttpServer
+        except ImportError as exc:
+            self.skipTest(f"Nimloth/VAGEN dependencies unavailable: {exc}")
+
+        start = AsyncMock()
+        full_pop = AsyncMock()
+        latent_pop = AsyncMock(return_value=_LatentState().latent_hidden)
+        sampling = {
+            "max_new_tokens": 2,
+            "logprobs": 8,
+            "extra_args": {
+                "nimloth_policy_state_capture_mode": "terminal_latent_only",
+                "nimloth_turn_response": {
+                    "close_text": "</think>",
+                    "close_token_ids": [7],
+                    "injected_token_ids": [90, 91, 92],
+                    "action_token_ids": list(range(100, 108)),
+                    "action_end_token_id": 93,
+                    "forbidden_reasoning_token_ids": [],
+                    "max_reasoning_tokens": 4,
+                },
+            },
+        }
+        with (
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_start_policy_state_capture_for_request",
+                start,
+            ),
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_pop_policy_state_capture_for_request",
+                full_pop,
+            ),
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_pop_latent_state_capture_for_request",
+                latent_pop,
+            ),
+            patch(
+                "verl.workers.rollout.vllm_rollout.vllm_async_server."
+                "_qwen2_5_vl_dedup_image_tokens",
+                side_effect=lambda ids, _processor: ids,
+            ),
+        ):
+            output = asyncio.run(
+                NimlothVLLMHttpServer.generate.__wrapped__(
+                    _Server(),
+                    prompt_ids=[1, 2],
+                    sampling_params=sampling,
+                    request_id="generation-terminal",
+                    session_request_id="request-terminal",
+                )
+            )
+
+        full_pop.assert_not_awaited()
+        latent_pop.assert_awaited_once_with(
+            _Server.engine,
+            request_id="generation-terminal",
+        )
+        self.assertEqual(
+            output.policy_state["schema"],
+            "nimloth_terminal_latent_state_v1",
+        )
+        self.assertEqual(output.policy_state["latent_token_ids"], [90, 91])
+        self.assertNotIn("action_logits", output.policy_state)
+        self.assertNotIn("action_token_ids", output.policy_state)
+        self.assertNotIn("action_start_token_id", output.policy_state)
 
     def test_base_server_rejects_response_identity_mismatch(self) -> None:
         try:
