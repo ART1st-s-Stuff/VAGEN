@@ -148,7 +148,10 @@ training entry remains disabled:
 - every guided turn persists the batch pin, scoring record, response trace,
   action draw, execution envelope, guided ledger, stable trajectory identity,
   raw response IDs/mask/log-probs, and actual environment reward into
-  `DataProto`; manager failure paths unpin the batch before returning;
+  `DataProto`; historical `turn_idx` remains one-based while the explicit
+  `guided_turn_index` and draw-key turn are zero-based and must differ by one;
+  manager failure paths, including an ambiguous pin RPC failure, make
+  best-effort unpin attempts before returning;
 - capture currently requires `data_parallel_size=1` and eager vLLM execution;
   unsupported DP routing and conflicting engine overrides fail closed;
 - `RayPPOTrainer` still rejects `joint_policy.enabled=true` before worker

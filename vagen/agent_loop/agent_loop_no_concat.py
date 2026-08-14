@@ -1102,16 +1102,33 @@ class AgentLoopManager:
         key_rows = np.empty(len(prompts), dtype=object)
         key_rows[:] = draw_key_rows
 
-        raw_pin = ray.get(
-            self.frozen_q_owner.pin_batch.remote(
-                {
-                    "batch_id": batch_id,
-                    "policy_step": policy_step,
-                    "expected_snapshot_id": status["active_snapshot_id"],
-                    "expected_activation_version": status["activation_version"],
-                }
+        try:
+            raw_pin = ray.get(
+                self.frozen_q_owner.pin_batch.remote(
+                    {
+                        "batch_id": batch_id,
+                        "policy_step": policy_step,
+                        "expected_snapshot_id": status["active_snapshot_id"],
+                        "expected_activation_version": status["activation_version"],
+                    }
+                )
             )
-        )
+        except BaseException:
+            # The actor may have applied the idempotent pin before an object-store
+            # or transport failure reached the manager. Use the already-derived
+            # authoritative pin to make best-effort cleanup without replacing the
+            # original failure.
+            try:
+                ray.get(
+                    self.frozen_q_owner.unpin_batch.remote(
+                        expected_pin.to_mapping()
+                    )
+                )
+            except BaseException:
+                logger.exception(
+                    "failed to clean up frozen Q batch after pin RPC failure"
+                )
+            raise
         try:
             actual_pin = FrozenQBatchPin.from_mapping(raw_pin)
             if actual_pin != expected_pin:

@@ -803,8 +803,16 @@ class GymAgentLoop(AgentLoopBase):
         if agent_data.rollout_repeat_index is not None:
             extra_fields["rollout_repeat_index"] = agent_data.rollout_repeat_index
         if artifacts is not None:
+            guided_turn_index = artifacts.action_draw.draw_key.turn_index
+            if guided_turn_index != agent_data.env_turns - 1:
+                raise RuntimeError(
+                    "guided draw turn index does not match executed environment turn"
+                )
             extra_fields.update(
                 {
+                    # Historical no-concat turn_idx is one-based. This explicit
+                    # field preserves the coordinator's zero-based draw identity.
+                    "guided_turn_index": guided_turn_index,
                     "joint_policy_batch_pin": artifacts.batch_pin.to_mapping(),
                     "frozen_q_scoring": artifacts.scoring_record.to_mapping(),
                     "policy_response_trace": artifacts.response_trace.to_mapping(),

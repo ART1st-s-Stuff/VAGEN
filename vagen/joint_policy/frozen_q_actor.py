@@ -52,7 +52,18 @@ class FrozenQScoringActor:
         }
 
     def pin_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        return self._owner.pin_batch(**_mapping(request, "pin_batch"))
+        return self._owner.pin_batch(
+            **_mapping(
+                request,
+                "pin_batch",
+                {
+                    "batch_id",
+                    "policy_step",
+                    "expected_snapshot_id",
+                    "expected_activation_version",
+                },
+            )
+        )
 
     def unpin_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         return self._owner.unpin_batch(_mapping(request, "unpin_batch"))
@@ -61,19 +72,56 @@ class FrozenQScoringActor:
         return self._owner.score(_mapping(request, "score"))
 
     def stage_snapshot(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        return self._owner.stage_snapshot(**_mapping(request, "stage_snapshot"))
+        return self._owner.stage_snapshot(
+            **_mapping(
+                request,
+                "stage_snapshot",
+                {
+                    "new_snapshot_state",
+                    "expected_active_snapshot_id",
+                    "expected_activation_version",
+                },
+            )
+        )
 
     def activate_staged(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        return self._owner.activate_staged(**_mapping(request, "activate_staged"))
+        return self._owner.activate_staged(
+            **_mapping(
+                request,
+                "activate_staged",
+                {
+                    "staged_snapshot_id",
+                    "expected_active_snapshot_id",
+                    "expected_activation_version",
+                },
+            )
+        )
 
     def checkpoint_state(self) -> dict[str, Any]:
         return self._owner.checkpoint_state()
 
 
-def _mapping(value: Mapping[str, Any], method: str) -> dict[str, Any]:
+def _mapping(
+    value: Mapping[str, Any],
+    method: str,
+    fields: set[str] | None = None,
+) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError(f"frozen Q actor {method} request must be a mapping")
-    return dict(value)
+    result = dict(value)
+    if fields is not None:
+        missing = fields - set(result)
+        if missing:
+            raise ValueError(
+                f"frozen Q actor {method} request is missing fields: {sorted(missing)}"
+            )
+        unexpected = set(result) - fields
+        if unexpected:
+            raise ValueError(
+                "frozen Q actor "
+                f"{method} request has unexpected fields: {sorted(unexpected)}"
+            )
+    return result
 
 
 __all__ = ["FrozenQScoringActor"]

@@ -212,6 +212,41 @@ class JointPolicyProductionWiringTest(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertRegex(first, r"^sha256:[0-9a-f]{64}$")
 
+    def test_manager_best_effort_unpins_after_pin_rpc_failure(self) -> None:
+        try:
+            from vagen.agent_loop.agent_loop_no_concat import AgentLoopManager
+        except ImportError as exc:
+            self.skipTest(f"manager dependencies unavailable: {exc}")
+
+        status = {
+            "active_snapshot_id": "snapshot-1",
+            "active_source_step": 776,
+            "contract_id": "contract-1",
+            "activation_version": 4,
+        }
+        def fail_pin(_request):
+            raise RuntimeError("pin transport failed")
+
+        unpin = _SyncActorMethod(lambda request: {"open_batch_count": 0})
+        owner = SimpleNamespace(
+            status=_SyncActorMethod(lambda: status),
+            pin_batch=_SyncActorMethod(fail_pin),
+            unpin_batch=unpin,
+        )
+        manager = object.__new__(AgentLoopManager)
+        manager.frozen_q_owner = owner
+        manager.guided_draw_run_seed = 17
+        with patch(
+            "vagen.agent_loop.agent_loop_no_concat.ray.get",
+            side_effect=lambda value: value,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "pin transport failed"):
+                manager._pin_frozen_q_batch(_PromptBatch())
+        self.assertEqual(len(unpin.calls), 1)
+        cleanup_pin = unpin.calls[0][0][0]
+        self.assertEqual(cleanup_pin["snapshot_id"], "snapshot-1")
+        self.assertEqual(cleanup_pin["policy_step"], 9)
+
     def test_stable_identity_is_dataset_index_not_random_uid(self) -> None:
         dataset = (ROOT / "vagen" / "gym_agent_dataset.py").read_text(encoding="utf-8")
         trainer = (ROOT / "vagen" / "ray_trainer.py").read_text(encoding="utf-8")
@@ -449,6 +484,8 @@ class JointPolicyProductionWiringTest(unittest.TestCase):
             output.extra_fields["frozen_q_scoring"]["snapshot_id"],
             snapshot.snapshot_id,
         )
+        self.assertEqual(output.extra_fields["guided_turn_index"], 0)
+        self.assertEqual(output.extra_fields["turn_idx"], 1)
 
 
 if __name__ == "__main__":

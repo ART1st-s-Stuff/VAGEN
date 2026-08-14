@@ -72,6 +72,18 @@ class FrozenQActorRuntimeTest(unittest.TestCase):
             self.assertEqual(status["activation_version"], 4)
             self.assertEqual(status["torch_num_threads"], 1)
             self.assertEqual(status["torch_num_interop_threads"], 1)
+            with self.assertRaisesRegex(Exception, "unexpected fields"):
+                ray.get(
+                    actor.pin_batch.remote(
+                        {
+                            "batch_id": "batch-forged",
+                            "policy_step": 1,
+                            "expected_snapshot_id": initial.snapshot_id,
+                            "expected_activation_version": 4,
+                            "current_q": [0.0, 0.0, 0.0],
+                        }
+                    )
+                )
 
             pin = ray.get(
                 actor.pin_batch.remote(
