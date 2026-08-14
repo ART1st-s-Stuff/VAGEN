@@ -97,6 +97,9 @@ class JointActorUpdateTest(unittest.TestCase):
         from torch import nn
         from torch.nn.parallel import DistributedDataParallel
 
+        from nimloth.training.rl.joint_critic import JointActionValueCritic
+        from nimloth.wm.grid import SharedSlotProjector
+        from nimloth.wm.value_head import ValueHead
         from verl import DataProto
         from vagen.joint_policy.actor import JointDataParallelPPOActor
 
@@ -112,14 +115,6 @@ class JointActorUpdateTest(unittest.TestCase):
                     -1,
                 )
                 return SimpleNamespace(logits=logits)
-
-        class TinyCritic(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = nn.Linear(2, 2, bias=False)
-
-            def forward(self, hidden):
-                return self.linear(hidden.mean(dim=1))
 
         actor = object.__new__(JointDataParallelPPOActor)
         actor.actor_module = TinyLM()
@@ -147,7 +142,21 @@ class JointActorUpdateTest(unittest.TestCase):
         actor._joint_rank = 0
         actor._joint_completed_updates = 0
         actor._joint_contract_id = None
-        actor.current_joint_critic = DistributedDataParallel(TinyCritic())
+        actor.current_joint_critic = DistributedDataParallel(
+            JointActionValueCritic(
+                state_projector=SharedSlotProjector(
+                    input_dim=2,
+                    output_dim=2,
+                    hidden_dim=3,
+                    grid_tokens=1,
+                ),
+                value_head=ValueHead(
+                    emb_dim=2,
+                    num_actions=2,
+                    hidden_dim=3,
+                ),
+            )
+        )
         actor.joint_critic_optimizer = torch.optim.AdamW(
             actor.current_joint_critic.parameters(),
             lr=1e-2,
@@ -181,7 +190,10 @@ class JointActorUpdateTest(unittest.TestCase):
             meta_info={"temperature": 1.0},
         )
         actor_before = actor.actor_module.bias.detach().clone()
-        critic_before = actor.current_joint_critic.module.linear.weight.detach().clone()
+        critic_before = {
+            key: value.detach().clone()
+            for key, value in actor.current_joint_critic.module.state_dict().items()
+        }
 
         def pure_log_probs(logits, labels, **_kwargs):
             return torch.log_softmax(logits, dim=-1).gather(
@@ -201,10 +213,32 @@ class JointActorUpdateTest(unittest.TestCase):
         self.assertEqual(actor._joint_completed_updates, 1)
         self.assertEqual(metrics["joint/completed_updates"], [1.0])
         self.assertFalse(torch.equal(actor.actor_module.bias.detach(), actor_before))
-        self.assertFalse(
-            torch.equal(
-                actor.current_joint_critic.module.linear.weight.detach(),
-                critic_before,
+        self.assertTrue(
+            any(
+                not torch.equal(value.detach(), critic_before[key])
+                for key, value in actor.current_joint_critic.module.state_dict().items()
+            )
+        )
+        exported = actor.export_joint_checkpoint(
+            source_step=777,
+            contract_id="contract-1",
+            score_dtype="float32",
+        )
+        payload = exported["checkpoint_payload"]
+        saved_critic = {
+            key: value.detach().clone()
+            for key, value in actor.current_joint_critic.module.state_dict().items()
+        }
+        with torch.no_grad():
+            for parameter in actor.current_joint_critic.parameters():
+                parameter.add_(1.0)
+        restored = actor.load_joint_checkpoint(payload)
+        self.assertEqual(restored["source_step"], 777)
+        self.assertEqual(restored["completed_updates"], 1)
+        self.assertTrue(
+            all(
+                torch.equal(value.detach(), saved_critic[key])
+                for key, value in actor.current_joint_critic.module.state_dict().items()
             )
         )
 
