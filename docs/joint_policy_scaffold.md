@@ -275,6 +275,16 @@ That gate did not score Q or execute a guided action. The optimizer-free product
 plus `75` subtests at parent `06b993b2`, VAGEN `3a01a2a0`, and VERL `084f042b`;
 the suite includes a real local Ray actor lifecycle. A separate Claude Opus
 read-only review rechecked the final source and returned `APPROVED` with no
-P0/P1/P2 findings. The target TP8 guided one-turn gate has not run. PPO, critic
-optimization, global-update snapshot publication, and checkpoint/resume remain
-outside this milestone.
+P0/P1/P2 findings. The optimizer-free target-TP8 guided one-turn gate then
+passed as ID164 on held-out Navigation `base` seed 0 at parent `d40b7bdc`, VAGEN
+`3931dc0b`, and VERL `084f042b`: same-generation `[16,2048]` capture and raw
+8-action logits were scored by the frozen CPU critic snapshot; coordinator key
+`run_seed=42, policy_step=0, sample=standalone:navigation:base:0, repeat=0,
+turn=0` selected guided action 2 while the raw LLM prior action remained 0; the
+environment executed only guided action 2 and the validator returned `ALL_OK`
+for pin/scoring/trace/draw/behavior/execution/ledger identities and reward.
+ID163 had produced no model or rollout evidence because a preflight-created
+`external/le-wm/__pycache__` correctly tripped the clean-worktree gate; ID164
+used a new numeric ID, empty output, and fresh production worktree. PPO, critic
+optimization, return/bootstrap compilation, global-update snapshot
+publication, and complete checkpoint/resume remain outside this milestone.
