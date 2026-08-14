@@ -132,6 +132,19 @@ class FrozenQActorRuntimeTest(unittest.TestCase):
                 checkpoint["active_snapshot_state"]["snapshot_id"],
                 candidate.snapshot_id,
             )
+            restore_actor = FrozenQScoringActor.remote(initial.to_mapping())
+            try:
+                restored = ray.get(
+                    restore_actor.restore_checkpoint_state.remote(checkpoint)
+                )
+                self.assertEqual(
+                    restored["active_snapshot_id"],
+                    candidate.snapshot_id,
+                )
+                self.assertEqual(restored["active_source_step"], 777)
+                self.assertEqual(restored["activation_version"], 5)
+            finally:
+                ray.kill(restore_actor, no_restart=True)
         finally:
             ray.kill(actor, no_restart=True)
 
