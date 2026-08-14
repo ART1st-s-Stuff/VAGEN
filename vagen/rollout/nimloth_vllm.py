@@ -7,6 +7,7 @@ from typing import Any
 
 import ray
 
+from verl.workers.rollout.base import register_rollout
 from verl.workers.rollout.replica import RolloutReplicaRegistry, TokenOutput
 from verl.workers.rollout.vllm_rollout.vllm_async_server import (
     vLLMHttpServerBase,
@@ -206,6 +207,11 @@ class NimlothVLLMReplica(vLLMReplica):
         self.server_class = NimlothVLLMHttpServer
 
 
+register_rollout(
+    "nimloth_vllm",
+    "async",
+    "verl.workers.rollout.vllm_rollout.vLLMAsyncRollout",
+)
 RolloutReplicaRegistry.register("nimloth_vllm", lambda: NimlothVLLMReplica)
 
 
