@@ -3,7 +3,8 @@
 ## Status
 
 This document records the framework boundary. The optimizer-free production
-rollout integration now has a complete implementation candidate, while joint
+rollout integration has passed its consolidated CPU/Ray regression and
+independent review; the target TP8 guided one-turn gate is still pending. Joint
 training remains deliberately disabled until its replay, optimizer, return, and
 checkpoint boundaries are complete. Milestone M1 implements no actor logits or
 PPO loss; the M2 contract fixes the confirmed Scheme-B gradient semantics and
@@ -270,8 +271,10 @@ Complete CPU dependencies validate request-scoped/out-of-order capture, partial
 TP failure before LM-head collectives, error cleanup, request/token identity,
 and DataProto propagation. The older direct-vLLM path has separate GPU evidence,
 and the async same-generation transport passed its target TP8 GPU capture gate.
-That gate did not score Q or execute a guided action. The new optimizer-free
-production wiring candidate must pass its consolidated CPU/Ray regression,
-independent review, and a target TP8 guided one-turn gate before it is considered
-complete. PPO, critic optimization, global-update snapshot publication, and
-checkpoint/resume remain outside this milestone.
+That gate did not score Q or execute a guided action. The optimizer-free production wiring passed `514` expanded parent/VAGEN tests
+plus `75` subtests at parent `06b993b2`, VAGEN `3a01a2a0`, and VERL `084f042b`;
+the suite includes a real local Ray actor lifecycle. A separate Claude Opus
+read-only review rechecked the final source and returned `APPROVED` with no
+P0/P1/P2 findings. The target TP8 guided one-turn gate has not run. PPO, critic
+optimization, global-update snapshot publication, and checkpoint/resume remain
+outside this milestone.
