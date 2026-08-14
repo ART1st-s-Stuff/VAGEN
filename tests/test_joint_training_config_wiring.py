@@ -113,7 +113,7 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
             }
         )
 
-    def _enable_id165_gate(self, config, *, phase="update_1"):
+    def _enable_id166_gate(self, config, *, phase="update_1"):
         from omegaconf import open_dict
 
         model = (
@@ -125,14 +125,14 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
         with open_dict(config):
             config.joint_integration_gate = {
                 "enabled": True,
-                "implementation": "id165_dp8_resume_smoke_v1",
-                "experiment_id": 165,
+                "implementation": "id166_dp8_resume_smoke_v1",
+                "experiment_id": 166,
                 "phase": phase,
             }
             config.decision_ledger = {"enabled": True}
             config.data = {
                 "train_batch_size": 8,
-                "train_files": "/repo/train_navigation_joint_id165.yaml",
+                "train_files": "/repo/train_navigation_joint_id166.yaml",
             }
         with open_dict(config.joint_training):
             config.joint_training.run_seed = 42001
@@ -185,28 +185,28 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
             config.trainer.resume_mode = "disable" if phase == "update_1" else "auto"
             config.trainer.project_name = "vagen"
             config.trainer.experiment_name = (
-                "165_smoke_vagenlite_jointupdate_dp8_tp8_gate"
+                "166_smoke_vagenlite_jointupdate_dp8_tp8_gate"
             )
             config.trainer.logger = ["console", "wandb"]
             config.trainer.val_before_train = False
             config.trainer.test_freq = -1
-            config.trainer.default_local_dir = "/outputs/id165/checkpoints"
+            config.trainer.default_local_dir = "/outputs/id166/checkpoints"
             config.trainer.concat_multi_turn = False
         return config
 
-    def test_id165_config_constructs_disabled_hf_upload_manager(self) -> None:
+    def test_id166_config_constructs_disabled_hf_upload_manager(self) -> None:
         from omegaconf import OmegaConf
         from vagen.utils.upload_hugging_face import HFUploadManager
 
-        config_path = Path(__file__).parents[1] / "vagen/configs/joint_id165_gate.yaml"
+        config_path = Path(__file__).parents[1] / "vagen/configs/joint_id166_gate.yaml"
         source_config = OmegaConf.load(config_path)
         runtime_config = OmegaConf.create(
             {
                 "huggingface_hub": source_config.huggingface_hub,
                 "trainer": {
-                    "default_local_dir": "/tmp/id165-checkpoints",
+                    "default_local_dir": "/tmp/id166-checkpoints",
                     "project_name": "vagen",
-                    "experiment_name": "id165-config-test",
+                    "experiment_name": "id166-config-test",
                 },
             }
         )
@@ -237,16 +237,16 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
         actor_type = load_extern_type(custom.path, custom.name)
         self.assertTrue(issubclass(actor_type, DataParallelPPOActor))
 
-    def test_allows_only_human_approved_id165_integration_gate(self) -> None:
+    def test_allows_only_human_approved_id166_integration_gate(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension
 
-        config = self._enable_id165_gate(self._config())
+        config = self._enable_id166_gate(self._config())
         training = _configure_joint_actor_extension(config)
         self.assertEqual(training.run_seed, 42001)
         self.assertEqual(config.trainer.save_freq, 1)
-        config = self._enable_id165_gate(self._config())
-        config.joint_integration_gate.experiment_id = 166
-        with self.assertRaisesRegex(ValueError, "165"):
+        config = self._enable_id166_gate(self._config())
+        config.joint_integration_gate.experiment_id = 165
+        with self.assertRaisesRegex(ValueError, "166"):
             _configure_joint_actor_extension(config)
 
     def test_rejects_non_target_parallel_layout(self) -> None:
