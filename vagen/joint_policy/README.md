@@ -62,6 +62,8 @@ Current scope:
 
 The optimizer-free standalone rollout remains available to explicit callers.
 The trainer-side code is an integration candidate, not an enabled production
-path: `RayPPOTrainer` still fails closed before worker creation until complete
-Torch/Ray, target-DP8 short-update, snapshot-publication, and interrupted-resume
-gates pass. No numerical training defaults are supplied by this package.
+path. Its Torch/Ray, target-DP8 short-update, snapshot-publication, and exact
+resume gates passed in ID171, but `RayPPOTrainer` still fails closed before
+general production worker creation until humans explicitly choose and authorize
+a production contract. No numerical training defaults are supplied here; ID171
+values are smoke-only.

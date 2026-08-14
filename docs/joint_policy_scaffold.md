@@ -3,12 +3,12 @@
 ## Status
 
 This document records the framework boundary. The optimizer-free production
-rollout integration has passed its consolidated CPU/Ray regression and
-independent review; the target TP8 guided one-turn gate is still pending. Joint
-training remains deliberately disabled until its replay, optimizer, return, and
-checkpoint boundaries are complete. Milestone M1 implements no actor logits or
-PPO loss; the M2 contract fixes the confirmed Scheme-B gradient semantics and
-the human-approved rollout ownership described below.
+rollout, target-TP8 guided one-turn, target-DP8 joint-update, snapshot-publication,
+and exact distributed-resume integration gates have passed. General joint
+training remains deliberately disabled until humans explicitly enable a
+production contract and choose production numerical parameters; smoke values are
+not defaults. Milestone M1 implements no actor logits or PPO loss; the M2/M3
+contract fixes the confirmed Scheme-B gradient and ownership semantics below.
 
 ## Confirmed provisional policy
 
@@ -262,14 +262,13 @@ same transformer forward used for token reference KL. It applies PPO ratio and
 clipping only to the executed guided action, always detaches rollout-persisted
 frozen Q, and keeps token low-variance KL separate from guided-action entropy.
 Task-limit failure is terminal; its configured environment rewards remain in the
-discounted return (the ID169 smoke explicitly configures all failure rewards to
-zero). Infrastructure failures produce no training row. A terminal observation
-stores a separate real CoT+K-slot trace ending at action-start, without an
-executed action.
+discounted return (the ID171 smoke explicitly configured format shaping to zero).
+Infrastructure failures produce no training row. A terminal observation stores a
+separate real CoT+K-slot trace ending at action-start, without an executed action.
 
-This is still a gated implementation candidate. It must pass complete Torch,
-Ray, DP8 short-update, snapshot-publication, and interrupted-resume tests before
-the production trainer opt-in is allowed to create workers.
+This remains a gated implementation candidate. The integration evidence is now
+complete, but production worker creation stays fail-closed until an explicit
+human decision supplies a production contract and non-smoke numerical values.
 
 ## Validation boundary
 
@@ -295,15 +294,15 @@ ID163 had produced no model or rollout evidence because a preflight-created
 `external/le-wm/__pycache__` correctly tripped the clean-worktree gate; ID164
 used a new numeric ID, empty output, and fresh production worktree.
 
-The current training candidate is VAGEN `2a32f2f` with VERL `42cb2f12`.
-Fresh server worktrees at the exact parent/VAGEN/VERL commits passed `72` focused
-Torch/contract/update/checkpoint tests plus `40` subtests, and an expanded suite
-passed `309` tests plus `115` subtests. This includes a real TensorDict/DataProto
-compiler, one CPU distributed actor+current-critic update, current critic and
-optimizer export/restore, atomic sidecar digest checks, custom-class resolution,
-and a real local Ray frozen-owner restore. These gates found and fixed a
-TensorDict key-iteration bug and scalar Adam step fingerprint bug.
+The target-DP8 two-phase integration candidate ran as ID171 at parent
+`dcd33371`, VAGEN `2aeecc73`, and VERL `494f2644`. On one node with eight H800s,
+phase1 completed an actor+replicated-critic update, published source step777, and
+atomically wrote `global_step_1`. A fresh phase2 Ray/FSDP/vLLM runtime restored
+step1 actor model/optimizer/RNG/scheduler plus joint critic/optimizer, frozen-Q
+snapshot owner, activation version, and dataloader state; it completed update2,
+published source step778, and atomically wrote `global_step_2`. Both validators
+returned `ALL_OK`, W&B recorded steps1/2, and cleanup audits were empty.
 
-Target-DP8 FSDP/vLLM execution and an interrupted distributed trainer resume
-have not run. `RayPPOTrainer` therefore still refuses production joint training
-before worker creation.
+`RayPPOTrainer` still refuses general production joint training before worker
+creation. This is now a policy/configuration boundary rather than a missing
+integration gate: ID171 parameters remain non-production smoke values.
