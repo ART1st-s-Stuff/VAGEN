@@ -246,22 +246,26 @@ interface.
 
 ### M2: guided-policy protocol and checkpoint ownership
 
-1. sample one real action from the LLM-prior/frozen-Q guided distribution;
-2. record the sampled LLM prior token, prior logits/distribution, frozen
-   all-action guidance scores, selected-action behavior log-probabilities, and
-   critic snapshot identity;
-3. replay current LLM logits against the same persisted Q-guidance scores;
-4. regress the selected current Q against stop-gradient discounted real-reward
-   return while keeping it separate from frozen policy guidance;
-5. checkpoint the critic and the exact snapshot-refresh/bootstrap boundary;
-6. promote the one executed policy-owned action to a new ledger schema version.
+The optimizer-free guided rollout portion is complete. The current training
+candidate additionally compiles strict outcome-only discounted returns and
+rollout-time Frozen-V GAE, trains a GPU DP8 replicated current action-value
+critic on the actually executed action, publishes source-step+1 snapshots only
+after every rank completes, and saves the current critic/optimizer plus active
+snapshot in an atomic global-update checkpoint.
 
 ### M3: joint PPO
 
-Implement the LLM and guided-policy component ratios with the guided factor
-backpropagating through prior logits, joint ratio/clipping, first-action credit,
-entropy/KL terms, selected-action return regression, and critic update ordering.
-Simulated tail actions must remain outside environment PPO.
+The custom FSDP actor candidate replays current action-boundary logits from the
+same transformer forward used for token reference KL. It applies PPO ratio and
+clipping only to the executed guided action, always detaches rollout-persisted
+frozen Q, and keeps token low-variance KL separate from guided-action entropy.
+Task-limit failure is terminal with zero outcome return. Infrastructure failures
+produce no training row. A terminal observation stores a separate real
+CoT+K-slot trace ending at action-start, without an executed action.
+
+This is still a gated implementation candidate. It must pass complete Torch,
+Ray, DP8 short-update, snapshot-publication, and interrupted-resume tests before
+the production trainer opt-in is allowed to create workers.
 
 ## Validation boundary
 
@@ -285,6 +289,12 @@ environment executed only guided action 2 and the validator returned `ALL_OK`
 for pin/scoring/trace/draw/behavior/execution/ledger identities and reward.
 ID163 had produced no model or rollout evidence because a preflight-created
 `external/le-wm/__pycache__` correctly tripped the clean-worktree gate; ID164
-used a new numeric ID, empty output, and fresh production worktree. PPO, critic
-optimization, return/bootstrap compilation, global-update snapshot
-publication, and complete checkpoint/resume remain outside this milestone.
+used a new numeric ID, empty output, and fresh production worktree.
+
+The later training candidate is VAGEN `f4fdd83f` with VERL `d952ad16`. Local
+source/dependency-light checks passed (`40` tests with `8` dependency skips and
+636-file AST parsing), but the available local environment has no Torch. Server
+SSH failed before worktree creation with `Connection closed by UNKNOWN port
+65535`, so no complete-dependency, Ray, DP8, or interrupted-resume result exists
+yet. `RayPPOTrainer` therefore still refuses production joint training before
+worker creation.

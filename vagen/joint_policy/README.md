@@ -44,11 +44,23 @@ Current scope:
   execution, and ledger/DataProto persistence without rewriting the original
   response;
 - the behavior contract binds action names, action token ids, score dtype,
-  frozen-Q snapshot identity, selected action, and recorded log-probabilities.
+  frozen-Q snapshot identity, selected action, and recorded log-probabilities;
+- `training_contract.py`, `outcome.py`, and `terminal_state.py` define valid
+  task outcomes, real terminal CoT+K-slot traces, outcome-only returns, and
+  rollout-time Frozen-V GAE without using selected-action Q as a state baseline;
+- `training_batch.py` compiles only identity-complete rollout evidence and
+  excludes duplicated padding rows from actor, critic, and metrics;
+- `actor.py` is the custom FSDP actor candidate. It uses current action-boundary
+  logits for executed-guided-action PPO, separates token reference KL from
+  guided entropy, and co-trains a GPU DP-replicated current action-value critic;
+- `update_transaction.py` validates every rank's critic and optimizer identity
+  before rank zero stages and CAS-activates the next immutable snapshot;
+- `checkpoint.py` writes the joint sidecar and completion marker only at a
+  complete global-update boundary and restores actor/critic/optimizer, active
+  snapshot, run identity, and stateful dataloader exactly.
 
-This optimizer-free rollout path is available only to an explicit standalone
-caller that supplies the snapshot and all policy/run values. `RayPPOTrainer`
-still fails closed before worker creation: actor FSDP replay, current-critic
-optimizer and return compiler, post-global-update snapshot publication, and the
-complete trainer checkpoint/resume transaction are not wired. Remaining
-integration steps are described in `docs/joint_policy_scaffold.md`.
+The optimizer-free standalone rollout remains available to explicit callers.
+The trainer-side code is an integration candidate, not an enabled production
+path: `RayPPOTrainer` still fails closed before worker creation until complete
+Torch/Ray, target-DP8 short-update, snapshot-publication, and interrupted-resume
+gates pass. No numerical training defaults are supplied by this package.
