@@ -1,3 +1,4 @@
+from pathlib import Path
 import unittest
 
 
@@ -192,6 +193,25 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
             config.trainer.default_local_dir = "/outputs/id165/checkpoints"
             config.trainer.concat_multi_turn = False
         return config
+
+    def test_id165_config_constructs_disabled_hf_upload_manager(self) -> None:
+        from omegaconf import OmegaConf
+        from vagen.utils.upload_hugging_face import HFUploadManager
+
+        config_path = Path(__file__).parents[1] / "vagen/configs/joint_id165_gate.yaml"
+        source_config = OmegaConf.load(config_path)
+        runtime_config = OmegaConf.create(
+            {
+                "huggingface_hub": source_config.huggingface_hub,
+                "trainer": {
+                    "default_local_dir": "/tmp/id165-checkpoints",
+                    "project_name": "vagen",
+                    "experiment_name": "id165-config-test",
+                },
+            }
+        )
+        manager = HFUploadManager(runtime_config)
+        self.assertIsNone(manager._hf_save_freq)
 
     def test_installs_custom_actor_and_exact_optimizer_values(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension
