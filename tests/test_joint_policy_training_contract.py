@@ -135,6 +135,37 @@ def _config(**updates):
 
 
 class JointTrainingConfigTest(unittest.TestCase):
+    def test_training_contract_id_binds_every_explicit_value(self) -> None:
+        from vagen.joint_policy.contract import FrozenQGuidedPolicyConfig
+        from vagen.joint_policy.training_contract import (
+            joint_training_contract_id,
+            parse_joint_training_section,
+        )
+
+        policy = FrozenQGuidedPolicyConfig.from_mapping(
+            {
+                "implementation": "frozen_q_guided_v1",
+                "alpha": 1.0,
+                "beta": 1.0,
+                "prior_temperature": 1.0,
+                "backprop_to_llm": True,
+                "score_dtype": "float32",
+            }
+        )
+        first = parse_joint_training_section(_config())
+        changed = _config()
+        changed["actor_optimizer"] = dict(changed["actor_optimizer"])
+        changed["actor_optimizer"]["lr"] = 2e-6
+        second = parse_joint_training_section(changed)
+        self.assertRegex(
+            joint_training_contract_id(first, policy),
+            r"^sha256:[0-9a-f]{64}$",
+        )
+        self.assertNotEqual(
+            joint_training_contract_id(first, policy),
+            joint_training_contract_id(second, policy),
+        )
+
     def test_disabled_has_no_training_defaults(self) -> None:
         from vagen.joint_policy.training_contract import parse_joint_training_section
 
@@ -173,6 +204,15 @@ class JointTrainingConfigTest(unittest.TestCase):
         for field, value in bad_values.items():
             with self.subTest(field=field), self.assertRaises(ValueError):
                 parse_joint_training_section(_config(**{field: value}))
+        with self.assertRaisesRegex(ValueError, "actor optimizer eps"):
+            parse_joint_training_section(
+                _config(
+                    actor_optimizer={
+                        **_config()["actor_optimizer"],
+                        "eps": 0.0,
+                    }
+                )
+            )
         with self.assertRaisesRegex(ValueError, "adamw"):
             parse_joint_training_section(
                 _config(critic_optimizer={**_config()["critic_optimizer"], "name": "sgd"})

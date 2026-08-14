@@ -460,14 +460,21 @@ class JointPolicyProductionWiringTest(unittest.TestCase):
         agent_data.turn_policy_state = policy_state
         agent_data.turn_guided_artifacts = result
         agent_data.last_assistant_text = result.response_trace.raw_response
+        terminal_trace = {"schema": "terminal-test-trace"}
         loop = SimpleNamespace(
             decision_ledger_enabled=True,
+            joint_policy_config=config,
             env_max_turns=1,
             response_length=32,
             prompt_length=32,
+            _capture_terminal_state=AsyncMock(return_value=terminal_trace),
         )
         state = asyncio.run(
-            GymAgentLoop._handle_env_state(loop, agent_data)
+            GymAgentLoop._handle_env_state(
+                loop,
+                agent_data,
+                sampling_params={},
+            )
         )
         env.guided_step.assert_awaited_once()
         self.assertEqual(state.value, "terminated")
@@ -486,6 +493,7 @@ class JointPolicyProductionWiringTest(unittest.TestCase):
         )
         self.assertEqual(output.extra_fields["guided_turn_index"], 0)
         self.assertEqual(output.extra_fields["turn_idx"], 1)
+        self.assertEqual(output.extra_fields["terminal_state_trace"], terminal_trace)
 
 
 if __name__ == "__main__":

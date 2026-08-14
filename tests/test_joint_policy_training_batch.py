@@ -116,7 +116,7 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
 
         behavior = self._behavior()
         ledger_base = {
-            "schema": "vagen_guided_decision_ledger_v3",
+            "schema": "vagen_decision_ledger_v2_frozen_q_guided",
             "action_space": "navigation_v1",
             "action_space_names": ["left", "right"],
             "executed_action_ids": [0],
@@ -201,7 +201,12 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
         )
 
     def test_compiles_strict_rollout_evidence_into_tensor_targets(self) -> None:
-        from vagen.joint_policy.training_batch import prepare_joint_training_batch
+        import torch
+
+        from vagen.joint_policy.training_batch import (
+            joint_data_metrics,
+            prepare_joint_training_batch,
+        )
 
         batch = self._batch()
         targets = prepare_joint_training_batch(batch, config=self._config())
@@ -210,6 +215,11 @@ class JointPolicyTrainingBatchTest(unittest.TestCase):
         self.assertEqual(batch.batch["joint_action_token_ids"].tolist(), [[100, 101], [100, 101]])
         self.assertTrue(batch.batch["joint_valid_mask"].all())
         self.assertEqual(batch.meta_info["joint_snapshot_source_step"], 776)
+        batch.batch["token_level_scores"] = torch.zeros(2, 2)
+        batch.batch["token_level_rewards"] = torch.zeros(2, 2)
+        metrics = joint_data_metrics(batch)
+        self.assertEqual(metrics["joint/valid_turn_count"], 2.0)
+        self.assertEqual(metrics["joint/critic_return/mean"], 0.0)
 
     def test_rejects_trace_token_or_terminal_identity_tampering(self) -> None:
         from vagen.joint_policy.training_batch import prepare_joint_training_batch

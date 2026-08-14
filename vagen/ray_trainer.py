@@ -458,8 +458,9 @@ class RayPPOTrainer:
                     "joint token KL requires a frozen reference policy worker"
                 )
             raise NotImplementedError(
-                "joint update contracts and replicated actor/critic workers exist, "
-                "but atomic checkpoint/resume is not connected; refusing production training"
+                "joint update and atomic resume paths exist but have not passed "
+                "the required Torch/Ray/distributed integration gates; "
+                "refusing production training"
             )
 
         # HuggingFace Hub upload
@@ -1933,7 +1934,17 @@ class RayPPOTrainer:
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                if self.joint_training_config is not None:
+                    from vagen.joint_policy.training_batch import joint_data_metrics
+
+                    metrics.update(joint_data_metrics(batch))
+                else:
+                    metrics.update(
+                        compute_data_metrics(
+                            batch=batch,
+                            use_critic=self.use_critic,
+                        )
+                    )
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()

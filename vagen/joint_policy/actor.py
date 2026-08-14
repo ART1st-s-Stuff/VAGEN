@@ -49,6 +49,33 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             )
         if actor_optimizer is None:
             raise ValueError("joint guided actor requires an actor optimizer")
+        expected_actor_optim = self.joint_training.actor_optimizer
+        actual_actor_optim = self.config.optim
+        override = actual_actor_optim.override_optimizer_config
+        if (
+            actual_actor_optim.optimizer != "AdamW"
+            or actual_actor_optim.optimizer_impl != "torch.optim"
+            or float(actual_actor_optim.lr) != expected_actor_optim.lr
+            or tuple(actual_actor_optim.betas) != expected_actor_optim.betas
+            or float(actual_actor_optim.weight_decay)
+            != expected_actor_optim.weight_decay
+            or float(self.config.grad_clip) != expected_actor_optim.grad_clip
+            or actual_actor_optim.lr_scheduler_type
+            != expected_actor_optim.lr_scheduler_type
+            or int(actual_actor_optim.lr_warmup_steps)
+            != expected_actor_optim.lr_warmup_steps
+            or float(actual_actor_optim.lr_warmup_steps_ratio)
+            != expected_actor_optim.lr_warmup_steps_ratio
+            or actual_actor_optim.min_lr_ratio
+            != expected_actor_optim.min_lr_ratio
+            or float(actual_actor_optim.num_cycles) != expected_actor_optim.num_cycles
+            or not isinstance(override, Mapping)
+            or set(override) != {"eps"}
+            or float(override["eps"]) != expected_actor_optim.eps
+        ):
+            raise ValueError(
+                "joint actor optimizer runtime does not match explicit training contract"
+            )
         if not dist.is_available() or not dist.is_initialized():
             raise RuntimeError("joint replicated critic requires initialized torch.distributed")
 

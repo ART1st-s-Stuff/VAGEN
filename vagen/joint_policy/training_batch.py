@@ -195,6 +195,10 @@ def prepare_joint_training_batch(
         targets.advantages,
         dtype=torch.float32,
     )
+    batch.batch["joint_frozen_state_values"] = torch.tensor(
+        targets.frozen_state_values,
+        dtype=torch.float32,
+    )
     batch.batch["joint_critic_hidden"] = torch.tensor(
         np.asarray(hidden_rows, dtype=np.float32),
         dtype=torch.float32,
@@ -209,6 +213,41 @@ def prepare_joint_training_batch(
     batch.meta_info["joint_snapshot_source_step"] = pins[0]["snapshot_source_step"]
     batch.meta_info["joint_activation_version"] = pins[0]["activation_version"]
     return targets
+
+
+def joint_data_metrics(batch: Any) -> dict[str, float]:
+    """Row-level metrics that do not pretend joint targets are token values."""
+
+    required = {
+        "joint_valid_mask",
+        "joint_advantages",
+        "joint_critic_returns",
+        "joint_frozen_state_values",
+        "token_level_scores",
+        "token_level_rewards",
+        "response_mask",
+    }
+    missing = required - set(batch.batch)
+    if missing:
+        raise ValueError(f"joint data metrics missing tensors: {sorted(missing)}")
+    valid = batch.batch["joint_valid_mask"].to(dtype=torch.bool)
+    if int(valid.sum().item()) < 1:
+        raise ValueError("joint data metrics require at least one valid turn")
+    values = {
+        "joint/advantage": batch.batch["joint_advantages"][valid],
+        "joint/critic_return": batch.batch["joint_critic_returns"][valid],
+        "joint/frozen_state_value": batch.batch["joint_frozen_state_values"][valid],
+        "joint/sequence_score": batch.batch["token_level_scores"][valid].sum(-1),
+        "joint/sequence_reward": batch.batch["token_level_rewards"][valid].sum(-1),
+        "joint/response_length": batch.batch["response_mask"][valid].sum(-1).float(),
+    }
+    metrics: dict[str, float] = {}
+    for prefix, tensor in values.items():
+        metrics[f"{prefix}/mean"] = float(tensor.float().mean().detach().item())
+        metrics[f"{prefix}/min"] = float(tensor.min().detach().item())
+        metrics[f"{prefix}/max"] = float(tensor.max().detach().item())
+    metrics["joint/valid_turn_count"] = float(valid.sum().item())
+    return metrics
 
 
 def mark_joint_padding_invalid(batch: Any, pad_size: int) -> None:
@@ -317,4 +356,8 @@ def _int_value(value: Any, field: str) -> int:
     return value
 
 
-__all__ = ["mark_joint_padding_invalid", "prepare_joint_training_batch"]
+__all__ = [
+    "joint_data_metrics",
+    "mark_joint_padding_invalid",
+    "prepare_joint_training_batch",
+]

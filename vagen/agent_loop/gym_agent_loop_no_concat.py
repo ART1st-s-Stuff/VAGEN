@@ -906,8 +906,13 @@ class GymAgentLoop(AgentLoopBase):
 
         traj_success = extract_success(info)
         agent_data.env_turns += 1
+        # A guided turn reaches this point only after the complete forced
+        # action suffix was validated. An actually truncated/overlong response
+        # fails before environment mutation and invalidates the rollout batch;
+        # exact equality with the token budget is not itself truncation.
         response_limit_exhausted = (
-            len(agent_data.turn_response_mask) >= self.response_length
+            self.joint_policy_config is None
+            and len(agent_data.turn_response_mask) >= self.response_length
         )
         if self.joint_policy_config is not None:
             from vagen.joint_policy.outcome import classify_rollout_stop_reason

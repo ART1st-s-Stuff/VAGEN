@@ -57,7 +57,7 @@ class DecisionLedgerWiringTest(unittest.TestCase):
             source,
         )
         self.assertIn(
-            '"but atomic checkpoint/resume is not connected; refusing production training"',
+            '"the required Torch/Ray/distributed integration gates; "',
             source,
         )
 

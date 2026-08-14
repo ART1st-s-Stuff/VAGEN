@@ -127,12 +127,25 @@ def _configure_joint_actor_extension(config):
     model = config.actor_rollout_ref.model
     if actor.strategy not in {"fsdp", "fsdp2"}:
         raise ValueError("joint training supports only FSDP actor strategy")
+    if int(actor.get("ulysses_sequence_parallel_size", 1)) != 1:
+        raise ValueError("joint training requires actor DP8 without sequence parallelism")
+    if (
+        int(config.trainer.nnodes) != 1
+        or int(config.trainer.n_gpus_per_node) != 8
+        or int(config.actor_rollout_ref.rollout.tensor_model_parallel_size) != 8
+        or int(config.actor_rollout_ref.rollout.get("data_parallel_size", 1)) != 1
+    ):
+        raise ValueError(
+            "joint training requires one node, actor DP8, rollout TP8, and rollout DP1"
+        )
     if actor.ppo_epochs != 1:
         raise ValueError("joint training requires exactly one PPO epoch")
     if config.trainer.critic_warmup != 0:
         raise ValueError("joint training requires trainer.critic_warmup=0")
     if actor.use_dynamic_bsz:
         raise ValueError("joint training dynamic actor batching is not implemented")
+    if actor.shuffle:
+        raise ValueError("joint training requires deterministic actor.shuffle=false")
     if actor.use_kl_loss or float(actor.entropy_coeff) != 0.0:
         raise ValueError(
             "joint training requires stock actor KL and entropy to be disabled"
