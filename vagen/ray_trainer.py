@@ -61,6 +61,7 @@ from verl.utils.torch_functional import masked_mean
 from vagen.agent_loop.decision_ledger import (
     DECISION_LEDGER_SCHEMA,
     GUIDED_DECISION_LEDGER_SCHEMA,
+    K4_GUIDED_DECISION_LEDGER_SCHEMA,
     parse_decision_ledger_enabled,
     summarize_decision_ledger_batch,
     validate_decision_ledger_reward_rows,
@@ -841,7 +842,11 @@ class RayPPOTrainer:
                 ledgers,
                 expected_batch_size=len(batch),
                 allowed_schemas=(
-                    {DECISION_LEDGER_SCHEMA, GUIDED_DECISION_LEDGER_SCHEMA}
+                    {
+                        DECISION_LEDGER_SCHEMA,
+                        GUIDED_DECISION_LEDGER_SCHEMA,
+                        K4_GUIDED_DECISION_LEDGER_SCHEMA,
+                    }
                     if self.joint_training_config is not None
                     else {DECISION_LEDGER_SCHEMA}
                 ),

@@ -10,6 +10,7 @@ import numpy as np
 import torch
 
 from .contract import GuidedPolicyBehaviorRecord
+from .planning_contract import K4MCTSGuidedBehaviorRecord
 from .terminal_state import TerminalStateTrace
 from .training_contract import (
     JointTrainingConfig,
@@ -52,6 +53,9 @@ def prepare_joint_training_batch(
     rows = []
     behaviors = []
     hidden_rows = []
+    guidance_rows = []
+    direct_q_rows = []
+    policy_implementations = []
     action_tables = []
     prior_tokens = []
     prior_indices = []
@@ -74,11 +78,19 @@ def prepare_joint_training_batch(
             "decision_ledger": ledger,
         }
         rows.append(row)
-        behavior = GuidedPolicyBehaviorRecord.from_mapping(
-            ledger["behavior_record"]
-        )
+        behavior = _guided_behavior_record(ledger)
         behaviors.append(behavior)
-        state = _policy_state(batch.non_tensor_batch["policy_state"][index])
+        if isinstance(behavior, K4MCTSGuidedBehaviorRecord):
+            guidance_rows.append(list(behavior.planner_root_mean_values))
+            direct_q_rows.append(list(behavior.direct_all_action_q))
+        else:
+            guidance_rows.append(list(behavior.frozen_all_action_q))
+            direct_q_rows.append(list(behavior.frozen_all_action_q))
+        policy_implementations.append(behavior.policy_config.implementation)
+        state = _policy_state(
+            batch.non_tensor_batch["policy_state"][index],
+            k4=isinstance(behavior, K4MCTSGuidedBehaviorRecord),
+        )
         if state["action_token_ids"] != list(behavior.action_token_ids):
             raise ValueError("joint training policy state action token table mismatch")
         if len(state["latent_token_ids"]) != config.critic_grid_tokens:
@@ -115,6 +127,15 @@ def prepare_joint_training_batch(
         action_tables.append(list(behavior.action_token_ids))
         prior_tokens.append(behavior.prior_token_id)
         prior_indices.append(behavior.prior_response_idx)
+        pin = _pin(batch.non_tensor_batch["joint_policy_batch_pin"][index])
+        if pin["snapshot_id"] != behavior.snapshot_id or pin["contract_id"] != behavior.contract_id:
+            raise ValueError("joint training batch pin does not match behavior")
+        if isinstance(behavior, K4MCTSGuidedBehaviorRecord):
+            _validate_k4_policy_state(
+                state,
+                behavior=behavior,
+                pin=pin,
+            )
         trace = _response_trace(
             batch.non_tensor_batch["policy_response_trace"][index]
         )
@@ -141,9 +162,6 @@ def prepare_joint_training_batch(
         ):
             raise ValueError("joint training DataProto response mask mismatch trace")
 
-        pin = _pin(batch.non_tensor_batch["joint_policy_batch_pin"][index])
-        if pin["snapshot_id"] != behavior.snapshot_id or pin["contract_id"] != behavior.contract_id:
-            raise ValueError("joint training batch pin does not match behavior")
         pins.append(pin)
         identity = (str(row["group_idx"]), row["traj_idx"])
         if stop_reason != "continue":
@@ -152,6 +170,8 @@ def prepare_joint_training_batch(
             trajectory_final_rows[identity] = index
 
     targets = compile_outcome_returns_and_frozen_v_gae(rows, config=config)
+    if len(set(policy_implementations)) != 1:
+        raise ValueError("joint training batch cannot mix policy implementations")
     if any(
         pin != pins[0]
         for pin in pins[1:]
@@ -187,10 +207,20 @@ def prepare_joint_training_batch(
         [behavior.behavior_guided_logprob for behavior in behaviors],
         dtype=torch.float32,
     )
-    batch.batch["joint_frozen_all_action_q"] = torch.tensor(
-        [behavior.frozen_all_action_q for behavior in behaviors],
+    batch.batch["joint_frozen_direct_all_action_q"] = torch.tensor(
+        direct_q_rows,
         dtype=torch.float32,
     )
+    if isinstance(behaviors[0], K4MCTSGuidedBehaviorRecord):
+        batch.batch["joint_frozen_planner_root_mean_values"] = torch.tensor(
+            guidance_rows,
+            dtype=torch.float32,
+        )
+    else:
+        batch.batch["joint_frozen_all_action_q"] = torch.tensor(
+            guidance_rows,
+            dtype=torch.float32,
+        )
     batch.batch["joint_advantages"] = torch.tensor(
         targets.advantages,
         dtype=torch.float32,
@@ -212,6 +242,7 @@ def prepare_joint_training_batch(
     batch.meta_info["joint_contract_id"] = targets.contract_id
     batch.meta_info["joint_snapshot_source_step"] = pins[0]["snapshot_source_step"]
     batch.meta_info["joint_activation_version"] = pins[0]["activation_version"]
+    batch.meta_info["joint_policy_implementation"] = policy_implementations[0]
     return targets
 
 
@@ -263,7 +294,7 @@ def mark_joint_padding_invalid(batch: Any, pad_size: int) -> None:
         batch.batch["joint_valid_mask"][-pad_size:] = False
 
 
-def _policy_state(raw: Any) -> Mapping[str, Any]:
+def _policy_state(raw: Any, *, k4: bool = False) -> Mapping[str, Any]:
     if not isinstance(raw, Mapping):
         raise ValueError("joint training policy_state must be mapping")
     required = {
@@ -276,7 +307,11 @@ def _policy_state(raw: Any) -> Mapping[str, Any]:
         "latent_hidden",
         "action_logits",
     }
-    if set(raw) != required or raw["schema"] != "nimloth_policy_state_v2":
+    expected_schema = "nimloth_policy_state_v2"
+    if k4:
+        required.add("frozen_k4_planning")
+        expected_schema = "nimloth_policy_state_k4_mcts_v1"
+    if set(raw) != required or raw["schema"] != expected_schema:
         raise ValueError("joint training policy_state schema or fields are invalid")
     if (
         not isinstance(raw["request_id"], str)
@@ -315,6 +350,67 @@ def _policy_state(raw: Any) -> Mapping[str, Any]:
         ):
             raise ValueError(f"joint training policy state {field} must be sequence")
     return raw
+
+
+def _guided_behavior_record(
+    ledger: Mapping[str, Any],
+) -> GuidedPolicyBehaviorRecord | K4MCTSGuidedBehaviorRecord:
+    if ledger.get("schema") == "vagen_decision_ledger_v3_k4_mcts_guided":
+        return K4MCTSGuidedBehaviorRecord.from_mapping(ledger["behavior_record"])
+    return GuidedPolicyBehaviorRecord.from_mapping(ledger["behavior_record"])
+
+
+def _validate_k4_policy_state(
+    state: Mapping[str, Any],
+    *,
+    behavior: K4MCTSGuidedBehaviorRecord,
+    pin: Mapping[str, Any],
+) -> None:
+    from nimloth.training.rl.joint_planning_scoring import (
+        k4_scoring_record_from_policy_state,
+    )
+
+    score = k4_scoring_record_from_policy_state(
+        state,
+        expected_request_id=state["request_id"],
+        expected_generation_id=state["generation_id"],
+        expected_latent_token_ids=state["latent_token_ids"],
+        expected_action_start_token_id=state["action_start_token_id"],
+        expected_action_token_ids=behavior.action_token_ids,
+        expected_snapshot_id=behavior.snapshot_id,
+        expected_snapshot_source_step=pin["snapshot_source_step"],
+        expected_contract_id=behavior.contract_id,
+        expected_activation_version=pin["activation_version"],
+        expected_score_dtype=behavior.policy_config.score_dtype,
+        expected_planning_horizon=behavior.policy_config.planning_horizon,
+        expected_mcts_num_simulations=(
+            behavior.policy_config.mcts_num_simulations
+        ),
+        expected_mcts_exploration_constant=(
+            behavior.policy_config.mcts_exploration_constant
+        ),
+    )
+    dtype = behavior.policy_config.score_dtype
+    if any(
+        not _score_close(actual, expected, dtype)
+        for actual, expected in zip(
+            score.direct_all_action_q,
+            behavior.direct_all_action_q,
+            strict=True,
+        )
+    ):
+        raise ValueError("joint training K4 direct Q mismatch behavior")
+    if any(
+        not _score_close(actual, expected, dtype)
+        for actual, expected in zip(
+            score.planner_root_mean_values,
+            behavior.planner_root_mean_values,
+            strict=True,
+        )
+    ):
+        raise ValueError("joint training K4 planner root means mismatch behavior")
+    if score.planner_root_visit_counts != behavior.planner_root_visit_counts:
+        raise ValueError("joint training K4 planner root visits mismatch behavior")
 
 
 def _response_trace(raw: Any) -> Mapping[str, Any]:

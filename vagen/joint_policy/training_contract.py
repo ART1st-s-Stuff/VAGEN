@@ -15,6 +15,10 @@ from .contract import (
     GuidedPolicyBehaviorRecord,
     guided_log_probs_reference,
 )
+from .planning_contract import (
+    K4MCTSGuidedBehaviorRecord,
+    k4_guided_log_probs_reference,
+)
 
 _IMPLEMENTATION = "replicated_joint_update_v1"
 _STOP_REASONS = frozenset(
@@ -453,7 +457,7 @@ def compile_outcome_returns_and_frozen_v_gae(
                 "infrastructure truncation is invalid training data and must fail closed"
             )
         ledger = _validated_guided_ledger(raw["decision_ledger"])
-        behavior = GuidedPolicyBehaviorRecord.from_mapping(ledger["behavior_record"])
+        behavior = _guided_behavior_record(ledger)
         if len(behavior.action_space_names) != config.critic_action_count:
             raise ValueError(
                 "joint training action count does not match critic contract"
@@ -465,16 +469,25 @@ def compile_outcome_returns_and_frozen_v_gae(
             raise ValueError(
                 "joint training batch must use one frozen snapshot and contract"
             )
-        guided_log_probs = guided_log_probs_reference(
-            behavior.prior_logits,
-            behavior.frozen_all_action_q,
-            behavior.policy_config,
-        )[1]
+        if isinstance(behavior, K4MCTSGuidedBehaviorRecord):
+            guided_log_probs = k4_guided_log_probs_reference(
+                behavior.prior_logits,
+                behavior.planner_root_mean_values,
+                behavior.policy_config,
+            )[1]
+            direct_all_action_q = behavior.direct_all_action_q
+        else:
+            guided_log_probs = guided_log_probs_reference(
+                behavior.prior_logits,
+                behavior.frozen_all_action_q,
+                behavior.policy_config,
+            )[1]
+            direct_all_action_q = behavior.frozen_all_action_q
         state_value = sum(
             math.exp(log_prob) * q_value
             for log_prob, q_value in zip(
                 guided_log_probs,
-                behavior.frozen_all_action_q,
+                direct_all_action_q,
                 strict=True,
             )
         )
@@ -564,9 +577,12 @@ def _validated_guided_ledger(raw: Any) -> Mapping[str, Any]:
         raise ValueError(
             f"guided decision ledger has unexpected fields: {sorted(unexpected)}"
         )
-    if raw["schema"] != "vagen_decision_ledger_v2_frozen_q_guided":
-        raise ValueError("joint training requires the guided decision ledger schema")
-    behavior = GuidedPolicyBehaviorRecord.from_mapping(raw["behavior_record"])
+    if raw["schema"] not in {
+        "vagen_decision_ledger_v2_frozen_q_guided",
+        "vagen_decision_ledger_v3_k4_mcts_guided",
+    }:
+        raise ValueError("joint training requires a guided decision ledger schema")
+    behavior = _guided_behavior_record(raw)
     if raw["behavior_record_id"] != behavior.record_id():
         raise ValueError("guided decision ledger behavior identity mismatch")
     if raw["snapshot_id"] != behavior.snapshot_id:
@@ -579,7 +595,12 @@ def _validated_guided_ledger(raw: Any) -> Mapping[str, Any]:
         behavior.action_space_names[behavior.guided_action_id]
     ]:
         raise ValueError("guided decision ledger executed action name mismatch")
-    if raw["decision_sources"] != ["frozen_q_guided"]:
+    expected_source = (
+        "k4_mcts_guided"
+        if isinstance(behavior, K4MCTSGuidedBehaviorRecord)
+        else "frozen_q_guided"
+    )
+    if raw["decision_sources"] != [expected_source]:
         raise ValueError("guided decision ledger source mismatch")
     if raw["decision_is_policy_sampled"] != [True]:
         raise ValueError("guided decision ledger policy ownership mismatch")
@@ -594,6 +615,14 @@ def _validated_guided_ledger(raw: Any) -> Mapping[str, Any]:
     if raw["format_valid"] is not True:
         raise ValueError("joint training rejects format-invalid executed actions")
     return raw
+
+
+def _guided_behavior_record(
+    ledger: Mapping[str, Any],
+) -> GuidedPolicyBehaviorRecord | K4MCTSGuidedBehaviorRecord:
+    if ledger.get("schema") == "vagen_decision_ledger_v3_k4_mcts_guided":
+        return K4MCTSGuidedBehaviorRecord.from_mapping(ledger["behavior_record"])
+    return GuidedPolicyBehaviorRecord.from_mapping(ledger["behavior_record"])
 
 
 def _validate_trajectory_sequence(trajectory: list[dict[str, Any]]) -> None:
