@@ -91,10 +91,13 @@ def assemble_joint_checkpoint(
     ):
         if actor_payload.get(field) != reference[field]:
             raise ValueError(f"joint checkpoint actor payload {field} mismatch")
-    if (
-        actor_payload.get("critic_optimizer_fingerprint")
-        != reference["optimizer_fingerprint"]
-    ):
+    optimizer_field = (
+        "planning_optimizer_fingerprint"
+        if actor_payload.get("schema")
+        == "vagen_joint_k4_actor_planning_checkpoint_v1"
+        else "critic_optimizer_fingerprint"
+    )
+    if actor_payload.get(optimizer_field) != reference["optimizer_fingerprint"]:
         raise ValueError("joint checkpoint actor optimizer fingerprint mismatch")
     if not isinstance(owner_checkpoint_state, Mapping):
         raise ValueError("joint checkpoint frozen Q owner state must be a mapping")
@@ -108,9 +111,21 @@ def assemble_joint_checkpoint(
     active = owner["active_snapshot_state"]
     if not isinstance(active, Mapping):
         raise ValueError("joint checkpoint active snapshot state must be a mapping")
-    for field in ("source_step", "snapshot_id", "contract_id", "score_dtype"):
-        if active.get(field) != reference[field]:
-            raise ValueError(f"joint checkpoint active snapshot {field} mismatch")
+    active_source_field = (
+        "snapshot_source_step"
+        if active.get("schema") == "vagen_frozen_k4_planner_transport_v1"
+        else "source_step"
+    )
+    for active_field, reference_field in (
+        (active_source_field, "source_step"),
+        ("snapshot_id", "snapshot_id"),
+        ("contract_id", "contract_id"),
+        ("score_dtype", "score_dtype"),
+    ):
+        if active.get(active_field) != reference[reference_field]:
+            raise ValueError(
+                f"joint checkpoint active snapshot {active_field} mismatch"
+            )
     if owner["activation_version"] != reference["completed_updates"]:
         raise ValueError("joint checkpoint activation version mismatch")
     return {

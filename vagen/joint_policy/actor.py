@@ -27,6 +27,7 @@ from .training_torch import (
 )
 
 JOINT_ACTOR_CHECKPOINT_SCHEMA = "vagen_joint_actor_critic_checkpoint_v1"
+JOINT_K4_ACTOR_CHECKPOINT_SCHEMA = "vagen_joint_k4_actor_planning_checkpoint_v1"
 
 
 class JointDataParallelPPOActor(DataParallelPPOActor):
@@ -202,6 +203,7 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             self.k4_dino_grid_targets = None
         self._joint_completed_updates = 0
         self._joint_contract_id: str | None = None
+        self._last_k4_transport: dict[str, Any] | None = None
 
     @property
     def joint_source_step(self) -> int:
@@ -578,10 +580,6 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
     ) -> dict[str, Any]:
         """Export rank-consistency evidence and rank-zero immutable transport."""
 
-        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
-            raise NotImplementedError(
-                "K4 full planner snapshot publication is not connected yet"
-            )
         if source_step != self.joint_source_step:
             raise ValueError(
                 "joint snapshot source step does not match completed updates"
@@ -592,11 +590,94 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             self._joint_contract_id = contract_id
         elif contract_id != self._joint_contract_id:
             raise ValueError("joint snapshot contract changed within one run")
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            assert self.current_k4_world_model is not None
+            assert self.joint_planning_optimizer is not None
+            assert self.k4_world_model_training is not None
+            from nimloth.training.rl.joint_planner import (
+                FrozenMCTSPlanningConfig,
+                create_frozen_planning_snapshot,
+                load_frozen_planning_snapshot_file,
+                save_frozen_planning_snapshot_file,
+            )
+            from vagen.joint_policy.planning_owner import (
+                FROZEN_K4_PLANNER_TRANSPORT_SCHEMA,
+            )
+
+            snapshot = create_frozen_planning_snapshot(
+                self.current_k4_world_model.module.model,
+                source_step=source_step,
+                contract_id=contract_id,
+                score_dtype=score_dtype,
+                planning_config=FrozenMCTSPlanningConfig(
+                    horizon=self.joint_policy.planning_horizon,
+                    num_simulations=self.joint_policy.mcts_num_simulations,
+                    exploration_constant=(
+                        self.joint_policy.mcts_exploration_constant
+                    ),
+                ),
+            )
+            descriptor = None
+            if self._joint_rank == 0:
+                target = (
+                    Path(self.k4_world_model_training.snapshot_transport_root)
+                    / f"source_step_{source_step}"
+                    / "frozen_k4_planner.pt"
+                ).resolve()
+                cached = self._last_k4_transport
+                cached_matches = (
+                    cached is not None
+                    and cached.get("transport_path") == str(target)
+                    and cached.get("snapshot_id") == snapshot.snapshot_id
+                )
+                if target.exists() and not cached_matches:
+                    restored = load_frozen_planning_snapshot_file(
+                        target,
+                        device=torch.device("cpu"),
+                    )
+                    if restored.snapshot_id != snapshot.snapshot_id:
+                        raise ValueError(
+                            "existing K4 transport differs from current planning state"
+                        )
+                elif not target.exists():
+                    save_frozen_planning_snapshot_file(snapshot, target)
+                descriptor = {
+                    "schema": FROZEN_K4_PLANNER_TRANSPORT_SCHEMA,
+                    "transport_path": str(target),
+                    "snapshot_id": snapshot.snapshot_id,
+                    "snapshot_source_step": source_step,
+                    "contract_id": contract_id,
+                    "score_dtype": score_dtype,
+                    "planning_horizon": self.joint_policy.planning_horizon,
+                    "mcts_num_simulations": (
+                        self.joint_policy.mcts_num_simulations
+                    ),
+                    "mcts_exploration_constant": (
+                        self.joint_policy.mcts_exploration_constant
+                    ),
+                }
+                self._last_k4_transport = dict(descriptor)
+            return {
+                "rank": self._joint_rank,
+                "world_size": self._joint_world_size,
+                "completed_updates": self._joint_completed_updates,
+                "source_step": source_step,
+                "snapshot_id": snapshot.snapshot_id,
+                "contract_id": contract_id,
+                "score_dtype": score_dtype,
+                "optimizer_fingerprint": _optimizer_fingerprint(
+                    self.joint_planning_optimizer,
+                ),
+                "snapshot_state": descriptor,
+            }
+
         from nimloth.training.rl.joint_critic import (
             create_frozen_critic_snapshot,
             export_frozen_critic_snapshot,
         )
 
+        assert self.current_joint_critic is not None
+        assert self.joint_critic_optimizer is not None
         snapshot = create_frozen_critic_snapshot(
             self.current_joint_critic.module,
             source_step=source_step,
@@ -636,21 +717,45 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         fingerprint = export["optimizer_fingerprint"]
         payload = None
         if self._joint_rank == 0:
-            payload = {
-                "schema": JOINT_ACTOR_CHECKPOINT_SCHEMA,
-                "completed_updates": self._joint_completed_updates,
-                "source_step": source_step,
-                "snapshot_id": export["snapshot_id"],
-                "contract_id": export["contract_id"],
-                "score_dtype": export["score_dtype"],
-                "critic_state": _cpu_clone(
-                    self.current_joint_critic.module.state_dict()
-                ),
-                "critic_optimizer_state": _cpu_clone(
-                    self.joint_critic_optimizer.state_dict()
-                ),
-                "critic_optimizer_fingerprint": fingerprint,
-            }
+            if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+                assert self.current_k4_world_model is not None
+                assert self.joint_planning_optimizer is not None
+                if self._last_k4_transport is None:
+                    raise RuntimeError("K4 checkpoint has no published transport")
+                payload = {
+                    "schema": JOINT_K4_ACTOR_CHECKPOINT_SCHEMA,
+                    "completed_updates": self._joint_completed_updates,
+                    "source_step": source_step,
+                    "snapshot_id": export["snapshot_id"],
+                    "contract_id": export["contract_id"],
+                    "score_dtype": export["score_dtype"],
+                    "planning_state": _cpu_clone(
+                        self.current_k4_world_model.module.model.state_dict()
+                    ),
+                    "planning_optimizer_state": _cpu_clone(
+                        self.joint_planning_optimizer.state_dict()
+                    ),
+                    "planning_optimizer_fingerprint": fingerprint,
+                    "snapshot_transport": dict(self._last_k4_transport),
+                }
+            else:
+                assert self.current_joint_critic is not None
+                assert self.joint_critic_optimizer is not None
+                payload = {
+                    "schema": JOINT_ACTOR_CHECKPOINT_SCHEMA,
+                    "completed_updates": self._joint_completed_updates,
+                    "source_step": source_step,
+                    "snapshot_id": export["snapshot_id"],
+                    "contract_id": export["contract_id"],
+                    "score_dtype": export["score_dtype"],
+                    "critic_state": _cpu_clone(
+                        self.current_joint_critic.module.state_dict()
+                    ),
+                    "critic_optimizer_state": _cpu_clone(
+                        self.joint_critic_optimizer.state_dict()
+                    ),
+                    "critic_optimizer_fingerprint": fingerprint,
+                }
         return {
             **{key: value for key, value in export.items() if key != "snapshot_state"},
             "checkpoint_payload": payload,
@@ -660,9 +765,7 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         """Restore replicated critic and optimizer before the next rollout."""
 
         if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
-            raise NotImplementedError(
-                "K4 full planner checkpoint restore is not connected yet"
-            )
+            return self._load_k4_joint_checkpoint(raw)
         if not isinstance(raw, Mapping):
             raise ValueError("joint actor checkpoint must be a mapping")
         fields = {
@@ -726,6 +829,110 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             "snapshot_id": snapshot.snapshot_id,
             "optimizer_fingerprint": actual_optimizer,
         }
+
+
+    def _load_k4_joint_checkpoint(
+        self,
+        raw: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Restore the full replicated K4 planner and its unified optimizer."""
+
+        if not isinstance(raw, Mapping):
+            raise ValueError("K4 actor checkpoint must be a mapping")
+        fields = {
+            "schema", "completed_updates", "source_step", "snapshot_id",
+            "contract_id", "score_dtype", "planning_state",
+            "planning_optimizer_state", "planning_optimizer_fingerprint",
+            "snapshot_transport",
+        }
+        if set(raw) != fields or raw["schema"] != JOINT_K4_ACTOR_CHECKPOINT_SCHEMA:
+            raise ValueError("K4 actor checkpoint schema or fields are invalid")
+        completed = _positive_int(raw["completed_updates"], "completed_updates")
+        source_step = _nonnegative_int(raw["source_step"], "source_step")
+        if source_step != self.joint_training.initial_snapshot_source_step + completed:
+            raise ValueError("K4 actor checkpoint source step is inconsistent")
+        for field in (
+            "snapshot_id", "contract_id", "score_dtype",
+            "planning_optimizer_fingerprint",
+        ):
+            if not isinstance(raw[field], str) or not raw[field]:
+                raise ValueError(f"K4 actor checkpoint {field} must be non-empty str")
+        if self._joint_contract_id not in (None, raw["contract_id"]):
+            raise ValueError("K4 actor checkpoint contract mismatch")
+        if raw["score_dtype"] != self.joint_policy.score_dtype:
+            raise ValueError("K4 actor checkpoint score dtype mismatch")
+        assert self.current_k4_world_model is not None
+        assert self.joint_planning_optimizer is not None
+        self.current_k4_world_model.module.model.load_state_dict(
+            raw["planning_state"], strict=True
+        )
+        self.joint_planning_optimizer.load_state_dict(
+            raw["planning_optimizer_state"]
+        )
+        self._joint_contract_id = raw["contract_id"]
+        self._joint_completed_updates = completed
+        actual_optimizer = _optimizer_fingerprint(self.joint_planning_optimizer)
+        if actual_optimizer != raw["planning_optimizer_fingerprint"]:
+            raise ValueError("K4 actor checkpoint optimizer fingerprint mismatch")
+        self._validate_restored_k4_snapshot(raw, source_step=source_step)
+        dist.barrier()
+        return {
+            "rank": self._joint_rank,
+            "world_size": self._joint_world_size,
+            "completed_updates": completed,
+            "source_step": source_step,
+            "snapshot_id": raw["snapshot_id"],
+            "optimizer_fingerprint": actual_optimizer,
+        }
+
+    def _validate_restored_k4_snapshot(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        source_step: int,
+    ) -> None:
+        from nimloth.training.rl.joint_planner import (
+            FrozenMCTSPlanningConfig,
+            create_frozen_planning_snapshot,
+            load_frozen_planning_snapshot_file,
+        )
+        from vagen.joint_policy.planning_owner import (
+            FrozenK4PlannerTransport,
+        )
+
+        assert self.current_k4_world_model is not None
+        snapshot = create_frozen_planning_snapshot(
+            self.current_k4_world_model.module.model,
+            source_step=source_step,
+            contract_id=raw["contract_id"],
+            score_dtype=raw["score_dtype"],
+            planning_config=FrozenMCTSPlanningConfig(
+                horizon=self.joint_policy.planning_horizon,
+                num_simulations=self.joint_policy.mcts_num_simulations,
+                exploration_constant=(
+                    self.joint_policy.mcts_exploration_constant
+                ),
+            ),
+        )
+        if snapshot.snapshot_id != raw["snapshot_id"]:
+            raise ValueError("K4 actor checkpoint planner snapshot mismatch")
+        transport = FrozenK4PlannerTransport.from_mapping(
+            raw["snapshot_transport"]
+        )
+        if (
+            transport.snapshot_id != snapshot.snapshot_id
+            or transport.source_step != source_step
+            or transport.contract_id != raw["contract_id"]
+            or transport.score_dtype != raw["score_dtype"]
+        ):
+            raise ValueError("K4 actor checkpoint transport identity mismatch")
+        restored = load_frozen_planning_snapshot_file(
+            transport.transport_path,
+            device=torch.device("cpu"),
+        )
+        if restored.snapshot_id != snapshot.snapshot_id:
+            raise ValueError("K4 actor checkpoint transport contents mismatch")
+        self._last_k4_transport = transport.to_mapping()
 
 
 def _k4_dino_target_tensor(

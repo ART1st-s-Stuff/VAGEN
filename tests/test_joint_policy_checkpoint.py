@@ -57,6 +57,47 @@ class JointPolicyCheckpointTest(unittest.TestCase):
             },
         }
 
+    def test_assembles_k4_planner_payload_and_transport_owner(self) -> None:
+        from vagen.joint_policy.checkpoint import assemble_joint_checkpoint
+
+        exports = self._exports()
+        actor = dict(exports[0]["checkpoint_payload"])
+        actor.pop("critic_state")
+        actor.pop("critic_optimizer_state")
+        actor.pop("critic_optimizer_fingerprint")
+        actor.update(
+            {
+                "schema": "vagen_joint_k4_actor_planning_checkpoint_v1",
+                "planning_state": {},
+                "planning_optimizer_state": {"state": {}, "param_groups": []},
+                "planning_optimizer_fingerprint": "sha256:optimizer",
+                "snapshot_transport": {},
+            }
+        )
+        exports[0]["checkpoint_payload"] = actor
+        owner = self._owner()
+        owner["active_snapshot_state"] = {
+            "schema": "vagen_frozen_k4_planner_transport_v1",
+            "transport_path": "/shared/frozen_k4_planner.pt",
+            "snapshot_source_step": 777,
+            "snapshot_id": "snapshot-777",
+            "contract_id": "contract-1",
+            "score_dtype": "float32",
+            "planning_horizon": 4,
+            "mcts_num_simulations": 100,
+            "mcts_exploration_constant": 1.0,
+        }
+        payload = assemble_joint_checkpoint(
+            global_step=1,
+            run_seed=42,
+            rank_exports=exports,
+            owner_checkpoint_state=owner,
+            expected_world_size=2,
+            dataloader_sha256=_DATA_DIGEST,
+            training_contract_id=_TRAINING_CONTRACT_ID,
+        )
+        self.assertEqual(payload["actor_critic"]["planning_state"], {})
+
     def test_atomic_marker_round_trip_and_latest_complete_selection(self) -> None:
         from vagen.joint_policy.checkpoint import (
             assemble_joint_checkpoint,

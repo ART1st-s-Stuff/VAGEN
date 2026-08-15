@@ -343,6 +343,7 @@ class JointTrainingTargets:
 def joint_training_contract_id(
     training: JointTrainingConfig,
     policy: Any,
+    k4_world_model: Any | None = None,
 ) -> str:
     """Bind every explicit optimizer/loss value to the policy contract."""
 
@@ -355,10 +356,19 @@ def joint_training_contract_id(
         raise TypeError(
             "joint training contract ID requires a supported guided policy config"
         )
+    from .k4_training_contract import K4WorldModelTrainingConfig
+
+    if isinstance(policy, K4MCTSGuidedPolicyConfig):
+        if not isinstance(k4_world_model, K4WorldModelTrainingConfig):
+            raise TypeError("K4 training contract ID requires world-model config")
+    elif k4_world_model is not None:
+        raise TypeError("legacy training contract cannot include K4 world-model config")
     payload = {
         "training": asdict(training),
         "policy": asdict(policy),
     }
+    if k4_world_model is not None:
+        payload["k4_world_model"] = asdict(k4_world_model)
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

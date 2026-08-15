@@ -1,14 +1,14 @@
 import unittest
 
 
-def _config():
+def _config(snapshot_transport_root="/tmp/snapshots"):
     from vagen.joint_policy.k4_training_contract import K4WorldModelTrainingConfig
 
     return K4WorldModelTrainingConfig.from_mapping(
         {
             "implementation": "k4_world_model_update_v1",
             "planning_checkpoint": "/tmp/id74",
-            "snapshot_transport_root": "/tmp/snapshots",
+            "snapshot_transport_root": snapshot_transport_root,
             "prediction_horizon": 4,
             "minimum_window_depth": 1,
             "maximum_window_depth": 4,
@@ -153,6 +153,80 @@ class K4WorldModelUpdateTest(unittest.TestCase):
         self.assertEqual(optimizer.defaults["betas"], (0.9, 0.95))
         self.assertEqual(optimizer.defaults["eps"], 1e-8)
         self.assertEqual(optimizer.defaults["weight_decay"], 0.01)
+
+    def test_actor_exports_rank_zero_full_k4_transport(self) -> None:
+        import tempfile
+        from types import SimpleNamespace
+
+        from vagen.joint_policy.actor import DataParallelPPOActor
+        from vagen.joint_policy.k4_world_model_update import (
+            build_k4_planning_optimizer,
+        )
+        from vagen.joint_policy.planning_contract import (
+            K4MCTSGuidedPolicyConfig,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self._module()
+            module.config = _config(temporary)
+            actor = object.__new__(DataParallelPPOActor)
+            actor.joint_policy = K4MCTSGuidedPolicyConfig.from_mapping(
+                {
+                    "implementation": "k4_mcts_guided_v1",
+                    "alpha": 1.0,
+                    "beta": 85.78297006578457,
+                    "prior_temperature": 1.0,
+                    "backprop_to_llm": True,
+                    "score_dtype": "float32",
+                    "planning_horizon": 4,
+                    "mcts_num_simulations": 100,
+                    "mcts_exploration_constant": 1.0,
+                }
+            )
+            actor.joint_training = SimpleNamespace(
+                initial_snapshot_source_step=776
+            )
+            actor.k4_world_model_training = module.config
+            actor.current_k4_world_model = SimpleNamespace(module=module)
+            actor.joint_planning_optimizer = build_k4_planning_optimizer(module)
+            actor._joint_rank = 0
+            actor._joint_world_size = 1
+            actor._joint_completed_updates = 1
+            actor._joint_contract_id = None
+            actor._last_k4_transport = None
+            export = actor.export_joint_critic_snapshot(
+                source_step=777,
+                contract_id="contract-1",
+                score_dtype="float32",
+            )
+            state = export["snapshot_state"]
+            self.assertEqual(state["snapshot_source_step"], 777)
+            self.assertEqual(state["planning_horizon"], 4)
+            self.assertTrue(__import__("pathlib").Path(state["transport_path"]).is_file())
+            repeated = actor.export_joint_critic_snapshot(
+                source_step=777,
+                contract_id="contract-1",
+                score_dtype="float32",
+            )
+            self.assertEqual(repeated["snapshot_id"], export["snapshot_id"])
+            checkpoint = actor.export_joint_checkpoint(
+                source_step=777,
+                contract_id="contract-1",
+                score_dtype="float32",
+            )
+            payload = checkpoint["checkpoint_payload"]
+            self.assertEqual(
+                payload["schema"],
+                "vagen_joint_k4_actor_planning_checkpoint_v1",
+            )
+            self.assertEqual(
+                payload["snapshot_transport"]["snapshot_id"],
+                export["snapshot_id"],
+            )
+            self.assertEqual(
+                payload["planning_optimizer_fingerprint"],
+                export["optimizer_fingerprint"],
+            )
 
     def test_actor_dino_table_encodes_only_valid_future_images(self) -> None:
         import numpy as np

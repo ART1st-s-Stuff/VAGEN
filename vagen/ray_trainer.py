@@ -81,6 +81,32 @@ from vagen.utils.image_token_utils import replace_image_tokens_for_logging
 import vagen.custom_advantage
 from vagen.custom_metric.metric import METRIC_REGISTRY
 from vagen.custom_filter.filter import FILTER_REGISTRY
+
+
+def _validate_k4_joint_training_alignment(training: Any, world_model: Any) -> None:
+    """Reject duplicate critic/planning values that disagree."""
+
+    optimizer = world_model.optimizer
+    critic_optimizer = training.critic_optimizer
+    mismatches = []
+    if training.critic_checkpoint != world_model.planning_checkpoint:
+        mismatches.append("planning_checkpoint")
+    if training.critic_huber_delta != world_model.selected_action_huber_delta:
+        mismatches.append("selected_action_huber_delta")
+    if training.critic_grad_clip != world_model.grad_clip:
+        mismatches.append("grad_clip")
+    for field in ("name", "betas", "eps", "weight_decay"):
+        if getattr(critic_optimizer, field) != getattr(optimizer, field):
+            mismatches.append(f"optimizer.{field}")
+    if critic_optimizer.lr != optimizer.value_head_lr:
+        mismatches.append("optimizer.value_head_lr")
+    if mismatches:
+        raise ValueError(
+            "K4 joint/world-model duplicate values disagree: "
+            f"{sorted(mismatches)}"
+        )
+
+
 @dataclass
 class ResourcePoolManager:
     """
@@ -463,6 +489,11 @@ class RayPPOTrainer:
             and self.joint_training_config is None
         ):
             raise ValueError("K4 world-model training requires joint training")
+        if self.k4_world_model_training_config is not None:
+            _validate_k4_joint_training_alignment(
+                self.joint_training_config,
+                self.k4_world_model_training_config,
+            )
         if (
             self.joint_integration_gate is not None
             and self.joint_training_config is None
@@ -1212,6 +1243,9 @@ class RayPPOTrainer:
                             tokenizer=self.tokenizer,
                             policy_config=self.joint_policy_config,
                             training_config=self.joint_training_config,
+                            k4_world_model_config=(
+                                self.k4_world_model_training_config
+                            ),
                         )
                     ),
                     "guided_draw_run_seed": self.joint_training_config.run_seed,
@@ -1326,9 +1360,13 @@ class RayPPOTrainer:
 
             owner_state = self.async_rollout_manager.frozen_q_checkpoint_state()
             active = owner_state["active_snapshot_state"]
+            active_source_step = active.get(
+                "source_step",
+                active.get("snapshot_source_step"),
+            )
             rank_exports = self.actor_rollout_wg.export_joint_checkpoint(
                 {
-                    "source_step": active["source_step"],
+                    "source_step": active_source_step,
                     "contract_id": active["contract_id"],
                     "score_dtype": active["score_dtype"],
                 }
@@ -1347,6 +1385,7 @@ class RayPPOTrainer:
                 training_contract_id=joint_training_contract_id(
                     self.joint_training_config,
                     self.joint_policy_config,
+                    self.k4_world_model_training_config,
                 ),
             )
             save_atomic_joint_checkpoint(
@@ -1449,6 +1488,7 @@ class RayPPOTrainer:
                 != joint_training_contract_id(
                     self.joint_training_config,
                     self.joint_policy_config,
+                    self.k4_world_model_training_config,
                 )
                 or joint["run_seed"] != self.joint_training_config.run_seed
                 or joint["world_size"] != self.actor_rollout_wg.world_size
@@ -1463,6 +1503,14 @@ class RayPPOTrainer:
             expected_ranks = list(range(self.actor_rollout_wg.world_size))
             if sorted(row["rank"] for row in restored_ranks) != expected_ranks:
                 raise ValueError("joint checkpoint did not restore every actor rank")
+            optimizer_field = (
+                "planning_optimizer_fingerprint"
+                if isinstance(
+                    self.joint_policy_config,
+                    K4MCTSGuidedPolicyConfig,
+                )
+                else "critic_optimizer_fingerprint"
+            )
             for row in restored_ranks:
                 if (
                     row["source_step"] != restored_owner["active_source_step"]
@@ -1470,7 +1518,7 @@ class RayPPOTrainer:
                     or row["completed_updates"]
                     != restored_owner["activation_version"]
                     or row["optimizer_fingerprint"]
-                    != joint["actor_critic"]["critic_optimizer_fingerprint"]
+                    != joint["actor_critic"][optimizer_field]
                 ):
                     raise ValueError("joint actor and frozen Q restore state mismatch")
 

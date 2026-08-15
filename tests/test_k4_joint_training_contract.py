@@ -54,6 +54,46 @@ def _training_config():
     )
 
 
+def _wm_config():
+    from vagen.joint_policy.k4_training_contract import (
+        K4WorldModelTrainingConfig,
+    )
+
+    return K4WorldModelTrainingConfig.from_mapping(
+        {
+            "implementation": "k4_world_model_update_v1",
+            "planning_checkpoint": "/tmp/id74",
+            "snapshot_transport_root": "/tmp/snapshots",
+            "prediction_horizon": 4,
+            "minimum_window_depth": 1,
+            "maximum_window_depth": 4,
+            "state_mse_weight": 1.0,
+            "dino_grid_weight": 0.5,
+            "sigreg_weight": 0.1,
+            "sigreg_knots": 17,
+            "sigreg_num_proj": 1024,
+            "dino_identity": {
+                "source": "facebook/dinov2-large",
+                "revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+                "processor_fingerprint": "7d65a7de8788e87d",
+                "hidden_size": 1024,
+                "grid_size": 4,
+            },
+            "selected_action_huber_delta": 1.0,
+            "grad_clip": 1.0,
+            "optimizer": {
+                "name": "adamw",
+                "projector_lr": 1e-4,
+                "predictor_lr": 1e-4,
+                "value_head_lr": 1e-4,
+                "betas": [0.9, 0.95],
+                "eps": 1e-8,
+                "weight_decay": 0.01,
+            },
+        }
+    )
+
+
 def _behavior():
     from vagen.joint_policy.planning_contract import (
         K4MCTSGuidedBehaviorRecord,
@@ -132,11 +172,14 @@ class K4JointTrainingContractTest(unittest.TestCase):
         first = joint_training_contract_id(
             _training_config(),
             behavior.policy_config,
+            _wm_config(),
         )
         changed = type(behavior.policy_config).from_mapping(
             {**behavior.policy_config.to_mapping(), "beta": 3.0}
         )
-        second = joint_training_contract_id(_training_config(), changed)
+        second = joint_training_contract_id(
+            _training_config(), changed, _wm_config()
+        )
         self.assertRegex(first, r"^sha256:[0-9a-f]{64}$")
         self.assertNotEqual(first, second)
 

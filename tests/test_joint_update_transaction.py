@@ -54,6 +54,51 @@ class JointUpdateTransactionTest(unittest.TestCase):
             for rank in range(2)
         ]
 
+    def _k4_exports(self):
+        state = {
+            "schema": "vagen_frozen_k4_planner_transport_v1",
+            "transport_path": "/shared/source_step_777/frozen_k4_planner.pt",
+            "snapshot_source_step": 777,
+            "contract_id": "contract-1",
+            "snapshot_id": "snapshot-new",
+            "score_dtype": "float32",
+            "planning_horizon": 4,
+            "mcts_num_simulations": 100,
+            "mcts_exploration_constant": 1.0,
+        }
+        rows = self._exports()
+        for row in rows:
+            row["snapshot_state"] = state if row["rank"] == 0 else None
+        return rows
+
+    def test_validates_k4_transport_source_field_then_activates(self) -> None:
+        from vagen.joint_policy.update_transaction import (
+            publish_replicated_joint_snapshot,
+        )
+
+        manager = _Manager(
+            {
+                "active_snapshot_id": "snapshot-old",
+                "active_source_step": 776,
+                "contract_id": "contract-1",
+                "score_dtype": "float32",
+                "activation_version": 3,
+                "staged_snapshot_id": None,
+                "open_batch_count": 0,
+            }
+        )
+        result = publish_replicated_joint_snapshot(
+            manager=manager,
+            rank_exports=self._k4_exports(),
+            expected_world_size=2,
+            expected_active_snapshot_id="snapshot-old",
+            expected_active_source_step=776,
+            expected_activation_version=3,
+        )
+        self.assertEqual(result["active_snapshot_id"], "snapshot-new")
+        staged = manager.calls[1][1]["new_snapshot_state"]
+        self.assertEqual(staged["snapshot_source_step"], 777)
+
     def test_validates_all_ranks_then_stages_and_activates(self) -> None:
         from vagen.joint_policy.update_transaction import (
             publish_replicated_joint_snapshot,
