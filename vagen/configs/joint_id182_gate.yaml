@@ -1,0 +1,220 @@
+# ID182 retry after the rank-local empty K4 shard fix.
+hydra:
+  searchpath:
+    - file:../../verl/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - env_registry
+  - _self_
+
+joint_integration_gate:
+  enabled: true
+  implementation: id182_k4_single_update_restore_gate_v1
+  experiment_id: 182
+  phase: update_1
+
+joint_policy:
+  enabled: true
+  implementation: k4_mcts_guided_v1
+  alpha: 1.0
+  beta: 85.78297006578457
+  prior_temperature: 1.0
+  backprop_to_llm: true
+  score_dtype: float32
+  planning_horizon: 4
+  mcts_num_simulations: 100
+  mcts_exploration_constant: 1.0
+
+joint_training:
+  enabled: true
+  implementation: replicated_joint_update_v1
+  run_seed: 42179
+  gamma: 1.0
+  gae_lambda: 0.95
+  ppo_clip_ratio: 0.2
+  normalize_advantages: true
+  token_kl_coefficient: 0.01
+  token_kl_type: low_var_kl
+  guided_entropy_coefficient: 0.01
+  checkpoint_frequency: 1
+  actor_optimizer:
+    name: adamw
+    lr: 1.0e-7
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.01
+    grad_clip: 1.0
+    lr_scheduler_type: constant
+    lr_warmup_steps: 0
+    lr_warmup_steps_ratio: 0.0
+    min_lr_ratio: null
+    num_cycles: 0.5
+  critic_checkpoint: ${oc.env:ID182_PLANNING_CHECKPOINT}
+  initial_snapshot_source_step: 776
+  critic_qwen_hidden_dim: 2048
+  critic_grid_tokens: 16
+  critic_state_dim: 1024
+  critic_action_count: 8
+  critic_huber_delta: 1.0
+  critic_grad_clip: 1.0
+  critic_optimizer:
+    name: adamw
+    lr: 1.0e-4
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.01
+
+k4_world_model_training:
+  enabled: true
+  implementation: k4_world_model_update_v1
+  planning_checkpoint: ${oc.env:ID182_PLANNING_CHECKPOINT}
+  snapshot_transport_root: ${oc.env:ID182_RUN_OUT}/planning_snapshots
+  prediction_horizon: 4
+  minimum_window_depth: 1
+  maximum_window_depth: 4
+  state_mse_weight: 1.0
+  dino_grid_weight: 0.5
+  sigreg_weight: 0.1
+  sigreg_knots: 17
+  sigreg_num_proj: 1024
+  dino_identity:
+    source: facebook/dinov2-large
+    revision: 47b73eefe95e8d44ec3623f8890bd894b6ea2d6c
+    processor_fingerprint: 7d65a7de8788e87d
+    hidden_size: 1024
+    grid_size: 4
+  selected_action_huber_delta: 1.0
+  grad_clip: 1.0
+  optimizer:
+    name: adamw
+    projector_lr: 1.0e-4
+    predictor_lr: 1.0e-4
+    value_head_lr: 1.0e-4
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.01
+
+decision_ledger:
+  enabled: true
+
+data:
+  train_files: ${oc.env:ID182_TRAIN_CONFIG}
+  val_files: ${oc.env:ID182_VAL_CONFIG}
+  train_batch_size: 24
+  gen_batch_size: 24
+  val_batch_size: 1
+  max_prompt_length: 4096
+  max_response_length: 512
+  dataloader_num_workers: 0
+  validation_shuffle: false
+  return_raw_chat: true
+  return_multi_modal_inputs: true
+  apply_chat_template_kwargs:
+    enable_thinking: false
+  custom_cls:
+    path: vagen/gym_agent_dataset.py
+    name: AgenticDataset
+
+actor_rollout_ref:
+  hybrid_engine: true
+  model:
+    path: ${oc.env:ID182_ACTOR_MODEL}
+    trust_remote_code: true
+    use_shm: false
+    use_remove_padding: true
+    use_fused_kernels: false
+    enable_gradient_checkpointing: true
+    external_lib: vagen.rollout.nimloth_vllm
+  actor:
+    strategy: fsdp
+    freeze_vision_tower: true
+    ppo_mini_batch_size: 24
+    ppo_micro_batch_size_per_gpu: 1
+    use_dynamic_bsz: false
+    ppo_epochs: 1
+    shuffle: false
+    use_kl_loss: false
+    entropy_coeff: 0.0
+    use_torch_compile: false
+    use_fused_kernels: false
+    ulysses_sequence_parallel_size: 1
+    fsdp_config:
+      param_offload: true
+      optimizer_offload: true
+    checkpoint:
+      save_contents: [model, optimizer, extra]
+      load_contents: [model, optimizer, extra]
+  ref:
+    log_prob_micro_batch_size_per_gpu: 1
+    fsdp_config:
+      param_offload: true
+  rollout:
+    name: nimloth_vllm
+    mode: async
+    n: 1
+    temperature: 0.7
+    top_p: 0.95
+    dtype: bfloat16
+    tensor_model_parallel_size: 8
+    data_parallel_size: 1
+    enforce_eager: true
+    gpu_memory_utilization: 0.6
+    free_cache_engine: true
+    enable_chunked_prefill: true
+    enable_prefix_caching: false
+    calculate_log_probs: true
+    log_prob_micro_batch_size_per_gpu: 1
+    engine_kwargs:
+      vllm:
+        mm_encoder_tp_mode: data
+    multi_turn:
+      enable: true
+    agent:
+      agent_loop_config_path: ${oc.env:ID182_AGENT_CONFIG}
+
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+
+filter:
+  enable: false
+
+huggingface_hub:
+  hf_save_freq: null
+  repo_id: vagen-training
+  private: false
+  upload_contents: [hf_model]
+
+trainer:
+  project_name: vagen
+  experiment_name: ${oc.env:ID182_RUN_NAME}
+  logger: [console, wandb]
+  val_before_train: false
+  test_freq: -1
+  save_freq: 1
+  total_epochs: 1
+  total_training_steps: 1
+  critic_warmup: 0
+  concat_multi_turn: false
+  balance_batch: true
+  nnodes: 1
+  n_gpus_per_node: 8
+  default_local_dir: ${oc.env:ID182_RUN_OUT}/checkpoints
+  default_hdfs_dir: null
+  remove_previous_ckpt_in_save: false
+  max_actor_ckpt_to_keep: 2
+  resume_mode: disable
+  del_local_ckpt_after_load: false
+  rollout_data_dir: ${oc.env:ID182_RUN_OUT}/rollout_data
+  validation_data_dir: ${oc.env:ID182_RUN_OUT}/validation
+  log_val_generations: 0
+  skip_pad_tokens: true
+  replace_image_tokens_for_logging: true
+  log_image:
+    enable: false
+    max_pending: 2
+    png_compress_level: 0
+
+critic:
+  enable: false

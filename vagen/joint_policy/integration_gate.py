@@ -16,6 +16,9 @@ K4_ID180_INTEGRATION_GATE_IMPLEMENTATION = (
 K4_ID181_INTEGRATION_GATE_IMPLEMENTATION = (
     "id181_k4_single_update_restore_gate_v1"
 )
+K4_ID182_INTEGRATION_GATE_IMPLEMENTATION = (
+    "id182_k4_single_update_restore_gate_v1"
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,10 @@ class JointIntegrationGate:
                 181,
                 {"update_1", "restore_only"},
             ),
+            K4_ID182_INTEGRATION_GATE_IMPLEMENTATION: (
+                182,
+                {"update_1", "restore_only"},
+            ),
         }
         if self.implementation not in contracts:
             raise ValueError("unsupported joint integration gate implementation")
@@ -59,6 +66,7 @@ class JointIntegrationGate:
             K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
             K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
             K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
+            K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
         }:
             return 1
         return 1 if self.phase == "update_1" else 2
@@ -111,6 +119,7 @@ __all__ = [
     "K4_ID179_INTEGRATION_GATE_IMPLEMENTATION",
     "K4_ID180_INTEGRATION_GATE_IMPLEMENTATION",
     "K4_ID181_INTEGRATION_GATE_IMPLEMENTATION",
+    "K4_ID182_INTEGRATION_GATE_IMPLEMENTATION",
     "JointIntegrationGate",
     "parse_joint_integration_gate",
 ]

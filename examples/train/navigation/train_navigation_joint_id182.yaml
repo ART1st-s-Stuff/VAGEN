@@ -1,0 +1,53 @@
+# Corrected ID182 retry of the approved K4 Scheme-B integration gate.
+envs:
+  - name: RemoteEnv
+    n_envs: 8
+    data_source: navigation_base_train_id182
+    seed: [0, 8]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: base_train
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 8
+    data_source: navigation_common_sense_train_id182
+    seed: [0, 8]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: common_sense_train
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 8
+    data_source: navigation_long_horizon_train_id182
+    seed: [0, 8]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: long_horizon_train
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
