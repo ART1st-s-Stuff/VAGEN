@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch import nn
 
@@ -126,7 +127,14 @@ class K4WorldModelUpdateModule(nn.Module):
             dino_loss_sum = dino_loss_sum + dino_per_window.sum()
             window_count = window_count + count
         if int(window_count.item()) < 1:
-            raise ValueError("K4 WM update contains no valid 1--4-step window")
+            state_loss_sum = state_loss_sum + _zero_parameter_anchor(
+                self.model.wm_predictor,
+                current_state,
+            )
+        _require_global_positive_count(
+            window_count,
+            "K4 WM update contains no valid 1--4-step window",
+        )
 
         all_action_values = self.model.predict_action_values(current_state)
         critic = selected_action_huber_loss(
@@ -141,8 +149,10 @@ class K4WorldModelUpdateModule(nn.Module):
             * row_mask.to(dtype=critic.per_sample_loss.dtype)
         ).sum()
         critic_valid_count = row_mask.sum()
-        if int(critic_valid_count.item()) < 1:
-            raise ValueError("K4 critic update contains no valid executed turn")
+        _require_global_positive_count(
+            critic_valid_count,
+            "K4 critic update contains no valid executed turn",
+        )
 
         one_step = row_mask & future_mask[:, 0]
         next_online = self.model.project_state(future_hidden[one_step, 0])
@@ -190,6 +200,32 @@ class K4WorldModelUpdateModule(nn.Module):
             ),
             all_action_values=all_action_values,
         )
+
+
+def _require_global_positive_count(
+    local_count: torch.Tensor,
+    message: str,
+) -> torch.Tensor:
+    if local_count.ndim != 0 or local_count.dtype != torch.long:
+        raise ValueError("K4 global count input must be a scalar long tensor")
+    global_count = local_count.detach().clone()
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(global_count, op=dist.ReduceOp.SUM)
+    if int(global_count.item()) < 1:
+        raise ValueError(message)
+    return global_count
+
+
+def _zero_parameter_anchor(module: nn.Module, reference: torch.Tensor) -> torch.Tensor:
+    anchor = reference.sum() * 0.0
+    for parameter in module.parameters():
+        if parameter.numel() < 1:
+            raise ValueError("K4 predictor contains an empty parameter")
+        anchor = anchor + parameter.reshape(-1)[0].to(
+            device=reference.device,
+            dtype=reference.dtype,
+        ) * 0.0
+    return anchor
 
 
 def build_k4_planning_optimizer(

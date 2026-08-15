@@ -39,6 +39,106 @@ def _config(snapshot_transport_root="/tmp/snapshots"):
     )
 
 
+def _module():
+    import torch
+    from torch import nn
+
+    from nimloth.training.rl.joint_planner import JointWorldModelCritic
+    from nimloth.wm import SequenceSIGReg
+    from nimloth.wm.grid import (
+        GridPredictorConfig,
+        SharedSlotProjector,
+        TemporalSpatialGridPredictor,
+    )
+    from nimloth.wm.value_head import ValueHead
+    from vagen.joint_policy.k4_world_model_update import K4WorldModelUpdateModule
+
+    model = JointWorldModelCritic(
+        state_projector=SharedSlotProjector(
+            input_dim=2,
+            output_dim=1024,
+            hidden_dim=3,
+            grid_tokens=16,
+        ),
+        wm_predictor=TemporalSpatialGridPredictor(
+            GridPredictorConfig(
+                grid_tokens=16,
+                emb_dim=1024,
+                action_dim=2,
+                history_size=1,
+                depth=1,
+                heads=1,
+                dim_head=4,
+                mlp_dim=8,
+                dropout=0.0,
+            )
+        ),
+        value_head=ValueHead(emb_dim=1024, num_actions=2, hidden_dim=3),
+    )
+    module = K4WorldModelUpdateModule(model, _config())
+
+    class FakeSIGReg(nn.Module):
+        def forward(self, sequence):
+            return sequence.square().mean()
+
+    module.sigreg = SequenceSIGReg(regularizer=FakeSIGReg())
+    return module
+
+
+def _run_rank_local_empty_k4_update(rank, world_size, init_method):
+    import torch
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    dist.init_process_group(
+        "gloo",
+        init_method=init_method,
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        torch.manual_seed(2718)
+        update = DistributedDataParallel(
+            _module(),
+            broadcast_buffers=False,
+        )
+        local_valid = rank == 0
+        future_mask = torch.tensor(
+            [[local_valid, False, False, False]],
+            dtype=torch.bool,
+        )
+        outputs = update(
+            current_hidden=torch.randn(1, 16, 2),
+            future_hidden=torch.randn(1, 4, 16, 2),
+            future_action_ids=torch.zeros(1, 4, dtype=torch.long),
+            future_valid_mask=future_mask,
+            valid_row_mask=torch.tensor([local_valid]),
+            guided_action_ids=torch.tensor([0]),
+            critic_returns=torch.tensor([1.0]),
+            future_dino_grid_targets=torch.randn(1, 4, 16, 1024),
+            sigreg_seed=314,
+        )
+        if rank == 1:
+            assert int(outputs.window_count) == 0
+            assert int(outputs.critic_valid_count) == 0
+            assert float(outputs.state_window_loss_sum) == 0.0
+            assert float(outputs.dino_window_loss_sum) == 0.0
+            assert float(outputs.critic_loss_sum) == 0.0
+        loss = (
+            outputs.state_window_loss_sum
+            + 0.5 * outputs.dino_window_loss_sum
+            + outputs.critic_loss_sum
+            + 0.1 * outputs.sigreg_loss
+        )
+        loss.backward()
+        assert all(
+            parameter.grad is not None and torch.isfinite(parameter.grad).all()
+            for parameter in update.parameters()
+        )
+    finally:
+        dist.destroy_process_group()
+
+
 class K4WorldModelUpdateTest(unittest.TestCase):
     def setUp(self) -> None:
         try:
@@ -47,49 +147,7 @@ class K4WorldModelUpdateTest(unittest.TestCase):
             self.skipTest(f"torch unavailable: {exc}")
 
     def _module(self):
-        import torch
-        from torch import nn
-
-        from nimloth.training.rl.joint_planner import JointWorldModelCritic
-        from nimloth.wm import SequenceSIGReg
-        from nimloth.wm.grid import (
-            GridPredictorConfig,
-            SharedSlotProjector,
-            TemporalSpatialGridPredictor,
-        )
-        from nimloth.wm.value_head import ValueHead
-        from vagen.joint_policy.k4_world_model_update import K4WorldModelUpdateModule
-
-        model = JointWorldModelCritic(
-            state_projector=SharedSlotProjector(
-                input_dim=2,
-                output_dim=1024,
-                hidden_dim=3,
-                grid_tokens=16,
-            ),
-            wm_predictor=TemporalSpatialGridPredictor(
-                GridPredictorConfig(
-                    grid_tokens=16,
-                    emb_dim=1024,
-                    action_dim=2,
-                    history_size=1,
-                    depth=1,
-                    heads=1,
-                    dim_head=4,
-                    mlp_dim=8,
-                    dropout=0.0,
-                )
-            ),
-            value_head=ValueHead(emb_dim=1024, num_actions=2, hidden_dim=3),
-        )
-        module = K4WorldModelUpdateModule(model, _config())
-
-        class FakeSIGReg(nn.Module):
-            def forward(self, sequence):
-                return sequence.square().mean()
-
-        module.sigreg = SequenceSIGReg(regularizer=FakeSIGReg())
-        return module
+        return _module()
 
     def test_all_valid_prefix_windows_and_three_modules_receive_gradients(self) -> None:
         import torch
@@ -134,6 +192,37 @@ class K4WorldModelUpdateTest(unittest.TestCase):
                     and float(parameter.grad.abs().sum()) > 0.0
                     for parameter in child.parameters()
                 )
+            )
+
+    def test_ddp_allows_one_rank_local_empty_when_peer_is_valid(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        import torch.multiprocessing as mp
+
+        with tempfile.TemporaryDirectory() as temporary:
+            init_method = f"file://{Path(temporary) / 'process-group'}"
+            mp.spawn(
+                _run_rank_local_empty_k4_update,
+                args=(2, init_method),
+                nprocs=2,
+                join=True,
+            )
+
+    def test_global_empty_k4_update_still_fails_closed(self) -> None:
+        import torch
+
+        with self.assertRaisesRegex(ValueError, "no valid 1--4-step window"):
+            self._module()(
+                current_hidden=torch.randn(1, 16, 2),
+                future_hidden=torch.randn(1, 4, 16, 2),
+                future_action_ids=torch.zeros(1, 4, dtype=torch.long),
+                future_valid_mask=torch.zeros(1, 4, dtype=torch.bool),
+                valid_row_mask=torch.tensor([False]),
+                guided_action_ids=torch.tensor([0]),
+                critic_returns=torch.tensor([0.0]),
+                future_dino_grid_targets=torch.zeros(1, 4, 16, 1024),
+                sigreg_seed=1,
             )
 
     def test_actor_moves_complete_update_module_before_ddp(self) -> None:
