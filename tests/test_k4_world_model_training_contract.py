@@ -22,6 +22,7 @@ def _config(**updates):
             "hidden_size": 1024,
             "grid_size": 4,
         },
+        "selected_action_huber_delta": 1.0,
         "grad_clip": 1.0,
         "optimizer": {
             "name": "adamw",
@@ -51,6 +52,7 @@ class K4WorldModelTrainingContractTest(unittest.TestCase):
         self.assertEqual(config.state_mse_weight, 1.0)
         self.assertEqual(config.dino_grid_weight, 0.5)
         self.assertEqual(config.sigreg_weight, 0.1)
+        self.assertEqual(config.selected_action_huber_delta, 1.0)
         self.assertEqual(config.optimizer.projector_lr, 1e-4)
         self.assertEqual(config.optimizer.predictor_lr, 1e-4)
         self.assertEqual(config.optimizer.value_head_lr, 1e-4)
@@ -86,6 +88,7 @@ class K4WorldModelTrainingContractTest(unittest.TestCase):
             "maximum_window_depth": 3,
             "sigreg_knots": 16,
             "sigreg_num_proj": 512,
+            "selected_action_huber_delta": 0.0,
             "grad_clip": 0.0,
         }.items():
             with self.subTest(field=field), self.assertRaises(ValueError):

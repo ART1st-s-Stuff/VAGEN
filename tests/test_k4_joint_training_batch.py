@@ -234,6 +234,32 @@ class K4JointTrainingBatchTest(unittest.TestCase):
         )
         self.assertNotIn("joint_frozen_all_action_q", batch.batch)
         self.assertEqual(batch.meta_info["joint_policy_implementation"], "k4_mcts_guided_v1")
+        self.assertEqual(batch.meta_info["joint_wm_window_count"], 3)
+        self.assertEqual(
+            batch.batch["joint_wm_future_valid_mask"].tolist(),
+            [[True, True, False, False], [True, False, False, False]],
+        )
+        self.assertEqual(
+            batch.batch["joint_wm_future_action_ids"].tolist(),
+            [[0, 0, 0, 0], [0, 0, 0, 0]],
+        )
+        import torch
+
+        self.assertTrue(
+            torch.allclose(
+                batch.batch["joint_wm_future_hidden"][0, :2],
+                torch.tensor([[[1.1, 0.2]], [[0.5, 0.6]]]),
+            )
+        )
+
+    def test_rejects_terminal_hidden_shape_tampering(self) -> None:
+        from vagen.joint_policy.training_batch import prepare_joint_training_batch
+
+        batch = self._batch()
+        terminal = batch.non_tensor_batch["terminal_state_trace"][1]
+        terminal["latent_hidden"] = [[0.5, 0.6, 0.7]]
+        with self.assertRaisesRegex(ValueError, "terminal hidden shape"):
+            prepare_joint_training_batch(batch, config=self._config())
 
     def test_rejects_embedded_planning_evidence_tampering(self) -> None:
         from vagen.joint_policy.training_batch import prepare_joint_training_batch

@@ -52,6 +52,7 @@ def prepare_joint_training_batch(
 
     rows = []
     behaviors = []
+    policy_states = []
     hidden_rows = []
     guidance_rows = []
     direct_q_rows = []
@@ -123,6 +124,7 @@ def prepare_joint_training_batch(
             raise ValueError(
                 "joint training policy hidden shape or values mismatch critic config"
             )
+        policy_states.append(state)
         hidden_rows.append(hidden)
         action_tables.append(list(behavior.action_token_ids))
         prior_tokens.append(behavior.prior_token_id)
@@ -238,6 +240,14 @@ def prepare_joint_training_batch(
         dtype=torch.float32,
     )
     batch.batch["joint_valid_mask"] = torch.ones(size, dtype=torch.bool)
+    if isinstance(behaviors[0], K4MCTSGuidedBehaviorRecord):
+        _compile_k4_future_hidden(
+            batch,
+            rows=rows,
+            policy_states=policy_states,
+            executed_action_ids=targets.executed_action_ids,
+            prediction_horizon=behaviors[0].policy_config.planning_horizon,
+        )
     batch.meta_info["joint_snapshot_id"] = targets.snapshot_id
     batch.meta_info["joint_contract_id"] = targets.contract_id
     batch.meta_info["joint_snapshot_source_step"] = pins[0]["snapshot_source_step"]
@@ -411,6 +421,69 @@ def _validate_k4_policy_state(
         raise ValueError("joint training K4 planner root means mismatch behavior")
     if score.planner_root_visit_counts != behavior.planner_root_visit_counts:
         raise ValueError("joint training K4 planner root visits mismatch behavior")
+
+
+def _compile_k4_future_hidden(
+    batch: Any,
+    *,
+    rows: list[dict[str, Any]],
+    policy_states: list[Mapping[str, Any]],
+    executed_action_ids: tuple[int, ...],
+    prediction_horizon: int,
+) -> None:
+    size = len(rows)
+    if len(policy_states) != size or len(executed_action_ids) != size:
+        raise ValueError("K4 WM compiler input rows do not align")
+    first_hidden = policy_states[0]["latent_hidden"]
+    grid_tokens = len(first_hidden)
+    hidden_dim = len(first_hidden[0])
+    future_hidden = np.zeros(
+        (size, prediction_horizon, grid_tokens, hidden_dim),
+        dtype=np.float32,
+    )
+    future_actions = np.zeros(
+        (size, prediction_horizon),
+        dtype=np.int64,
+    )
+    future_valid = np.zeros(
+        (size, prediction_horizon),
+        dtype=np.bool_,
+    )
+    trajectories: dict[tuple[str, int], list[int]] = {}
+    for index, row in enumerate(rows):
+        identity = (str(row["group_idx"]), int(row["traj_idx"]))
+        trajectories.setdefault(identity, []).append(index)
+    window_count = 0
+    for identity, indices in trajectories.items():
+        indices.sort(key=lambda index: rows[index]["guided_turn_index"])
+        final_index = indices[-1]
+        terminal = TerminalStateTrace.from_mapping(
+            batch.non_tensor_batch["terminal_state_trace"][final_index]
+        )
+        terminal_hidden = np.asarray(terminal.latent_hidden, dtype=np.float32)
+        if terminal_hidden.shape != (grid_tokens, hidden_dim):
+            raise ValueError(
+                "K4 WM terminal hidden shape does not match policy state: "
+                f"trajectory={identity}, shape={terminal_hidden.shape}"
+            )
+        state_sequence = [
+            np.asarray(policy_states[index]["latent_hidden"], dtype=np.float32)
+            for index in indices
+        ] + [terminal_hidden]
+        if any(value.shape != (grid_tokens, hidden_dim) for value in state_sequence):
+            raise ValueError("K4 WM policy hidden shapes are inconsistent")
+        for position, source_index in enumerate(indices):
+            available = min(prediction_horizon, len(indices) - position)
+            window_count += available
+            for offset in range(available):
+                action_index = indices[position + offset]
+                future_actions[source_index, offset] = executed_action_ids[action_index]
+                future_hidden[source_index, offset] = state_sequence[position + offset + 1]
+                future_valid[source_index, offset] = True
+    batch.batch["joint_wm_future_hidden"] = torch.from_numpy(future_hidden)
+    batch.batch["joint_wm_future_action_ids"] = torch.from_numpy(future_actions)
+    batch.batch["joint_wm_future_valid_mask"] = torch.from_numpy(future_valid)
+    batch.meta_info["joint_wm_window_count"] = window_count
 
 
 def _response_trace(raw: Any) -> Mapping[str, Any]:

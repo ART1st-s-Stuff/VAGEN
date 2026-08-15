@@ -290,6 +290,7 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
                     "hidden_size": 1024,
                     "grid_size": 4,
                 },
+                "selected_action_huber_delta": 1.0,
                 "grad_clip": 1.0,
                 "optimizer": {
                     "name": "adamw",

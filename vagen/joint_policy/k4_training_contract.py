@@ -25,6 +25,7 @@ _K4_WM_FIELDS = frozenset(
         "sigreg_knots",
         "sigreg_num_proj",
         "dino_identity",
+        "selected_action_huber_delta",
         "grad_clip",
         "optimizer",
     }
@@ -95,6 +96,7 @@ class K4WorldModelTrainingConfig:
     sigreg_knots: int
     sigreg_num_proj: int
     dino_identity: dict[str, Any]
+    selected_action_huber_delta: float
     grad_clip: float
     optimizer: K4PlanningOptimizerConfig
 
@@ -133,6 +135,10 @@ class K4WorldModelTrainingConfig:
             sigreg_knots=knots,
             sigreg_num_proj=projections,
             dino_identity=dict(dino),
+            selected_action_huber_delta=_positive_float(
+                values["selected_action_huber_delta"],
+                "selected-action Huber delta",
+            ),
             grad_clip=_positive_float(values["grad_clip"], "planning grad clip"),
             optimizer=K4PlanningOptimizerConfig.from_mapping(values["optimizer"]),
         )
