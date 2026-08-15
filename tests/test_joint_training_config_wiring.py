@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 
 class JointTrainingConfigWiringTest(unittest.TestCase):
@@ -344,6 +345,51 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
         config.joint_integration_gate.experiment_id = 170
         with self.assertRaisesRegex(ValueError, "171"):
             _configure_joint_actor_extension(config)
+
+    def test_allows_only_exact_id179_k4_update_and_restore_gate(self) -> None:
+        from omegaconf import OmegaConf
+        from vagen.main_ppo import _configure_joint_actor_extension
+
+        root = Path(__file__).parents[1]
+        source = OmegaConf.load(root / "vagen/configs/joint_id179_gate.yaml")
+        actor_model = (
+            "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/"
+            "2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/"
+            "checkpoint"
+        )
+        planning = (
+            "/project/peilab/atst/nimloth/outputs/experiments/"
+            "vagen_legacy_wm_k16_grid/2026-08-02/sft2/"
+            "74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_"
+            "ws16n3g844lw844_px100352/train_ws16/epoch_001"
+        )
+        env = {
+            "ID179_TRAIN_CONFIG": "/tmp/train_navigation_joint_id179.yaml",
+            "ID179_VAL_CONFIG": "/tmp/val_navigation_joint_id179.yaml",
+            "ID179_ACTOR_MODEL": actor_model,
+            "ID179_PLANNING_CHECKPOINT": planning,
+            "ID179_RUN_OUT": "/tmp/179_gate",
+            "ID179_RUN_NAME": (
+                "179_gate_k4schemeb_jointupdate_dp8_tp8_test"
+            ),
+            "ID179_AGENT_CONFIG": "/tmp/agent.yaml",
+        }
+        with patch.dict(os.environ, env):
+            config = OmegaConf.merge(self._config(), source)
+            training = _configure_joint_actor_extension(config)
+            self.assertEqual(training.run_seed, 42179)
+            self.assertEqual(
+                config.actor_rollout_ref.actor.custom_config.joint_policy.beta,
+                85.78297006578457,
+            )
+            config = OmegaConf.merge(self._config(), source)
+            config.joint_integration_gate.phase = "restore_only"
+            config.trainer.resume_mode = "auto"
+            _configure_joint_actor_extension(config)
+            config = OmegaConf.merge(self._config(), source)
+            config.joint_policy.beta = 85.0
+            with self.assertRaisesRegex(ValueError, "ID179.*numerical"):
+                _configure_joint_actor_extension(config)
 
     def test_rejects_non_target_parallel_layout(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension

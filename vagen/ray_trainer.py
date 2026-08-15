@@ -1594,6 +1594,22 @@ class RayPPOTrainer:
         # load checkpoint before doing anything
         self._load_checkpoint()
 
+        if (
+            self.joint_integration_gate is not None
+            and self.joint_integration_gate.phase == "restore_only"
+        ):
+            if self.global_steps != self.total_training_steps:
+                raise ValueError(
+                    "restore-only gate did not load its complete target step"
+                )
+            print(
+                "ID179_K4_FRESH_RESTORE_ONLY_ALL_OK "
+                f"global_step={self.global_steps}"
+            )
+            self._flush_image_dumps()
+            self._hf_upload_manager.flush()
+            return
+
         # perform validation before training
         # currently, we only support validation using the reward_function.
         if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
