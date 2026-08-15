@@ -11,9 +11,50 @@ class K4JointTrainingBatchTest(unittest.TestCase):
             self.skipTest(f"tensor dependencies unavailable: {exc}")
 
     def _config(self):
-        from test_k4_joint_training_contract import _training_config
+        from vagen.joint_policy.training_contract import JointTrainingConfig
 
-        return _training_config()
+        return JointTrainingConfig.from_mapping(
+            {
+                "implementation": "replicated_joint_update_v1",
+                "run_seed": 42,
+                "gamma": 1.0,
+                "gae_lambda": 0.95,
+                "ppo_clip_ratio": 0.2,
+                "normalize_advantages": True,
+                "token_kl_coefficient": 0.01,
+                "token_kl_type": "low_var_kl",
+                "guided_entropy_coefficient": 0.01,
+                "checkpoint_frequency": 1,
+                "actor_optimizer": {
+                    "name": "adamw",
+                    "lr": 1e-7,
+                    "betas": [0.9, 0.95],
+                    "eps": 1e-8,
+                    "weight_decay": 0.01,
+                    "grad_clip": 1.0,
+                    "lr_scheduler_type": "constant",
+                    "lr_warmup_steps": 0,
+                    "lr_warmup_steps_ratio": 0.0,
+                    "min_lr_ratio": None,
+                    "num_cycles": 0.5,
+                },
+                "critic_checkpoint": "/tmp/id74",
+                "initial_snapshot_source_step": 776,
+                "critic_qwen_hidden_dim": 2,
+                "critic_grid_tokens": 1,
+                "critic_state_dim": 2,
+                "critic_action_count": 2,
+                "critic_huber_delta": 1.0,
+                "critic_grad_clip": 1.0,
+                "critic_optimizer": {
+                    "name": "adamw",
+                    "lr": 1e-4,
+                    "betas": [0.9, 0.95],
+                    "eps": 1e-8,
+                    "weight_decay": 0.01,
+                },
+            }
+        )
 
     def _behavior(self):
         from vagen.joint_policy.planning_contract import (
