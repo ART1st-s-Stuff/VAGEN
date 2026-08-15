@@ -1,0 +1,19 @@
+# ID181 validation is disabled; this explicit dataset only satisfies construction.
+envs:
+  - name: RemoteEnv
+    n_envs: 1
+    data_source: navigation_base_val_disabled_id181
+    seed: [1199, 1200]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: base_train
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0

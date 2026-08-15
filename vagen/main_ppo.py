@@ -115,11 +115,13 @@ def _validate_joint_integration_gate_runtime(
     from vagen.joint_policy.integration_gate import (
         K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
         K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
     }:
         _validate_k4_single_update_integration_gate_runtime(
             config,
