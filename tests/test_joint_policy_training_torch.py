@@ -58,6 +58,51 @@ class JointPolicyTrainingTorchTest(unittest.TestCase):
         self.assertEqual(tuple(terms.selected_current_log_probs.shape), (2,))
         self.assertTrue(torch.isfinite(terms.ratios).all())
 
+    def test_k4_guided_action_ppo_uses_mcts_and_stops_planner_gradient(self) -> None:
+        import torch
+
+        from vagen.joint_policy.planning_contract import K4MCTSGuidedPolicyConfig
+        from vagen.joint_policy.training_torch import k4_guided_action_ppo_terms
+
+        policy = K4MCTSGuidedPolicyConfig.from_mapping(
+            {
+                "implementation": "k4_mcts_guided_v1",
+                "alpha": 1.0,
+                "beta": 2.0,
+                "prior_temperature": 1.0,
+                "backprop_to_llm": True,
+                "score_dtype": "float32",
+                "planning_horizon": 4,
+                "mcts_num_simulations": 100,
+                "mcts_exploration_constant": 1.0,
+            }
+        )
+        logits = torch.tensor(
+            [[0.2, -0.1], [0.1, 0.4]], requires_grad=True
+        )
+        planner = torch.tensor(
+            [[-0.5, 0.5], [0.25, -0.25]], requires_grad=True
+        )
+        actions = torch.tensor([1, 0], dtype=torch.long)
+        with torch.no_grad():
+            guided = torch.log_softmax(logits + 2.0 * planner, dim=-1)
+            behavior = guided.gather(-1, actions.unsqueeze(-1)).squeeze(-1)
+        terms = k4_guided_action_ppo_terms(
+            current_prior_logits=logits,
+            frozen_planner_root_mean_values=planner,
+            guided_action_ids=actions,
+            behavior_guided_log_probs=behavior,
+            advantages=torch.tensor([1.0, -1.0]),
+            valid_mask=torch.tensor([True, True]),
+            policy_config=policy,
+            clip_ratio=0.2,
+        )
+        (terms.policy_loss_sum - 0.01 * terms.entropy_sum).backward()
+        self.assertIsNotNone(logits.grad)
+        self.assertGreater(float(logits.grad.abs().sum()), 0.0)
+        self.assertIsNone(planner.grad)
+        self.assertTrue(torch.allclose(terms.ratios, torch.ones(2)))
+
     def test_clipping_and_padding_mask_are_applied_per_executed_turn(self) -> None:
         import torch
 

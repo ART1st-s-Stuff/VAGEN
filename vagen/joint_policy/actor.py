@@ -15,10 +15,15 @@ from torch.nn.parallel import DistributedDataParallel
 from verl.utils.device import get_device_id
 from verl.workers.actor.dp_actor import DataParallelPPOActor
 
-from .contract import FrozenQGuidedPolicyConfig
+from .contract import FrozenQGuidedPolicyConfig, parse_joint_policy_section
+from .planning_contract import K4MCTSGuidedPolicyConfig
 from .critic_loss import selected_action_huber_loss
 from .training_contract import JointTrainingConfig, parse_joint_training_section
-from .training_torch import guided_action_ppo_terms, low_variance_token_kl_terms
+from .training_torch import (
+    guided_action_ppo_terms,
+    k4_guided_action_ppo_terms,
+    low_variance_token_kl_terms,
+)
 
 JOINT_ACTOR_CHECKPOINT_SCHEMA = "vagen_joint_actor_critic_checkpoint_v1"
 
@@ -36,9 +41,11 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         self.joint_training = parse_joint_training_section(raw["joint_training"])
         if self.joint_training is None:
             raise ValueError("joint custom actor requires joint_training.enabled=true")
-        self.joint_policy = FrozenQGuidedPolicyConfig.from_mapping(
-            raw["joint_policy"]
+        self.joint_policy = parse_joint_policy_section(
+            {"enabled": True, **raw["joint_policy"]}
         )
+        if self.joint_policy is None:
+            raise ValueError("joint custom actor requires enabled joint policy")
         if self.use_fused_kernels:
             raise ValueError("joint guided actor requires use_fused_kernels=false")
         if self.config.ppo_epochs != 1:
@@ -132,12 +139,15 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             "joint_prior_response_indices",
             "joint_guided_action_ids",
             "joint_behavior_guided_log_probs",
-            "joint_frozen_all_action_q",
             "joint_advantages",
             "joint_valid_mask",
             "joint_critic_hidden",
             "joint_critic_returns",
         }
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            required.add("joint_frozen_planner_root_mean_values")
+        else:
+            required.add("joint_frozen_all_action_q")
         if self.joint_training.token_kl_coefficient > 0.0:
             required.add("joint_reference_token_log_probs")
         missing = required - set(data.batch.keys())
@@ -229,23 +239,35 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             _entropy, current_token_log_probs, raw_action_logits = forward
             score_dtype = _score_dtype(self.joint_policy.score_dtype)
             action_logits = raw_action_logits.to(dtype=score_dtype)
-            frozen_q = tensors["joint_frozen_all_action_q"].to(
-                device=action_logits.device,
-                dtype=score_dtype,
-            )
             valid_mask = tensors["joint_valid_mask"].to(dtype=torch.bool)
-            ppo = guided_action_ppo_terms(
-                current_prior_logits=action_logits,
-                frozen_all_action_q=frozen_q,
-                guided_action_ids=tensors["joint_guided_action_ids"].to(dtype=torch.long),
-                behavior_guided_log_probs=tensors[
+            ppo_kwargs = {
+                "current_prior_logits": action_logits,
+                "guided_action_ids": tensors["joint_guided_action_ids"].to(
+                    dtype=torch.long
+                ),
+                "behavior_guided_log_probs": tensors[
                     "joint_behavior_guided_log_probs"
                 ].to(dtype=score_dtype),
-                advantages=tensors["joint_advantages"].to(dtype=score_dtype),
-                valid_mask=valid_mask,
-                policy_config=self.joint_policy,
-                clip_ratio=self.joint_training.ppo_clip_ratio,
-            )
+                "advantages": tensors["joint_advantages"].to(dtype=score_dtype),
+                "valid_mask": valid_mask,
+                "policy_config": self.joint_policy,
+                "clip_ratio": self.joint_training.ppo_clip_ratio,
+            }
+            if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+                ppo = k4_guided_action_ppo_terms(
+                    frozen_planner_root_mean_values=tensors[
+                        "joint_frozen_planner_root_mean_values"
+                    ].to(device=action_logits.device, dtype=score_dtype),
+                    **ppo_kwargs,
+                )
+            else:
+                ppo = guided_action_ppo_terms(
+                    frozen_all_action_q=tensors["joint_frozen_all_action_q"].to(
+                        device=action_logits.device,
+                        dtype=score_dtype,
+                    ),
+                    **ppo_kwargs,
+                )
             actor_loss = actor_scale * (
                 ppo.policy_loss_sum
                 - self.joint_training.guided_entropy_coefficient * ppo.entropy_sum

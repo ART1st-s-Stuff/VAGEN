@@ -252,6 +252,31 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
         actor_type = load_extern_type(custom.path, custom.name)
         self.assertTrue(issubclass(actor_type, DataParallelPPOActor))
 
+    def test_k4_actor_custom_config_preserves_search_contract(self) -> None:
+        from omegaconf import open_dict
+        from vagen.main_ppo import _configure_joint_actor_extension
+
+        config = self._config()
+        with open_dict(config):
+            config.joint_policy = {
+                "enabled": True,
+                "implementation": "k4_mcts_guided_v1",
+                "alpha": 1.0,
+                "beta": 85.78297006578457,
+                "prior_temperature": 1.0,
+                "backprop_to_llm": True,
+                "score_dtype": "float32",
+                "planning_horizon": 4,
+                "mcts_num_simulations": 100,
+                "mcts_exploration_constant": 1.0,
+            }
+        _configure_joint_actor_extension(config)
+        custom = config.actor_rollout_ref.actor.custom_config.joint_policy
+        self.assertEqual(custom.beta, 85.78297006578457)
+        self.assertEqual(custom.planning_horizon, 4)
+        self.assertEqual(custom.mcts_num_simulations, 100)
+        self.assertNotIn("enabled", custom)
+
     def test_allows_only_human_approved_id171_integration_gate(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension
 

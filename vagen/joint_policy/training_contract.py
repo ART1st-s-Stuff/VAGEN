@@ -17,6 +17,7 @@ from .contract import (
 )
 from .planning_contract import (
     K4MCTSGuidedBehaviorRecord,
+    K4MCTSGuidedPolicyConfig,
     k4_guided_log_probs_reference,
 )
 
@@ -347,9 +348,12 @@ def joint_training_contract_id(
 
     if not isinstance(training, JointTrainingConfig):
         raise TypeError("joint training contract ID requires JointTrainingConfig")
-    if not isinstance(policy, FrozenQGuidedPolicyConfig):
+    if not isinstance(
+        policy,
+        (FrozenQGuidedPolicyConfig, K4MCTSGuidedPolicyConfig),
+    ):
         raise TypeError(
-            "joint training contract ID requires FrozenQGuidedPolicyConfig"
+            "joint training contract ID requires a supported guided policy config"
         )
     payload = {
         "training": asdict(training),

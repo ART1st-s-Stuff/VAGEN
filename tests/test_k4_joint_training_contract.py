@@ -125,6 +125,21 @@ def _row():
 
 
 class K4JointTrainingContractTest(unittest.TestCase):
+    def test_training_contract_id_accepts_and_binds_k4_policy(self) -> None:
+        from vagen.joint_policy.training_contract import joint_training_contract_id
+
+        behavior = _behavior()
+        first = joint_training_contract_id(
+            _training_config(),
+            behavior.policy_config,
+        )
+        changed = type(behavior.policy_config).from_mapping(
+            {**behavior.policy_config.to_mapping(), "beta": 3.0}
+        )
+        second = joint_training_contract_id(_training_config(), changed)
+        self.assertRegex(first, r"^sha256:[0-9a-f]{64}$")
+        self.assertNotEqual(first, second)
+
     def test_frozen_v_uses_mcts_guided_policy_and_direct_q_values(self) -> None:
         from vagen.joint_policy.planning_contract import k4_guided_log_probs_reference
         from vagen.joint_policy.training_contract import (

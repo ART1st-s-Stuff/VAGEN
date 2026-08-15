@@ -284,15 +284,9 @@ def _configure_joint_actor_extension(config):
     if keep is not None and keep < 2:
         raise ValueError("joint checkpointing must retain at least two actor checkpoints")
     custom_policy = {
-        field: raw_policy[field]
-        for field in (
-            "implementation",
-            "alpha",
-            "beta",
-            "prior_temperature",
-            "backprop_to_llm",
-            "score_dtype",
-        )
+        field: value
+        for field, value in raw_policy.items()
+        if field != "enabled"
     }
     with open_dict(config.critic):
         config.critic.enable = False
