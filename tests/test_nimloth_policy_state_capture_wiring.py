@@ -315,7 +315,7 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
 
         planning.assert_awaited_once()
         kwargs = planning.await_args.kwargs
-        self.assertIs(kwargs["engine"], server.engine)
+        self.assertIs(planning.await_args.args[0], server.engine)
         self.assertEqual(kwargs["latent_hidden"].tolist(), [[1.0, 2.0], [3.0, 4.0]])
         self.assertEqual(kwargs["expected_snapshot_id"], "sha256:" + "1" * 64)
         self.assertEqual(kwargs["expected_activation_version"], 3)
