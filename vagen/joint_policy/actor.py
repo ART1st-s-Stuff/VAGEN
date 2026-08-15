@@ -1002,8 +1002,18 @@ def _k4_dino_target_tensor(
         for depth in range(mask.shape[1])
         if bool(mask[row, depth])
     ]
+    result = torch.zeros(
+        (*mask.shape, grid_tokens, state_dim),
+        device=torch.device(device),
+        dtype=torch.float32,
+    )
+    # DP padding may leave one rank without a local valid row while the
+    # all-reduced mini-batch still has valid windows on peer ranks.  Preserve
+    # the same DDP graph; the existing valid masks make this placeholder
+    # contribute zero loss.  A missing image at a valid local position remains
+    # a hard error below.
     if not positions:
-        raise ValueError("K4 DINO target batch contains no valid image")
+        return result
     images = []
     for row, depth in positions:
         image = raw_images[row, depth]
@@ -1016,11 +1026,6 @@ def _k4_dino_target_tensor(
         raise ValueError(
             f"K4 DINO teacher target shape mismatch: {tuple(encoded.shape)}"
         )
-    result = torch.zeros(
-        (*mask.shape, grid_tokens, state_dim),
-        device=torch.device(device),
-        dtype=torch.float32,
-    )
     for index, (row, depth) in enumerate(positions):
         result[row, depth] = encoded[index]
     return result

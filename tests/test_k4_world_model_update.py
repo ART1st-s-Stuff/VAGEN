@@ -311,6 +311,44 @@ class K4WorldModelUpdateTest(unittest.TestCase):
         self.assertTrue(torch.equal(result[1, 0], torch.tensor([[4.0, 5.0]])))
         self.assertEqual(float(result[1, 1:].abs().sum()), 0.0)
 
+    def test_actor_dino_table_allows_empty_local_mask_without_teacher_call(self) -> None:
+        import numpy as np
+        import torch
+
+        from vagen.joint_policy.actor import _k4_dino_target_tensor
+
+        class Teacher:
+            def load_images(self, images, *, device):
+                raise AssertionError("empty local mask must not invoke DINO teacher")
+
+        result = _k4_dino_target_tensor(
+            Teacher(),
+            np.full((2, 4), None, dtype=object),
+            torch.zeros((2, 4), dtype=torch.bool),
+            device=torch.device("cpu"),
+            grid_tokens=3,
+            state_dim=5,
+        )
+        self.assertEqual(result.shape, (2, 4, 3, 5))
+        self.assertEqual(result.dtype, torch.float32)
+        self.assertEqual(float(result.abs().sum()), 0.0)
+
+    def test_actor_dino_table_still_rejects_missing_valid_image(self) -> None:
+        import numpy as np
+        import torch
+
+        from vagen.joint_policy.actor import _k4_dino_target_tensor
+
+        with self.assertRaisesRegex(ValueError, "valid future image is missing"):
+            _k4_dino_target_tensor(
+                object(),
+                np.full((1, 4), None, dtype=object),
+                torch.tensor([[True, False, False, False]]),
+                device=torch.device("cpu"),
+                grid_tokens=1,
+                state_dim=2,
+            )
+
     def test_rejects_nonprefix_future_mask(self) -> None:
         import torch
 
