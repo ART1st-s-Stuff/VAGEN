@@ -225,6 +225,98 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
         self.assertNotIn("nimloth_policy_state", sampling["extra_args"])
         self.assertTrue(all(math.isfinite(value) for value in output.log_probs))
 
+    def test_nimloth_server_binds_k4_planning_to_same_generation(self) -> None:
+        try:
+            from vagen.rollout.nimloth_vllm import NimlothVLLMHttpServer
+        except ImportError as exc:
+            self.skipTest(f"Nimloth/VAGEN dependencies unavailable: {exc}")
+
+        start = AsyncMock()
+        pop = AsyncMock(return_value=_PolicyState())
+        planning = AsyncMock(
+            return_value={
+                "snapshot_id": "sha256:" + "1" * 64,
+                "snapshot_source_step": 776,
+                "contract_id": "contract-k4",
+                "score_dtype": "float32",
+                "direct_all_action_q": [float(index) for index in range(8)],
+                "planner_root_mean_values": [
+                    float(index) / 10.0 for index in range(8)
+                ],
+                "planner_root_visit_counts": [13, 13, 13, 13, 12, 12, 12, 12],
+                "planner_candidate_action_sequences": [
+                    [0, 1, 2, 3] for _ in range(100)
+                ],
+                "planner_candidate_leaf_values": [0.5] * 100,
+                "planner_latency_seconds": 0.125,
+            }
+        )
+        sampling = {
+            "max_new_tokens": 2,
+            "logprobs": 8,
+            "extra_args": {
+                "nimloth_expected_planning_snapshot_id": "sha256:" + "1" * 64,
+                "nimloth_expected_planning_snapshot_source_step": 776,
+                "nimloth_expected_planning_contract_id": "contract-k4",
+                "nimloth_expected_planning_score_dtype": "float32",
+                "nimloth_expected_planning_horizon": 4,
+                "nimloth_expected_mcts_num_simulations": 100,
+                "nimloth_expected_mcts_exploration_constant": 1.0,
+                "nimloth_turn_response": {
+                    "close_text": "</think>",
+                    "close_token_ids": [7],
+                    "injected_token_ids": [90, 91, 92],
+                    "action_token_ids": list(range(100, 108)),
+                    "action_end_token_id": 93,
+                    "forbidden_reasoning_token_ids": [],
+                    "max_reasoning_tokens": 4,
+                },
+            },
+        }
+        with (
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_start_policy_state_capture_for_request",
+                start,
+            ),
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_pop_policy_state_capture_for_request",
+                pop,
+            ),
+            patch(
+                "nimloth.backbone.qwen25vl.vllm_hidden."
+                "async_score_frozen_k4_planner",
+                planning,
+            ),
+            patch(
+                "verl.workers.rollout.vllm_rollout.vllm_async_server."
+                "_qwen2_5_vl_dedup_image_tokens",
+                side_effect=lambda ids, _processor: ids,
+            ),
+        ):
+            output = asyncio.run(
+                NimlothVLLMHttpServer.generate.__wrapped__(
+                    _Server(),
+                    prompt_ids=[1, 2],
+                    sampling_params=sampling,
+                    request_id="generation-k4",
+                    session_request_id="request-k4",
+                )
+            )
+
+        planning.assert_awaited_once()
+        kwargs = planning.await_args.kwargs
+        self.assertIs(kwargs["engine"], _Server.engine)
+        self.assertEqual(kwargs["root_latent_hidden"].tolist(), [[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(kwargs["expected_horizon"], 4)
+        self.assertEqual(kwargs["expected_num_simulations"], 100)
+        self.assertEqual(output.policy_state["schema"], "nimloth_policy_state_k4_mcts_v1")
+        self.assertEqual(output.policy_state["request_id"], "request-k4")
+        self.assertEqual(output.policy_state["generation_id"], "generation-k4")
+        self.assertEqual(output.policy_state["planning"]["planner_root_visit_counts"], [13, 13, 13, 13, 12, 12, 12, 12])
+        self.assertEqual(output.policy_state["action_logits"], [float(index) for index in range(8)])
+
     def test_terminal_mode_returns_latent_only_state_without_action_evidence(self) -> None:
         try:
             from vagen.rollout.nimloth_vllm import NimlothVLLMHttpServer
