@@ -482,13 +482,11 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                     )
                     + actor_scale * planning.critic_loss_sum
                     + self.k4_world_model_training.sigreg_weight
-                    * (
-                        planning.sigreg_valid_count.to(
-                            dtype=planning.sigreg_loss.dtype
-                        )
-                        / global_valid.to(dtype=planning.sigreg_loss.dtype)
+                    * _weighted_k4_sigreg_loss(
+                        planning.sigreg_loss,
+                        planning.sigreg_valid_count,
+                        global_valid,
                     )
-                    * planning.sigreg_loss
                 )
                 planning_loss.backward()
                 critic_sum_value += float(
@@ -501,12 +499,10 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                     planning.dino_window_loss_sum.detach().item()
                 )
                 sigreg_value += float(
-                    (
-                        planning.sigreg_valid_count.to(
-                            dtype=planning.sigreg_loss.dtype
-                        )
-                        / global_valid.to(dtype=planning.sigreg_loss.dtype)
-                        * planning.sigreg_loss
+                    _weighted_k4_sigreg_loss(
+                        planning.sigreg_loss,
+                        planning.sigreg_valid_count,
+                        global_valid,
                     ).detach().item()
                 )
                 wm_window_count_value += float(planning.window_count.item())
@@ -947,6 +943,24 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         if restored.snapshot_id != snapshot.snapshot_id:
             raise ValueError("K4 actor checkpoint transport contents mismatch")
         self._last_k4_transport = transport.to_mapping()
+
+
+def _weighted_k4_sigreg_loss(
+    loss: torch.Tensor,
+    valid_count: torch.Tensor,
+    global_valid_count: torch.Tensor,
+) -> torch.Tensor:
+    if loss.ndim != 0 or valid_count.ndim != 0 or global_valid_count.ndim != 0:
+        raise ValueError("K4 SIGReg scaling inputs must be scalars")
+    if int(valid_count.item()) < 0 or int(global_valid_count.item()) < 1:
+        raise ValueError("K4 SIGReg scaling counts are invalid")
+    if int(valid_count.item()) > int(global_valid_count.item()):
+        raise ValueError("K4 SIGReg micro count exceeds global valid count")
+    return (
+        valid_count.to(device=loss.device, dtype=loss.dtype)
+        / global_valid_count.to(device=loss.device, dtype=loss.dtype)
+        * loss
+    )
 
 
 def _k4_dino_target_tensor(

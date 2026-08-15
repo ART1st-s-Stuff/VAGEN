@@ -115,6 +115,18 @@ class K4ActorUpdateTest(unittest.TestCase):
             }
         )
 
+    def test_sigreg_microbatches_are_count_weighted_once(self) -> None:
+        import torch
+        from vagen.joint_policy.actor import _weighted_k4_sigreg_loss
+
+        first = _weighted_k4_sigreg_loss(
+            torch.tensor(3.0), torch.tensor(2), torch.tensor(4)
+        )
+        second = _weighted_k4_sigreg_loss(
+            torch.tensor(5.0), torch.tensor(2), torch.tensor(4)
+        )
+        self.assertEqual(float(first + second), 4.0)
+
     def test_one_update_changes_actor_projector_predictor_and_value_head(self) -> None:
         import numpy as np
         import torch
