@@ -227,6 +227,30 @@ class K4WorldModelUpdateTest(unittest.TestCase):
                 payload["planning_optimizer_fingerprint"],
                 export["optimizer_fingerprint"],
             )
+            import vagen.joint_policy.actor as actor_module
+            from unittest.mock import patch
+
+            restored_module = self._module()
+            restored_module.config = _config(temporary)
+            restored_actor = object.__new__(JointDataParallelPPOActor)
+            restored_actor.joint_policy = actor.joint_policy
+            restored_actor.joint_training = actor.joint_training
+            restored_actor.k4_world_model_training = restored_module.config
+            restored_actor.current_k4_world_model = SimpleNamespace(
+                module=restored_module
+            )
+            restored_actor.joint_planning_optimizer = (
+                build_k4_planning_optimizer(restored_module)
+            )
+            restored_actor._joint_rank = 0
+            restored_actor._joint_world_size = 1
+            restored_actor._joint_completed_updates = 0
+            restored_actor._joint_contract_id = None
+            restored_actor._last_k4_transport = None
+            with patch.object(actor_module.dist, "barrier"):
+                restored = restored_actor.load_joint_checkpoint(payload)
+            self.assertEqual(restored["snapshot_id"], export["snapshot_id"])
+            self.assertEqual(restored["source_step"], 777)
 
     def test_actor_dino_table_encodes_only_valid_future_images(self) -> None:
         import numpy as np
