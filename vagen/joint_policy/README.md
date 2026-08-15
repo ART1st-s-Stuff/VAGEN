@@ -50,15 +50,22 @@ Current scope:
   returns, and rollout-time Frozen-V GAE without using selected-action Q as a
   state baseline; reward shaping is selected explicitly by environment config;
 - `training_batch.py` compiles only identity-complete rollout evidence and
-  excludes duplicated padding rows from actor, critic, and metrics;
+  excludes duplicated padding rows from actor, critic, and metrics; K4 rows
+  additionally carry real nonterminal/terminal successor hidden states, guided
+  actions, and in-memory observation images for every valid depth-1--4 window;
 - `actor.py` is the custom FSDP actor candidate. It uses current action-boundary
-  logits for executed-guided-action PPO, separates token reference KL from
-  guided entropy, and co-trains a GPU DP-replicated current action-value critic;
-- `update_transaction.py` validates every rank's critic and optimizer identity
-  before rank zero stages and CAS-activates the next immutable snapshot;
+  logits for executed-guided-action PPO and separates token reference KL from
+  guided entropy. The legacy path co-trains a GPU DP-replicated action-value
+  critic. The K4 path co-trains replicated projector, horizon-4 predictor, and
+  eight-action ValueHead with state, frozen DINO-grid, SIGReg, and selected-
+  action Huber losses through one three-group AdamW;
+- `update_transaction.py` validates every rank's planning-module and optimizer
+  identity before rank zero stages and CAS-activates the next immutable full K4
+  planner transport (or the legacy critic-only snapshot);
 - `checkpoint.py` writes the joint sidecar and completion marker only at a
-  complete global-update boundary and restores actor/critic/optimizer, active
-  snapshot, run identity, and stateful dataloader exactly.
+  complete global-update boundary. K4 payloads include all three planning
+  modules, unified optimizer, active full-planner transport, run identity, and
+  stateful dataloader for exact fresh-runtime restore.
 
 The optimizer-free standalone rollout remains available to explicit callers.
 The trainer-side code is an integration candidate, not an enabled production
