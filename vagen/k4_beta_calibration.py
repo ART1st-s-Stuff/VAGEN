@@ -29,6 +29,58 @@ from vagen.standalone_one_turn_smoke import (
 _TRAIN_SPLITS = ("base_train", "common_sense_train", "long_horizon_train")
 
 
+def calibrate_beta_from_action_spreads(
+    prior_spreads: list[float],
+    planner_spreads: list[float],
+    *,
+    minimum_median_planner_spread: float,
+) -> dict[str, Any]:
+    """Return a persistable accept/review decision for measured action scales."""
+
+    if not prior_spreads or len(prior_spreads) != len(planner_spreads):
+        raise ValueError("calibration spread vectors must be non-empty and aligned")
+    for field, values in (
+        ("prior_spreads", prior_spreads),
+        ("planner_spreads", planner_spreads),
+    ):
+        if any(not math.isfinite(value) or value < 0.0 for value in values):
+            raise ValueError(f"{field} must contain finite non-negative values")
+    threshold = float(minimum_median_planner_spread)
+    if not math.isfinite(threshold) or threshold <= 0.0:
+        raise ValueError("minimum planner spread must be finite and positive")
+    median_prior = statistics.median(prior_spreads)
+    median_planner = statistics.median(planner_spreads)
+    if median_planner <= threshold:
+        accepted = False
+        reason = "mcts_median_action_spread_too_small"
+        calibrated_beta = None
+    else:
+        calibrated_beta = median_prior / median_planner
+        if not math.isfinite(calibrated_beta) or calibrated_beta < 0.0:
+            raise RuntimeError("calibrated K4 beta is invalid")
+        accepted = calibrated_beta > 0.0
+        reason = None if accepted else "llm_median_action_spread_is_zero"
+    return {
+        "calibration_accepted": accepted,
+        "review_reason": reason,
+        "calibrated_beta_requires_human_approval": calibrated_beta,
+        "median_prior_action_spread": median_prior,
+        "median_mcts_action_spread": median_planner,
+        "prior_action_spreads": {
+            "min": min(prior_spreads),
+            "median": median_prior,
+            "max": max(prior_spreads),
+            "zero_count": sum(value == 0.0 for value in prior_spreads),
+        },
+        "mcts_action_spreads": {
+            "min": min(planner_spreads),
+            "median": median_planner,
+            "max": max(planner_spreads),
+            "zero_count": sum(value == 0.0 for value in planner_spreads),
+        },
+    }
+
+
 def build_initial_transport(
     args: argparse.Namespace,
     config: Any,
@@ -291,6 +343,9 @@ def validate_and_summarize(
                 "rollout_stop_reason": stop_reason,
                 "env_turn_reward": float(ledger["env_turn_reward"]),
                 "policy_state_sha256": f"sha256:{state_hash}",
+                "policy_action_logits": list(policy_state["action_logits"]),
+                "prior_action_spread": prior_spread,
+                "mcts_action_spread": planner_spread,
                 "scoring_record": scoring.to_mapping(),
                 "behavior_record": behavior.to_mapping(),
                 "response_trace": result.non_tensor_batch[
@@ -316,23 +371,23 @@ def validate_and_summarize(
             raise RuntimeError(
                 f"K4 calibration split {split} completed {completed}, expected {expected_per_split}"
             )
-    median_prior = statistics.median(prior_spreads)
-    median_planner = statistics.median(planner_spreads)
-    if median_planner <= args.minimum_median_planner_spread:
-        raise RuntimeError(
-            "K4 planner median action spread is too small to calibrate beta: "
-            f"{median_planner} <= {args.minimum_median_planner_spread}"
-        )
-    calibrated_beta = median_prior / median_planner
-    if not math.isfinite(calibrated_beta) or calibrated_beta <= 0.0:
-        raise RuntimeError("calibrated K4 beta is not finite and positive")
+    scale = calibrate_beta_from_action_spreads(
+        prior_spreads,
+        planner_spreads,
+        minimum_median_planner_spread=(
+            args.minimum_median_planner_spread
+        ),
+    )
     summary = {
         "schema": "vagen_k4_beta_calibration_summary_v1",
-        "status": "passed",
+        "status": (
+            "passed"
+            if scale["calibration_accepted"]
+            else "requires_human_review"
+        ),
         "optimizer": None,
         "checkpoint_output": None,
         "beta_applied_during_calibration": 0.0,
-        "calibrated_beta_requires_human_approval": calibrated_beta,
         "calibration_rule": "median_population_std_prior_logits / median_population_std_mcts_root_mean",
         "trajectory_count": args.trajectory_count,
         "executed_turn_count": row_count,
@@ -340,8 +395,7 @@ def validate_and_summarize(
         "seeds_per_split": args.seeds_per_split,
         "turns_by_split": turns_by_split,
         "successes_by_split": successes_by_split,
-        "median_prior_action_spread": median_prior,
-        "median_mcts_action_spread": median_planner,
+        **scale,
         "minimum_median_planner_spread": args.minimum_median_planner_spread,
         "planner_latency_seconds": {
             "mean": statistics.fmean(planner_latencies),

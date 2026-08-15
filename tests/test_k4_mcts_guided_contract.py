@@ -4,6 +4,7 @@ import math
 
 import pytest
 
+from vagen.k4_beta_calibration import calibrate_beta_from_action_spreads
 from vagen.joint_policy.planning_contract import (
     K4MCTSGuidedBehaviorRecord,
     K4MCTSGuidedPolicyConfig,
@@ -116,6 +117,44 @@ def test_k4_behavior_persists_direct_q_and_planner_evidence_separately() -> None
     assert restored.direct_all_action_q == (0.2, 0.7)
     assert restored.planner_root_mean_values == (0.9, -0.3)
     assert sum(restored.planner_root_visit_counts) == 100
+
+
+def test_beta_calibration_persists_zero_prior_spread_for_review() -> None:
+    result = calibrate_beta_from_action_spreads(
+        [0.0, 0.0, 0.25],
+        [0.5, 1.0, 1.5],
+        minimum_median_planner_spread=1e-8,
+    )
+
+    assert result["calibration_accepted"] is False
+    assert result["review_reason"] == "llm_median_action_spread_is_zero"
+    assert result["calibrated_beta_requires_human_approval"] == 0.0
+    assert result["prior_action_spreads"]["zero_count"] == 2
+    assert result["mcts_action_spreads"]["median"] == 1.0
+
+
+def test_beta_calibration_rejects_tiny_mcts_spread_without_division() -> None:
+    result = calibrate_beta_from_action_spreads(
+        [1.0, 2.0],
+        [0.0, 1e-10],
+        minimum_median_planner_spread=1e-8,
+    )
+
+    assert result["calibration_accepted"] is False
+    assert result["review_reason"] == "mcts_median_action_spread_too_small"
+    assert result["calibrated_beta_requires_human_approval"] is None
+
+
+def test_beta_calibration_accepts_positive_ratio() -> None:
+    result = calibrate_beta_from_action_spreads(
+        [1.0, 3.0],
+        [0.5, 1.5],
+        minimum_median_planner_spread=1e-8,
+    )
+
+    assert result["calibration_accepted"] is True
+    assert result["review_reason"] is None
+    assert result["calibrated_beta_requires_human_approval"] == 2.0
 
 
 def test_k4_execution_and_decision_ledger_preserve_planning_behavior() -> None:
