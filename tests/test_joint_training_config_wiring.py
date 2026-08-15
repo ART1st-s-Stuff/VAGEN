@@ -273,7 +273,7 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
             config.k4_world_model_training = {
                 "enabled": True,
                 "implementation": "k4_world_model_update_v1",
-                "planning_checkpoint": "/tmp/id74",
+                "planning_checkpoint": "/checkpoints/id74",
                 "snapshot_transport_root": "/tmp/k4-snapshots",
                 "prediction_horizon": 4,
                 "minimum_window_depth": 1,

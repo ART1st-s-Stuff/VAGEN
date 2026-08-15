@@ -183,6 +183,19 @@ class K4JointTrainingContractTest(unittest.TestCase):
         self.assertRegex(first, r"^sha256:[0-9a-f]{64}$")
         self.assertNotEqual(first, second)
 
+    def test_duplicate_joint_world_model_values_must_align(self) -> None:
+        from dataclasses import replace
+        from vagen.joint_policy.k4_training_contract import (
+            validate_k4_joint_training_alignment,
+        )
+
+        validate_k4_joint_training_alignment(_training_config(), _wm_config())
+        with self.assertRaisesRegex(ValueError, "grad_clip"):
+            validate_k4_joint_training_alignment(
+                _training_config(),
+                replace(_wm_config(), grad_clip=2.0),
+            )
+
     def test_frozen_v_uses_mcts_guided_policy_and_direct_q_values(self) -> None:
         from vagen.joint_policy.planning_contract import k4_guided_log_probs_reference
         from vagen.joint_policy.training_contract import (

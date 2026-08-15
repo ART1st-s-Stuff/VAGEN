@@ -25,6 +25,7 @@ from .k4_training_contract import (
     K4WorldModelTrainingConfig,
     k4_world_model_training_contract_id,
     parse_k4_world_model_training_section,
+    validate_k4_joint_training_alignment,
 )
 from .planning_execution import (
     K4_GUIDED_ACTION_EXECUTION_SCHEMA,
@@ -101,5 +102,6 @@ __all__ = [
     "sample_k4_mcts_guided_action",
     "selected_action_huber_loss",
     "validate_guided_action_execution_result",
+    "validate_k4_joint_training_alignment",
     "validate_k4_guided_action_execution_result",
 ]

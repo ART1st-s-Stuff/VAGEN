@@ -178,6 +178,35 @@ def parse_k4_world_model_training_section(
     )
 
 
+def validate_k4_joint_training_alignment(
+    training: Any,
+    world_model: K4WorldModelTrainingConfig,
+) -> None:
+    """Reject duplicate joint/WM values that would otherwise be ambiguous."""
+
+    if not isinstance(world_model, K4WorldModelTrainingConfig):
+        raise TypeError("K4 alignment requires world-model training config")
+    optimizer = world_model.optimizer
+    critic_optimizer = training.critic_optimizer
+    mismatches = []
+    if training.critic_checkpoint != world_model.planning_checkpoint:
+        mismatches.append("planning_checkpoint")
+    if training.critic_huber_delta != world_model.selected_action_huber_delta:
+        mismatches.append("selected_action_huber_delta")
+    if training.critic_grad_clip != world_model.grad_clip:
+        mismatches.append("grad_clip")
+    for field in ("name", "betas", "eps", "weight_decay"):
+        if getattr(critic_optimizer, field) != getattr(optimizer, field):
+            mismatches.append(f"optimizer.{field}")
+    if critic_optimizer.lr != optimizer.value_head_lr:
+        mismatches.append("optimizer.value_head_lr")
+    if mismatches:
+        raise ValueError(
+            "K4 joint/world-model duplicate values disagree: "
+            f"{sorted(mismatches)}"
+        )
+
+
 def k4_world_model_training_contract_id(
     config: K4WorldModelTrainingConfig,
 ) -> str:

@@ -210,6 +210,7 @@ def _configure_joint_actor_extension(config):
         K4MCTSGuidedPolicyConfig,
         parse_joint_policy_section,
         parse_k4_world_model_training_section,
+        validate_k4_joint_training_alignment,
     )
     from vagen.joint_policy.integration_gate import parse_joint_integration_gate
     from vagen.joint_policy.training_contract import parse_joint_training_section
@@ -251,13 +252,8 @@ def _configure_joint_actor_extension(config):
         raise ValueError(
             "K4 joint policy and k4_world_model_training must be enabled together"
         )
-    if (
-        k4_world_model is not None
-        and k4_world_model.planning_checkpoint != training.critic_checkpoint
-    ):
-        raise ValueError(
-            "K4 world-model and joint critic checkpoint roots must match"
-        )
+    if k4_world_model is not None:
+        validate_k4_joint_training_alignment(training, k4_world_model)
     actor = config.actor_rollout_ref.actor
     model = config.actor_rollout_ref.model
     if config.actor_rollout_ref.rollout.name != "nimloth_vllm":
