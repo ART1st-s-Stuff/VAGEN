@@ -482,6 +482,12 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                     )
                     + actor_scale * planning.critic_loss_sum
                     + self.k4_world_model_training.sigreg_weight
+                    * (
+                        planning.sigreg_valid_count.to(
+                            dtype=planning.sigreg_loss.dtype
+                        )
+                        / global_valid.to(dtype=planning.sigreg_loss.dtype)
+                    )
                     * planning.sigreg_loss
                 )
                 planning_loss.backward()
@@ -494,7 +500,15 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                 wm_dino_sum_value += float(
                     planning.dino_window_loss_sum.detach().item()
                 )
-                sigreg_value += float(planning.sigreg_loss.detach().item())
+                sigreg_value += float(
+                    (
+                        planning.sigreg_valid_count.to(
+                            dtype=planning.sigreg_loss.dtype
+                        )
+                        / global_valid.to(dtype=planning.sigreg_loss.dtype)
+                        * planning.sigreg_loss
+                    ).detach().item()
+                )
                 wm_window_count_value += float(planning.window_count.item())
             else:
                 assert self.current_joint_critic is not None
