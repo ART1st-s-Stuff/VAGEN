@@ -1603,7 +1603,8 @@ class RayPPOTrainer:
                     "restore-only gate did not load its complete target step"
                 )
             print(
-                "ID179_K4_FRESH_RESTORE_ONLY_ALL_OK "
+                f"ID{self.joint_integration_gate.experiment_id}_"
+                "K4_FRESH_RESTORE_ONLY_ALL_OK "
                 f"global_step={self.global_steps}"
             )
             self._flush_image_dumps()

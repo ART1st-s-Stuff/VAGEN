@@ -114,10 +114,14 @@ def _validate_joint_integration_gate_runtime(
 
     from vagen.joint_policy.integration_gate import (
         K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
     )
 
-    if gate.implementation == K4_ID179_INTEGRATION_GATE_IMPLEMENTATION:
-        _validate_id179_k4_integration_gate_runtime(
+    if gate.implementation in {
+        K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
+    }:
+        _validate_k4_single_update_integration_gate_runtime(
             config,
             training=training,
             policy=policy,
@@ -216,7 +220,7 @@ def _validate_joint_integration_gate_runtime(
         raise ValueError("ID171 integration gate requires no-concat training")
 
 
-def _validate_id179_k4_integration_gate_runtime(
+def _validate_k4_single_update_integration_gate_runtime(
     config,
     *,
     training,
@@ -238,6 +242,7 @@ def _validate_id179_k4_integration_gate_runtime(
         "74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_"
         "ws16n3g844lw844_px100352/train_ws16/epoch_001"
     )
+    experiment_id = gate.experiment_id
     actor = config.actor_rollout_ref.actor
     rollout = config.actor_rollout_ref.rollout
     trainer = config.trainer
@@ -245,7 +250,9 @@ def _validate_id179_k4_integration_gate_runtime(
     critic_optim = training.critic_optimizer
     planning_optim = world_model.optimizer if world_model is not None else None
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
-        raise ValueError("ID179 gate requires K4 policy and world-model training")
+        raise ValueError(
+            f"ID{experiment_id} gate requires K4 policy and world-model training"
+        )
     if (
         policy.alpha != 1.0
         or policy.beta != 85.78297006578457
@@ -291,42 +298,60 @@ def _validate_id179_k4_integration_gate_runtime(
         or world_model.selected_action_huber_delta != 1.0
         or world_model.grad_clip != 1.0
     ):
-        raise ValueError("ID179 integration gate numerical contract mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate numerical contract mismatch"
+        )
     if (
         str(config.actor_rollout_ref.model.path) != expected_actor
         or training.critic_checkpoint != expected_planning
         or world_model.planning_checkpoint != expected_planning
     ):
-        raise ValueError("ID179 integration gate checkpoint roots mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate checkpoint roots mismatch"
+        )
     expected_snapshots = str(
         Path(str(trainer.default_local_dir)).parent / "planning_snapshots"
     )
     if world_model.snapshot_transport_root != expected_snapshots:
-        raise ValueError("ID179 integration gate snapshot root mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate snapshot root mismatch"
+        )
     if (
         int(trainer.total_training_steps) != gate.expected_total_training_steps
         or int(trainer.total_epochs) != 1
         or trainer.resume_mode != gate.expected_resume_mode
     ):
-        raise ValueError("ID179 integration gate phase runtime mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate phase runtime mismatch"
+        )
     if trainer.project_name != "vagen" or not str(
         trainer.experiment_name
-    ).startswith("179_gate_k4schemeb_jointupdate_dp8_tp8_"):
-        raise ValueError("ID179 integration gate W&B identity mismatch")
+    ).startswith(
+        f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
+    ):
+        raise ValueError(
+            f"ID{experiment_id} integration gate W&B identity mismatch"
+        )
     if set(trainer.logger) != {"console", "wandb"}:
-        raise ValueError("ID179 integration gate requires console and W&B")
+        raise ValueError(
+            f"ID{experiment_id} integration gate requires console and W&B"
+        )
     if trainer.val_before_train or int(trainer.test_freq) != -1:
-        raise ValueError("ID179 integration gate forbids validation rollout")
+        raise ValueError(
+            f"ID{experiment_id} integration gate forbids validation rollout"
+        )
     if (
         int(config.data.train_batch_size) != 24
         or int(config.data.gen_batch_size) != 24
         or int(rollout.n) != 1
         or int(config.data.max_response_length) != 512
         or not str(config.data.train_files).endswith(
-            "train_navigation_joint_id179.yaml"
+            f"train_navigation_joint_id{experiment_id}.yaml"
         )
     ):
-        raise ValueError("ID179 integration gate rollout batch mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate rollout batch mismatch"
+        )
     if (
         not bool(actor.freeze_vision_tower)
         or int(actor.ppo_mini_batch_size) != 24
@@ -335,13 +360,19 @@ def _validate_id179_k4_integration_gate_runtime(
         or float(rollout.temperature) != 0.7
         or float(rollout.top_p) != 0.95
     ):
-        raise ValueError("ID179 integration gate actor/rollout mismatch")
+        raise ValueError(
+            f"ID{experiment_id} integration gate actor/rollout mismatch"
+        )
     if rollout.get("engine_kwargs", {}).get("vllm", {}).get(
         "mm_encoder_tp_mode"
     ) != "data":
-        raise ValueError("ID179 integration gate requires mm_encoder_tp_mode=data")
+        raise ValueError(
+            f"ID{experiment_id} gate requires mm_encoder_tp_mode=data"
+        )
     if trainer.get("concat_multi_turn", True):
-        raise ValueError("ID179 integration gate requires no-concat training")
+        raise ValueError(
+            f"ID{experiment_id} integration gate requires no-concat training"
+        )
 
 
 def _configure_joint_actor_extension(config):

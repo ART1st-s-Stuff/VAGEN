@@ -391,6 +391,28 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
             with self.assertRaisesRegex(ValueError, "ID179.*numerical"):
                 _configure_joint_actor_extension(config)
 
+        source = OmegaConf.load(root / "vagen/configs/joint_id180_gate.yaml")
+        env = {
+            "ID180_TRAIN_CONFIG": "/tmp/train_navigation_joint_id180.yaml",
+            "ID180_VAL_CONFIG": "/tmp/val_navigation_joint_id180.yaml",
+            "ID180_ACTOR_MODEL": actor_model,
+            "ID180_PLANNING_CHECKPOINT": planning,
+            "ID180_RUN_OUT": "/tmp/180_gate",
+            "ID180_RUN_NAME": (
+                "180_gate_k4schemeb_jointupdate_dp8_tp8_test"
+            ),
+            "ID180_AGENT_CONFIG": "/tmp/agent.yaml",
+        }
+        with patch.dict(os.environ, env):
+            config = OmegaConf.merge(self._config(), source)
+            training = _configure_joint_actor_extension(config)
+            self.assertEqual(training.run_seed, 42179)
+            self.assertEqual(config.joint_integration_gate.experiment_id, 180)
+            config = OmegaConf.merge(self._config(), source)
+            config.joint_integration_gate.phase = "restore_only"
+            config.trainer.resume_mode = "auto"
+            _configure_joint_actor_extension(config)
+
     def test_rejects_non_target_parallel_layout(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension
 

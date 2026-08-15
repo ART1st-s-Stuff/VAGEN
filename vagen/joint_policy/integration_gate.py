@@ -10,6 +10,9 @@ JOINT_INTEGRATION_GATE_IMPLEMENTATION = "id171_dp8_resume_smoke_v1"
 K4_ID179_INTEGRATION_GATE_IMPLEMENTATION = (
     "id179_k4_single_update_restore_gate_v1"
 )
+K4_ID180_INTEGRATION_GATE_IMPLEMENTATION = (
+    "id180_k4_single_update_restore_gate_v1"
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,10 @@ class JointIntegrationGate:
                 179,
                 {"update_1", "restore_only"},
             ),
+            K4_ID180_INTEGRATION_GATE_IMPLEMENTATION: (
+                180,
+                {"update_1", "restore_only"},
+            ),
         }
         if self.implementation not in contracts:
             raise ValueError("unsupported joint integration gate implementation")
@@ -41,7 +48,10 @@ class JointIntegrationGate:
 
     @property
     def expected_total_training_steps(self) -> int:
-        if self.implementation == K4_ID179_INTEGRATION_GATE_IMPLEMENTATION:
+        if self.implementation in {
+            K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
+            K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
+        }:
             return 1
         return 1 if self.phase == "update_1" else 2
 
@@ -91,6 +101,7 @@ def parse_joint_integration_gate(
 __all__ = [
     "JOINT_INTEGRATION_GATE_IMPLEMENTATION",
     "K4_ID179_INTEGRATION_GATE_IMPLEMENTATION",
+    "K4_ID180_INTEGRATION_GATE_IMPLEMENTATION",
     "JointIntegrationGate",
     "parse_joint_integration_gate",
 ]
