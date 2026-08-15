@@ -345,6 +345,15 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         for micro_index, micro_batch in enumerate(micro_batches):
             micro_batch = micro_batch.to(get_device_id())
             tensors = micro_batch.batch
+            global_micro_valid = tensors["joint_valid_mask"].to(
+                dtype=torch.long
+            ).sum()
+            dist.all_reduce(global_micro_valid, op=dist.ReduceOp.SUM)
+            if int(global_micro_valid.item()) < 1:
+                # Every rank has padding only for this micro-batch.  Skipping on
+                # all ranks preserves collective ordering and avoids inventing
+                # actor, critic, WM, DINO, or SIGReg supervision.
+                continue
             action_tables = tensors["joint_action_token_ids"].to(dtype=torch.long)
             if action_tables.ndim != 2 or not torch.equal(
                 action_tables,

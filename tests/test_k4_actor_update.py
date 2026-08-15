@@ -127,7 +127,7 @@ class K4ActorUpdateTest(unittest.TestCase):
         )
         self.assertEqual(float(first + second), 4.0)
 
-    def test_one_update_changes_actor_projector_predictor_and_value_head(self) -> None:
+    def test_one_update_skips_empty_trailing_microbatch_and_changes_all_modules(self) -> None:
         import numpy as np
         import torch
         from torch import nn
@@ -163,7 +163,11 @@ class K4ActorUpdateTest(unittest.TestCase):
                 return sequence.square().mean()
 
         class Teacher:
+            def __init__(self):
+                self.calls = []
+
             def load_images(self, images, *, device):
+                self.calls.append(list(images))
                 return torch.zeros(len(images), 16, 1024, device=device)
 
         model = JointWorldModelCritic(
@@ -192,7 +196,7 @@ class K4ActorUpdateTest(unittest.TestCase):
         actor.device_name = "cpu"
         actor.param_dtype = torch.float32
         actor.config = SimpleNamespace(
-            ppo_mini_batch_size=2,
+            ppo_mini_batch_size=4,
             ppo_micro_batch_size_per_gpu=2,
             use_kl_loss=False,
             entropy_coeff=0.0,
@@ -209,43 +213,74 @@ class K4ActorUpdateTest(unittest.TestCase):
         actor._last_k4_transport = None
         actor.current_k4_world_model = DistributedDataParallel(planning)
         actor.joint_planning_optimizer = build_k4_planning_optimizer(planning)
-        actor.k4_dino_grid_targets = Teacher()
+        teacher = Teacher()
+        actor.k4_dino_grid_targets = teacher
         actor.current_joint_critic = None
         actor.joint_critic_optimizer = None
 
         action_logits = actor.actor_module.bias.detach()[torch.tensor([1, 5])]
-        behavior_log_probs = torch.log_softmax(action_logits, dim=-1)
+        behavior_log_probs = torch.cat(
+            (torch.log_softmax(action_logits, dim=-1), torch.zeros(2))
+        )
         future_mask = torch.tensor(
-            [[True, False, False, False], [True, False, False, False]]
+            [
+                [True, False, False, False],
+                [True, False, False, False],
+                [False, False, False, False],
+                [False, False, False, False],
+            ]
         )
         images = np.array(
-            [["next-0", None, None, None], ["next-1", None, None, None]],
+            [
+                ["next-0", None, None, None],
+                ["next-1", None, None, None],
+                [None, None, None, None],
+                [None, None, None, None],
+            ],
             dtype=object,
         )
         data = DataProto.from_dict(
             tensors={
-                "input_ids": torch.tensor([[3, 4, 1, 2], [4, 3, 2, 5]]),
-                "attention_mask": torch.ones(2, 4, dtype=torch.long),
-                "position_ids": torch.arange(4).expand(2, -1),
-                "responses": torch.tensor([[1, 2], [2, 5]]),
-                "response_mask": torch.ones(2, 2, dtype=torch.long),
-                "joint_action_token_ids": torch.tensor([[1, 5], [1, 5]]),
-                "joint_prior_token_ids": torch.tensor([1, 5]),
-                "joint_prior_response_indices": torch.tensor([0, 1]),
-                "joint_guided_action_ids": torch.tensor([0, 1]),
+                "input_ids": torch.tensor(
+                    [
+                        [3, 4, 1, 2],
+                        [4, 3, 2, 5],
+                        [3, 4, 1, 2],
+                        [4, 3, 2, 5],
+                    ]
+                ),
+                "attention_mask": torch.ones(4, 4, dtype=torch.long),
+                "position_ids": torch.arange(4).expand(4, -1),
+                "responses": torch.tensor(
+                    [[1, 2], [2, 5], [1, 2], [2, 5]]
+                ),
+                "response_mask": torch.tensor(
+                    [[1, 1], [1, 1], [0, 0], [0, 0]]
+                ),
+                "joint_action_token_ids": torch.tensor(
+                    [[1, 5], [1, 5], [1, 5], [1, 5]]
+                ),
+                "joint_prior_token_ids": torch.tensor([1, 5, 1, 5]),
+                "joint_prior_response_indices": torch.tensor([0, 1, 0, 1]),
+                "joint_guided_action_ids": torch.tensor([0, 1, 0, 1]),
                 "joint_behavior_guided_log_probs": behavior_log_probs,
-                "joint_frozen_planner_root_mean_values": torch.zeros(2, 2),
-                "joint_frozen_direct_all_action_q": torch.zeros(2, 2),
-                "joint_advantages": torch.tensor([1.0, -1.0]),
-                "joint_valid_mask": torch.tensor([True, True]),
-                "joint_critic_hidden": torch.randn(2, 16, 2),
-                "joint_critic_returns": torch.tensor([1.0, 0.0]),
-                "joint_wm_future_hidden": torch.randn(2, 4, 16, 2),
+                "joint_frozen_planner_root_mean_values": torch.zeros(4, 2),
+                "joint_frozen_direct_all_action_q": torch.zeros(4, 2),
+                "joint_advantages": torch.tensor([1.0, -1.0, 0.0, 0.0]),
+                "joint_valid_mask": torch.tensor([True, True, False, False]),
+                "joint_critic_hidden": torch.randn(4, 16, 2),
+                "joint_critic_returns": torch.tensor([1.0, 0.0, 0.0, 0.0]),
+                "joint_wm_future_hidden": torch.randn(4, 4, 16, 2),
                 "joint_wm_future_action_ids": torch.tensor(
-                    [[0, 0, 0, 0], [1, 0, 0, 0]]
+                    [
+                        [0, 0, 0, 0],
+                        [1, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                    ]
                 ),
                 "joint_wm_future_valid_mask": future_mask,
-                "joint_reference_token_log_probs": torch.full((2, 2), -2.0),
+                "joint_reference_token_log_probs": torch.full((4, 2), -2.0),
             },
             non_tensors={"joint_wm_future_images": images},
             meta_info={"temperature": 1.0},
@@ -281,6 +316,7 @@ class K4ActorUpdateTest(unittest.TestCase):
                 ),
                 prefix,
             )
+        self.assertEqual(teacher.calls, [["next-0", "next-1"]])
         self.assertEqual(metrics["wm/window_count"], [2.0])
         self.assertGreater(metrics["wm/sigreg_loss_sum"][0], 0.0)
         self.assertIn("planning/grad_norm", metrics)
