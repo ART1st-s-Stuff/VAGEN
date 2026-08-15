@@ -236,18 +236,25 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
         planning = AsyncMock(
             return_value={
                 "snapshot_id": "sha256:" + "1" * 64,
-                "snapshot_source_step": 776,
+                "source_step": 776,
                 "contract_id": "contract-k4",
+                "activation_version": 3,
+                "tensor_parallel_rank": 0,
+                "scored": True,
                 "score_dtype": "float32",
+                "planning_config": {
+                    "horizon": 4,
+                    "num_simulations": 100,
+                    "exploration_constant": 1.0,
+                },
                 "direct_all_action_q": [float(index) for index in range(8)],
                 "planner_root_mean_values": [
                     float(index) / 10.0 for index in range(8)
                 ],
                 "planner_root_visit_counts": [13, 13, 13, 13, 12, 12, 12, 12],
-                "planner_candidate_action_sequences": [
-                    [0, 1, 2, 3] for _ in range(100)
-                ],
-                "planner_candidate_leaf_values": [0.5] * 100,
+                "candidate_sequences": [[0, 1, 2, 3] for _ in range(100)],
+                "candidate_mean_values": [0.5] * 100,
+                "candidate_visit_counts": [1] * 100,
                 "planner_latency_seconds": 0.125,
             }
         )
@@ -255,13 +262,8 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
             "max_new_tokens": 2,
             "logprobs": 8,
             "extra_args": {
-                "nimloth_expected_planning_snapshot_id": "sha256:" + "1" * 64,
-                "nimloth_expected_planning_snapshot_source_step": 776,
-                "nimloth_expected_planning_contract_id": "contract-k4",
-                "nimloth_expected_planning_score_dtype": "float32",
-                "nimloth_expected_planning_horizon": 4,
-                "nimloth_expected_mcts_num_simulations": 100,
-                "nimloth_expected_mcts_exploration_constant": 1.0,
+                "nimloth_k4_expected_snapshot_id": "sha256:" + "1" * 64,
+                "nimloth_k4_expected_activation_version": 3,
                 "nimloth_turn_response": {
                     "close_text": "</think>",
                     "close_token_ids": [7],
@@ -272,6 +274,12 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
                     "max_reasoning_tokens": 4,
                 },
             },
+        }
+        server = _Server()
+        server._nimloth_planner_lock = asyncio.Lock()
+        server._nimloth_planner_identity = {
+            "snapshot_id": "sha256:" + "1" * 64,
+            "activation_version": 3,
         }
         with (
             patch(
@@ -297,7 +305,7 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
         ):
             output = asyncio.run(
                 NimlothVLLMHttpServer.generate.__wrapped__(
-                    _Server(),
+                    server,
                     prompt_ids=[1, 2],
                     sampling_params=sampling,
                     request_id="generation-k4",
@@ -307,14 +315,14 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
 
         planning.assert_awaited_once()
         kwargs = planning.await_args.kwargs
-        self.assertIs(kwargs["engine"], _Server.engine)
-        self.assertEqual(kwargs["root_latent_hidden"].tolist(), [[1.0, 2.0], [3.0, 4.0]])
-        self.assertEqual(kwargs["expected_horizon"], 4)
-        self.assertEqual(kwargs["expected_num_simulations"], 100)
+        self.assertIs(kwargs["engine"], server.engine)
+        self.assertEqual(kwargs["latent_hidden"].tolist(), [[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(kwargs["expected_snapshot_id"], "sha256:" + "1" * 64)
+        self.assertEqual(kwargs["expected_activation_version"], 3)
         self.assertEqual(output.policy_state["schema"], "nimloth_policy_state_k4_mcts_v1")
         self.assertEqual(output.policy_state["request_id"], "request-k4")
         self.assertEqual(output.policy_state["generation_id"], "generation-k4")
-        self.assertEqual(output.policy_state["planning"]["planner_root_visit_counts"], [13, 13, 13, 13, 12, 12, 12, 12])
+        self.assertEqual(output.policy_state["frozen_k4_planning"]["planner_root_visit_counts"], [13, 13, 13, 13, 12, 12, 12, 12])
         self.assertEqual(output.policy_state["action_logits"], [float(index) for index in range(8)])
 
     def test_terminal_mode_returns_latent_only_state_without_action_evidence(self) -> None:
