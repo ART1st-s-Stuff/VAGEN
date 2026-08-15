@@ -158,7 +158,7 @@ class K4WorldModelUpdateTest(unittest.TestCase):
         import tempfile
         from types import SimpleNamespace
 
-        from vagen.joint_policy.actor import DataParallelPPOActor
+        from vagen.joint_policy.actor import JointDataParallelPPOActor
         from vagen.joint_policy.k4_world_model_update import (
             build_k4_planning_optimizer,
         )
@@ -169,7 +169,7 @@ class K4WorldModelUpdateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             module = self._module()
             module.config = _config(temporary)
-            actor = object.__new__(DataParallelPPOActor)
+            actor = object.__new__(JointDataParallelPPOActor)
             actor.joint_policy = K4MCTSGuidedPolicyConfig.from_mapping(
                 {
                     "implementation": "k4_mcts_guided_v1",
