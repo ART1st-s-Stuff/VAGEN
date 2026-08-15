@@ -20,6 +20,12 @@ from .planning_contract import (
     k4_guided_log_probs_reference,
     parse_k4_mcts_joint_policy_section,
 )
+from .k4_training_contract import (
+    K4PlanningOptimizerConfig,
+    K4WorldModelTrainingConfig,
+    k4_world_model_training_contract_id,
+    parse_k4_world_model_training_section,
+)
 from .planning_execution import (
     K4_GUIDED_ACTION_EXECUTION_SCHEMA,
     K4MCTSGuidedActionExecutionRequest,
@@ -72,6 +78,8 @@ __all__ = [
     "K4MCTSGuidedActionExecutionRequest",
     "K4MCTSGuidedBehaviorRecord",
     "K4MCTSGuidedPolicyConfig",
+    "K4PlanningOptimizerConfig",
+    "K4WorldModelTrainingConfig",
     "JointActorOptimizerConfig",
     "JointCriticOptimizerConfig",
     "JointTrainingConfig",
@@ -81,9 +89,11 @@ __all__ = [
     "guided_log_probs_reference",
     "joint_training_contract_id",
     "k4_guided_log_probs_reference",
+    "k4_world_model_training_contract_id",
     "parse_guided_action_execution_request",
     "parse_joint_policy_section",
     "parse_k4_mcts_joint_policy_section",
+    "parse_k4_world_model_training_section",
     "parse_joint_training_section",
     "frozen_q_guided_log_probs",
     "replay_guided_behavior_log_probs",

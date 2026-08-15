@@ -206,18 +206,32 @@ def _configure_joint_actor_extension(config):
     """Install the explicit custom actor without enabling stock PPO fallback."""
 
     from omegaconf import OmegaConf, open_dict
-    from vagen.joint_policy import parse_joint_policy_section
+    from vagen.joint_policy import (
+        K4MCTSGuidedPolicyConfig,
+        parse_joint_policy_section,
+        parse_k4_world_model_training_section,
+    )
     from vagen.joint_policy.integration_gate import parse_joint_integration_gate
     from vagen.joint_policy.training_contract import parse_joint_training_section
 
     raw_training = config.get("joint_training", {"enabled": False})
     raw_policy = config.get("joint_policy", {"enabled": False})
+    raw_k4_world_model = config.get(
+        "k4_world_model_training",
+        {"enabled": False},
+    )
     if OmegaConf.is_config(raw_training):
         raw_training = OmegaConf.to_container(raw_training, resolve=True)
     if OmegaConf.is_config(raw_policy):
         raw_policy = OmegaConf.to_container(raw_policy, resolve=True)
+    if OmegaConf.is_config(raw_k4_world_model):
+        raw_k4_world_model = OmegaConf.to_container(
+            raw_k4_world_model,
+            resolve=True,
+        )
     training = parse_joint_training_section(raw_training)
     policy = parse_joint_policy_section(raw_policy)
+    k4_world_model = parse_k4_world_model_training_section(raw_k4_world_model)
     raw_gate = config.get("joint_integration_gate", {"enabled": False})
     if OmegaConf.is_config(raw_gate):
         raw_gate = OmegaConf.to_container(raw_gate, resolve=True)
@@ -229,7 +243,21 @@ def _configure_joint_actor_extension(config):
     if training is None:
         if integration_gate is not None:
             raise ValueError("joint integration gate requires enabled joint training")
+        if k4_world_model is not None:
+            raise ValueError("K4 world-model training requires joint training")
         return None
+    is_k4 = isinstance(policy, K4MCTSGuidedPolicyConfig)
+    if is_k4 != (k4_world_model is not None):
+        raise ValueError(
+            "K4 joint policy and k4_world_model_training must be enabled together"
+        )
+    if (
+        k4_world_model is not None
+        and k4_world_model.planning_checkpoint != training.critic_checkpoint
+    ):
+        raise ValueError(
+            "K4 world-model and joint critic checkpoint roots must match"
+        )
     actor = config.actor_rollout_ref.actor
     model = config.actor_rollout_ref.model
     if config.actor_rollout_ref.rollout.name != "nimloth_vllm":
@@ -316,6 +344,11 @@ def _configure_joint_actor_extension(config):
         actor.custom_config = {
             "joint_policy": custom_policy,
             "joint_training": raw_training,
+            **(
+                {"k4_world_model_training": raw_k4_world_model}
+                if k4_world_model is not None
+                else {}
+            ),
         }
     return training
 

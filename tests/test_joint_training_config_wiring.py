@@ -270,12 +270,67 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
                 "mcts_num_simulations": 100,
                 "mcts_exploration_constant": 1.0,
             }
+            config.k4_world_model_training = {
+                "enabled": True,
+                "implementation": "k4_world_model_update_v1",
+                "planning_checkpoint": "/tmp/id74",
+                "snapshot_transport_root": "/tmp/k4-snapshots",
+                "prediction_horizon": 4,
+                "minimum_window_depth": 1,
+                "maximum_window_depth": 4,
+                "state_mse_weight": 1.0,
+                "dino_grid_weight": 0.5,
+                "sigreg_weight": 0.1,
+                "sigreg_knots": 17,
+                "sigreg_num_proj": 1024,
+                "dino_identity": {
+                    "source": "facebook/dinov2-large",
+                    "revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+                    "processor_fingerprint": "7d65a7de8788e87d",
+                    "hidden_size": 1024,
+                    "grid_size": 4,
+                },
+                "grad_clip": 1.0,
+                "optimizer": {
+                    "name": "adamw",
+                    "projector_lr": 1e-4,
+                    "predictor_lr": 1e-4,
+                    "value_head_lr": 1e-4,
+                    "betas": [0.9, 0.95],
+                    "eps": 1e-8,
+                    "weight_decay": 0.01,
+                },
+            }
         _configure_joint_actor_extension(config)
         custom = config.actor_rollout_ref.actor.custom_config.joint_policy
         self.assertEqual(custom.beta, 85.78297006578457)
         self.assertEqual(custom.planning_horizon, 4)
         self.assertEqual(custom.mcts_num_simulations, 100)
         self.assertNotIn("enabled", custom)
+        wm = config.actor_rollout_ref.actor.custom_config.k4_world_model_training
+        self.assertEqual(wm.state_mse_weight, 1.0)
+        self.assertEqual(wm.optimizer.predictor_lr, 1e-4)
+
+    def test_rejects_k4_policy_without_world_model_contract(self) -> None:
+        from omegaconf import open_dict
+        from vagen.main_ppo import _configure_joint_actor_extension
+
+        config = self._config()
+        with open_dict(config):
+            config.joint_policy = {
+                "enabled": True,
+                "implementation": "k4_mcts_guided_v1",
+                "alpha": 1.0,
+                "beta": 85.78297006578457,
+                "prior_temperature": 1.0,
+                "backprop_to_llm": True,
+                "score_dtype": "float32",
+                "planning_horizon": 4,
+                "mcts_num_simulations": 100,
+                "mcts_exploration_constant": 1.0,
+            }
+        with self.assertRaisesRegex(ValueError, "enabled together"):
+            _configure_joint_actor_extension(config)
 
     def test_allows_only_human_approved_id171_integration_gate(self) -> None:
         from vagen.main_ppo import _configure_joint_actor_extension

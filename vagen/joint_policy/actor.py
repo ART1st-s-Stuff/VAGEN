@@ -16,6 +16,7 @@ from verl.utils.device import get_device_id
 from verl.workers.actor.dp_actor import DataParallelPPOActor
 
 from .contract import FrozenQGuidedPolicyConfig, parse_joint_policy_section
+from .k4_training_contract import parse_k4_world_model_training_section
 from .planning_contract import K4MCTSGuidedPolicyConfig
 from .critic_loss import selected_action_huber_loss
 from .training_contract import JointTrainingConfig, parse_joint_training_section
@@ -34,9 +35,19 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
     def __init__(self, config, actor_module, actor_optimizer=None):
         super().__init__(config, actor_module, actor_optimizer)
         raw = config.custom_config
-        if not isinstance(raw, Mapping) or set(raw) != {"joint_policy", "joint_training"}:
+        if not isinstance(raw, Mapping):
+            raise ValueError("joint custom actor config must be a mapping")
+        k4_requested = (
+            isinstance(raw.get("joint_policy"), Mapping)
+            and raw["joint_policy"].get("implementation")
+            == "k4_mcts_guided_v1"
+        )
+        expected_fields = {"joint_policy", "joint_training"} | (
+            {"k4_world_model_training"} if k4_requested else set()
+        )
+        if set(raw) != expected_fields:
             raise ValueError(
-                "joint custom actor requires exact joint_policy and joint_training configs"
+                "joint custom actor config fields do not match its policy implementation"
             )
         self.joint_training = parse_joint_training_section(raw["joint_training"])
         if self.joint_training is None:
@@ -46,6 +57,17 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         )
         if self.joint_policy is None:
             raise ValueError("joint custom actor requires enabled joint policy")
+        self.k4_world_model_training = (
+            parse_k4_world_model_training_section(
+                raw["k4_world_model_training"]
+            )
+            if k4_requested
+            else None
+        )
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig) != (
+            self.k4_world_model_training is not None
+        ):
+            raise ValueError("joint actor K4 policy/world-model config mismatch")
         if self.use_fused_kernels:
             raise ValueError("joint guided actor requires use_fused_kernels=false")
         if self.config.ppo_epochs != 1:
