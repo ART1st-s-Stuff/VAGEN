@@ -921,7 +921,7 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         )
         if (
             transport.snapshot_id != snapshot.snapshot_id
-            or transport.source_step != source_step
+            or transport.snapshot_source_step != source_step
             or transport.contract_id != raw["contract_id"]
             or transport.score_dtype != raw["score_dtype"]
         ):
