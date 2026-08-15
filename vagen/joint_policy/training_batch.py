@@ -449,6 +449,12 @@ def _compile_k4_future_hidden(
         (size, prediction_horizon),
         dtype=np.bool_,
     )
+    future_images = np.empty((size, prediction_horizon), dtype=object)
+    future_images.fill(None)
+    if "image_data" not in batch.non_tensor_batch:
+        raise ValueError("K4 WM batch requires per-turn image_data")
+    if "terminal_image_data" not in batch.non_tensor_batch:
+        raise ValueError("K4 WM batch requires terminal_image_data")
     trajectories: dict[tuple[str, int], list[int]] = {}
     for index, row in enumerate(rows):
         identity = (str(row["group_idx"]), int(row["traj_idx"]))
@@ -461,6 +467,10 @@ def _compile_k4_future_hidden(
             batch.non_tensor_batch["terminal_state_trace"][final_index]
         )
         terminal_hidden = np.asarray(terminal.latent_hidden, dtype=np.float32)
+        terminal_image = _latest_image(
+            batch.non_tensor_batch["terminal_image_data"][final_index],
+            "terminal_image_data",
+        )
         if terminal_hidden.shape != (grid_tokens, hidden_dim):
             raise ValueError(
                 "K4 WM terminal hidden shape does not match policy state: "
@@ -470,6 +480,13 @@ def _compile_k4_future_hidden(
             np.asarray(policy_states[index]["latent_hidden"], dtype=np.float32)
             for index in indices
         ] + [terminal_hidden]
+        image_sequence = [
+            _latest_image(
+                batch.non_tensor_batch["image_data"][index],
+                "image_data",
+            )
+            for index in indices
+        ] + [terminal_image]
         if any(value.shape != (grid_tokens, hidden_dim) for value in state_sequence):
             raise ValueError("K4 WM policy hidden shapes are inconsistent")
         for position, source_index in enumerate(indices):
@@ -479,11 +496,21 @@ def _compile_k4_future_hidden(
                 action_index = indices[position + offset]
                 future_actions[source_index, offset] = executed_action_ids[action_index]
                 future_hidden[source_index, offset] = state_sequence[position + offset + 1]
+                future_images[source_index, offset] = image_sequence[position + offset + 1]
                 future_valid[source_index, offset] = True
     batch.batch["joint_wm_future_hidden"] = torch.from_numpy(future_hidden)
     batch.batch["joint_wm_future_action_ids"] = torch.from_numpy(future_actions)
     batch.batch["joint_wm_future_valid_mask"] = torch.from_numpy(future_valid)
+    batch.non_tensor_batch["joint_wm_future_images"] = future_images
     batch.meta_info["joint_wm_window_count"] = window_count
+
+
+def _latest_image(raw: Any, field: str) -> Any:
+    if isinstance(raw, np.ndarray):
+        raw = raw.tolist()
+    if not isinstance(raw, (list, tuple)) or not raw or raw[-1] is None:
+        raise ValueError(f"K4 WM {field} must contain a real observation image")
+    return raw[-1]
 
 
 def _response_trace(raw: Any) -> Mapping[str, Any]:

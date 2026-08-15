@@ -111,32 +111,95 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         self._joint_world_size = dist.get_world_size()
         self._joint_rank = dist.get_rank()
         device = get_device_id()
-        from nimloth.training.rl.joint_critic import load_joint_action_value_critic
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            from nimloth.backbone import (
+                DINOV2_LARGE_IDENTITY,
+                FrozenDINOGridTargets,
+            )
+            from nimloth.training.rl.joint_planner import (
+                load_joint_world_model_critic,
+            )
+            from vagen.joint_policy.k4_world_model_update import (
+                K4WorldModelUpdateModule,
+                build_k4_planning_optimizer,
+            )
 
-        critic = load_joint_action_value_critic(
-            checkpoint_root=Path(self.joint_training.critic_checkpoint),
-            expected_qwen_hidden_dim=self.joint_training.critic_qwen_hidden_dim,
-            expected_grid_tokens=self.joint_training.critic_grid_tokens,
-            expected_state_dim=self.joint_training.critic_state_dim,
-            expected_action_count=self.joint_training.critic_action_count,
-            device=device,
-            trainable=True,
-        )
-        critic.train(True)
-        self.current_joint_critic = DistributedDataParallel(
-            critic,
-            device_ids=[device],
-            output_device=device,
-            broadcast_buffers=False,
-        )
-        optim = self.joint_training.critic_optimizer
-        self.joint_critic_optimizer = torch.optim.AdamW(
-            self.current_joint_critic.parameters(),
-            lr=optim.lr,
-            betas=optim.betas,
-            eps=optim.eps,
-            weight_decay=optim.weight_decay,
-        )
+            assert self.k4_world_model_training is not None
+            planning_model = load_joint_world_model_critic(
+                checkpoint_root=Path(
+                    self.k4_world_model_training.planning_checkpoint
+                ),
+                expected_qwen_hidden_dim=(
+                    self.joint_training.critic_qwen_hidden_dim
+                ),
+                expected_grid_tokens=self.joint_training.critic_grid_tokens,
+                expected_state_dim=self.joint_training.critic_state_dim,
+                expected_action_count=self.joint_training.critic_action_count,
+                expected_prediction_horizon=(
+                    self.k4_world_model_training.prediction_horizon
+                ),
+                device=device,
+                trainable=True,
+            )
+            planning_update = K4WorldModelUpdateModule(
+                planning_model,
+                self.k4_world_model_training,
+            ).train(True)
+            self.current_k4_world_model = DistributedDataParallel(
+                planning_update,
+                device_ids=[device],
+                output_device=device,
+                broadcast_buffers=False,
+            )
+            self.joint_planning_optimizer = build_k4_planning_optimizer(
+                self.current_k4_world_model.module
+            )
+            teacher_dtype = (
+                torch.bfloat16
+                if torch.device(device).type == "cuda"
+                else torch.float32
+            )
+            self.k4_dino_grid_targets = FrozenDINOGridTargets.from_pretrained(
+                DINOV2_LARGE_IDENTITY,
+                device=torch.device(device),
+                dtype=teacher_dtype,
+                grid_size=self.k4_world_model_training.dino_identity["grid_size"],
+                batch_size=self.config.ppo_micro_batch_size_per_gpu * 4,
+            )
+            self.current_joint_critic = None
+            self.joint_critic_optimizer = None
+        else:
+            from nimloth.training.rl.joint_critic import (
+                load_joint_action_value_critic,
+            )
+
+            critic = load_joint_action_value_critic(
+                checkpoint_root=Path(self.joint_training.critic_checkpoint),
+                expected_qwen_hidden_dim=self.joint_training.critic_qwen_hidden_dim,
+                expected_grid_tokens=self.joint_training.critic_grid_tokens,
+                expected_state_dim=self.joint_training.critic_state_dim,
+                expected_action_count=self.joint_training.critic_action_count,
+                device=device,
+                trainable=True,
+            )
+            critic.train(True)
+            self.current_joint_critic = DistributedDataParallel(
+                critic,
+                device_ids=[device],
+                output_device=device,
+                broadcast_buffers=False,
+            )
+            optim = self.joint_training.critic_optimizer
+            self.joint_critic_optimizer = torch.optim.AdamW(
+                self.current_joint_critic.parameters(),
+                lr=optim.lr,
+                betas=optim.betas,
+                eps=optim.eps,
+                weight_decay=optim.weight_decay,
+            )
+            self.current_k4_world_model = None
+            self.joint_planning_optimizer = None
+            self.k4_dino_grid_targets = None
         self._joint_completed_updates = 0
         self._joint_contract_id: str | None = None
 
@@ -167,7 +230,15 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             "joint_critic_returns",
         }
         if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
-            required.add("joint_frozen_planner_root_mean_values")
+            required.update(
+                {
+                    "joint_frozen_planner_root_mean_values",
+                    "joint_frozen_direct_all_action_q",
+                    "joint_wm_future_hidden",
+                    "joint_wm_future_action_ids",
+                    "joint_wm_future_valid_mask",
+                }
+            )
         else:
             required.add("joint_frozen_all_action_q")
         if self.joint_training.token_kl_coefficient > 0.0:
@@ -180,18 +251,34 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                 "stock token PPO KL/entropy must be disabled for joint guided actor"
             )
 
-        data = data.select(batch_keys=sorted(required))
+        data = data.select(
+            batch_keys=sorted(required),
+            non_tensor_batch_keys=(
+                ["joint_wm_future_images"]
+                if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig)
+                else []
+            ),
+        )
         mini_batches = data.split(self.config.ppo_mini_batch_size)
         metrics: dict[str, list[float]] = {}
         for mini_batch in mini_batches:
             self._update_joint_mini_batch(mini_batch, metrics)
         self.actor_optimizer.zero_grad()
-        self.joint_critic_optimizer.zero_grad()
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            assert self.joint_planning_optimizer is not None
+            assert self.current_k4_world_model is not None
+            self.joint_planning_optimizer.zero_grad()
+            planning_parameters = self.current_k4_world_model.parameters()
+        else:
+            assert self.joint_critic_optimizer is not None
+            assert self.current_joint_critic is not None
+            self.joint_critic_optimizer.zero_grad()
+            planning_parameters = self.current_joint_critic.parameters()
         if any(
             not torch.isfinite(parameter).all()
-            for parameter in self.current_joint_critic.parameters()
+            for parameter in planning_parameters
         ):
-            raise RuntimeError("joint critic parameters became non-finite")
+            raise RuntimeError("joint planning parameters became non-finite")
         self._joint_completed_updates += 1
         metrics.setdefault("joint/completed_updates", []).append(
             float(self._joint_completed_updates)
@@ -217,6 +304,17 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
                 raise ValueError("joint PPO mini-batch contains no reference KL tokens")
         else:
             global_token_count = None
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            local_windows = (
+                mini_batch.batch["joint_wm_future_valid_mask"].to(dtype=torch.bool)
+                & mini_batch.batch["joint_valid_mask"].to(dtype=torch.bool).unsqueeze(-1)
+            ).sum().to(get_device_id())
+            global_windows = local_windows.clone()
+            dist.all_reduce(global_windows, op=dist.ReduceOp.SUM)
+            if int(global_windows.item()) < 1:
+                raise ValueError("K4 joint mini-batch contains no valid WM window")
+        else:
+            global_windows = None
 
         actor_scale = self._joint_world_size / float(global_valid.item())
         token_scale = (
@@ -225,14 +323,23 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             else self._joint_world_size / float(global_token_count.item())
         )
         self.actor_optimizer.zero_grad()
-        self.joint_critic_optimizer.zero_grad()
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            assert self.joint_planning_optimizer is not None
+            self.joint_planning_optimizer.zero_grad()
+        else:
+            assert self.joint_critic_optimizer is not None
+            self.joint_critic_optimizer.zero_grad()
         actor_loss_value = 0.0
         policy_sum_value = 0.0
         entropy_sum_value = 0.0
         token_kl_sum_value = 0.0
         critic_sum_value = 0.0
+        wm_state_sum_value = 0.0
+        wm_dino_sum_value = 0.0
+        sigreg_value = 0.0
+        wm_window_count_value = 0.0
 
-        for micro_batch in micro_batches:
+        for micro_index, micro_batch in enumerate(micro_batches):
             micro_batch = micro_batch.to(get_device_id())
             tensors = micro_batch.batch
             action_tables = tensors["joint_action_token_ids"].to(dtype=torch.long)
@@ -317,48 +424,149 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             policy_sum_value += float(ppo.policy_loss_sum.detach().item())
             entropy_sum_value += float(ppo.entropy_sum.detach().item())
 
-            hidden = tensors["joint_critic_hidden"].to(
-                dtype=next(self.current_joint_critic.parameters()).dtype,
-            )
-            all_action_values = self.current_joint_critic(hidden)
-            critic_terms = selected_action_huber_loss(
-                all_action_values,
-                tensors["joint_guided_action_ids"],
-                tensors["joint_critic_returns"],
-                delta=self.joint_training.critic_huber_delta,
-                reduction="none",
-            )
-            critic_loss_sum = (
-                critic_terms.per_sample_loss * valid_mask.to(
-                    dtype=critic_terms.per_sample_loss.dtype
+            if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+                assert self.current_k4_world_model is not None
+                assert self.k4_world_model_training is not None
+                assert global_windows is not None
+                planning_dtype = next(
+                    self.current_k4_world_model.parameters()
+                ).dtype
+                future_dino = _k4_dino_target_tensor(
+                    self.k4_dino_grid_targets,
+                    micro_batch.non_tensor_batch["joint_wm_future_images"],
+                    (
+                        tensors["joint_wm_future_valid_mask"].to(dtype=torch.bool)
+                        & valid_mask.unsqueeze(-1)
+                    ),
+                    device=get_device_id(),
+                    grid_tokens=self.joint_training.critic_grid_tokens,
+                    state_dim=self.joint_training.critic_state_dim,
                 )
-            ).sum()
-            critic_loss = actor_scale * critic_loss_sum
-            critic_loss.backward()
-            critic_sum_value += float(critic_loss_sum.detach().item())
+                planning = self.current_k4_world_model(
+                    current_hidden=tensors["joint_critic_hidden"].to(
+                        dtype=planning_dtype
+                    ),
+                    future_hidden=tensors["joint_wm_future_hidden"].to(
+                        dtype=planning_dtype
+                    ),
+                    future_action_ids=tensors[
+                        "joint_wm_future_action_ids"
+                    ].to(dtype=torch.long),
+                    future_valid_mask=tensors[
+                        "joint_wm_future_valid_mask"
+                    ],
+                    valid_row_mask=valid_mask,
+                    guided_action_ids=tensors[
+                        "joint_guided_action_ids"
+                    ].to(dtype=torch.long),
+                    critic_returns=tensors["joint_critic_returns"],
+                    future_dino_grid_targets=future_dino,
+                    sigreg_seed=(
+                        self.joint_training.run_seed
+                        + self._joint_completed_updates * 1_000_003
+                        + micro_index
+                    ),
+                )
+                wm_scale = self._joint_world_size / float(
+                    global_windows.item()
+                )
+                planning_loss = (
+                    wm_scale
+                    * (
+                        self.k4_world_model_training.state_mse_weight
+                        * planning.state_window_loss_sum
+                        + self.k4_world_model_training.dino_grid_weight
+                        * planning.dino_window_loss_sum
+                    )
+                    + actor_scale * planning.critic_loss_sum
+                    + self.k4_world_model_training.sigreg_weight
+                    * planning.sigreg_loss
+                )
+                planning_loss.backward()
+                critic_sum_value += float(
+                    planning.critic_loss_sum.detach().item()
+                )
+                wm_state_sum_value += float(
+                    planning.state_window_loss_sum.detach().item()
+                )
+                wm_dino_sum_value += float(
+                    planning.dino_window_loss_sum.detach().item()
+                )
+                sigreg_value += float(planning.sigreg_loss.detach().item())
+                wm_window_count_value += float(planning.window_count.item())
+            else:
+                assert self.current_joint_critic is not None
+                hidden = tensors["joint_critic_hidden"].to(
+                    dtype=next(self.current_joint_critic.parameters()).dtype,
+                )
+                all_action_values = self.current_joint_critic(hidden)
+                critic_terms = selected_action_huber_loss(
+                    all_action_values,
+                    tensors["joint_guided_action_ids"],
+                    tensors["joint_critic_returns"],
+                    delta=self.joint_training.critic_huber_delta,
+                    reduction="none",
+                )
+                critic_loss_sum = (
+                    critic_terms.per_sample_loss * valid_mask.to(
+                        dtype=critic_terms.per_sample_loss.dtype
+                    )
+                ).sum()
+                critic_loss = actor_scale * critic_loss_sum
+                critic_loss.backward()
+                critic_sum_value += float(critic_loss_sum.detach().item())
 
         actor_grad_norm = self._optimizer_step()
         if not torch.isfinite(actor_grad_norm):
-            self.joint_critic_optimizer.zero_grad()
+            if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+                assert self.joint_planning_optimizer is not None
+                self.joint_planning_optimizer.zero_grad()
+            else:
+                assert self.joint_critic_optimizer is not None
+                self.joint_critic_optimizer.zero_grad()
             raise RuntimeError("joint actor gradient norm is non-finite")
-        critic_grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.current_joint_critic.parameters(),
-            max_norm=self.joint_training.critic_grad_clip,
-        )
-        if not torch.isfinite(critic_grad_norm):
-            raise RuntimeError("joint critic gradient norm is non-finite")
-        self.joint_critic_optimizer.step()
-        self.joint_critic_optimizer.zero_grad()
-        for key, value in {
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            assert self.current_k4_world_model is not None
+            assert self.joint_planning_optimizer is not None
+            assert self.k4_world_model_training is not None
+            planning_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.current_k4_world_model.parameters(),
+                max_norm=self.k4_world_model_training.grad_clip,
+            )
+            if not torch.isfinite(planning_grad_norm):
+                raise RuntimeError("joint planning gradient norm is non-finite")
+            self.joint_planning_optimizer.step()
+            self.joint_planning_optimizer.zero_grad()
+        else:
+            assert self.current_joint_critic is not None
+            assert self.joint_critic_optimizer is not None
+            planning_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.current_joint_critic.parameters(),
+                max_norm=self.joint_training.critic_grad_clip,
+            )
+            if not torch.isfinite(planning_grad_norm):
+                raise RuntimeError("joint critic gradient norm is non-finite")
+            self.joint_critic_optimizer.step()
+            self.joint_critic_optimizer.zero_grad()
+        metric_values = {
             "actor/joint_loss": actor_loss_value,
             "actor/joint_policy_loss_sum": policy_sum_value,
             "actor/guided_entropy_sum": entropy_sum_value,
             "actor/token_kl_sum": token_kl_sum_value,
             "critic/selected_huber_sum": critic_sum_value,
+            "wm/state_window_loss_sum": wm_state_sum_value,
+            "wm/dino_window_loss_sum": wm_dino_sum_value,
+            "wm/sigreg_loss_sum": sigreg_value,
+            "wm/window_count": wm_window_count_value,
             "actor/grad_norm": float(actor_grad_norm.detach().item()),
-            "critic/grad_norm": float(critic_grad_norm.detach().item()),
+            "planning/grad_norm": float(planning_grad_norm.detach().item()),
             "joint/global_valid_turns": float(global_valid.item()),
-        }.items():
+        }
+        if not isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            metric_values["critic/grad_norm"] = float(
+                planning_grad_norm.detach().item()
+            )
+        for key, value in metric_values.items():
             metrics.setdefault(key, []).append(value)
 
     def export_joint_critic_snapshot(
@@ -370,6 +578,10 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
     ) -> dict[str, Any]:
         """Export rank-consistency evidence and rank-zero immutable transport."""
 
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            raise NotImplementedError(
+                "K4 full planner snapshot publication is not connected yet"
+            )
         if source_step != self.joint_source_step:
             raise ValueError(
                 "joint snapshot source step does not match completed updates"
@@ -447,6 +659,10 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
     def load_joint_checkpoint(self, raw: Mapping[str, Any]) -> dict[str, Any]:
         """Restore replicated critic and optimizer before the next rollout."""
 
+        if isinstance(self.joint_policy, K4MCTSGuidedPolicyConfig):
+            raise NotImplementedError(
+                "K4 full planner checkpoint restore is not connected yet"
+            )
         if not isinstance(raw, Mapping):
             raise ValueError("joint actor checkpoint must be a mapping")
         fields = {
@@ -510,6 +726,52 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             "snapshot_id": snapshot.snapshot_id,
             "optimizer_fingerprint": actual_optimizer,
         }
+
+
+def _k4_dino_target_tensor(
+    teacher: Any,
+    raw_images: Any,
+    valid_mask: torch.Tensor,
+    *,
+    device: torch.device,
+    grid_tokens: int,
+    state_dim: int,
+) -> torch.Tensor:
+    if teacher is None:
+        raise RuntimeError("K4 actor has no frozen DINO-grid teacher")
+    mask = valid_mask.detach().cpu().to(dtype=torch.bool)
+    if mask.ndim != 2:
+        raise ValueError("K4 DINO future valid mask must have shape (B,4)")
+    if getattr(raw_images, "shape", None) != tuple(mask.shape):
+        raise ValueError("K4 DINO future image table must align with valid mask")
+    positions = [
+        (row, depth)
+        for row in range(mask.shape[0])
+        for depth in range(mask.shape[1])
+        if bool(mask[row, depth])
+    ]
+    if not positions:
+        raise ValueError("K4 DINO target batch contains no valid image")
+    images = []
+    for row, depth in positions:
+        image = raw_images[row, depth]
+        if image is None:
+            raise ValueError("K4 DINO valid future image is missing")
+        images.append(image)
+    encoded = teacher.load_images(images, device=torch.device(device))
+    expected = (len(images), grid_tokens, state_dim)
+    if tuple(encoded.shape) != expected or not torch.isfinite(encoded).all():
+        raise ValueError(
+            f"K4 DINO teacher target shape mismatch: {tuple(encoded.shape)}"
+        )
+    result = torch.zeros(
+        (*mask.shape, grid_tokens, state_dim),
+        device=torch.device(device),
+        dtype=torch.float32,
+    )
+    for index, (row, depth) in enumerate(positions):
+        result[row, depth] = encoded[index]
+    return result
 
 
 def _nonnegative_int(value: Any, field: str) -> int:

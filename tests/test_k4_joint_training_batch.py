@@ -216,6 +216,10 @@ class K4JointTrainingBatchTest(unittest.TestCase):
                 "policy_response_trace": np.array(traces, dtype=object),
                 "joint_policy_batch_pin": np.array([pin, pin], dtype=object),
                 "terminal_state_trace": np.array([None, terminal], dtype=object),
+                "image_data": np.array([["state-0"], ["state-1"]], dtype=object),
+                "terminal_image_data": np.array(
+                    [None, ["terminal-state"]], dtype=object
+                ),
             },
         )
 
@@ -250,6 +254,13 @@ class K4JointTrainingBatchTest(unittest.TestCase):
                 batch.batch["joint_wm_future_hidden"][0, :2],
                 torch.tensor([[[1.1, 0.2]], [[0.5, 0.6]]]),
             )
+        )
+        self.assertEqual(
+            batch.non_tensor_batch["joint_wm_future_images"].tolist(),
+            [
+                ["state-1", "terminal-state", None, None],
+                ["terminal-state", None, None, None],
+            ],
         )
 
     def test_rejects_terminal_hidden_shape_tampering(self) -> None:

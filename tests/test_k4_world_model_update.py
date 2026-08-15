@@ -154,6 +154,43 @@ class K4WorldModelUpdateTest(unittest.TestCase):
         self.assertEqual(optimizer.defaults["eps"], 1e-8)
         self.assertEqual(optimizer.defaults["weight_decay"], 0.01)
 
+    def test_actor_dino_table_encodes_only_valid_future_images(self) -> None:
+        import numpy as np
+        import torch
+
+        from vagen.joint_policy.actor import _k4_dino_target_tensor
+
+        class Teacher:
+            def __init__(self):
+                self.images = None
+
+            def load_images(self, images, *, device):
+                self.images = list(images)
+                return torch.arange(len(images) * 2, dtype=torch.float32).reshape(
+                    len(images), 1, 2
+                ).to(device)
+
+        teacher = Teacher()
+        images = np.array(
+            [["a", "b", None, None], ["c", None, None, None]],
+            dtype=object,
+        )
+        result = _k4_dino_target_tensor(
+            teacher,
+            images,
+            torch.tensor(
+                [[True, True, False, False], [True, False, False, False]]
+            ),
+            device=torch.device("cpu"),
+            grid_tokens=1,
+            state_dim=2,
+        )
+        self.assertEqual(teacher.images, ["a", "b", "c"])
+        self.assertEqual(result.shape, (2, 4, 1, 2))
+        self.assertTrue(torch.equal(result[0, 0], torch.tensor([[0.0, 1.0]])))
+        self.assertTrue(torch.equal(result[1, 0], torch.tensor([[4.0, 5.0]])))
+        self.assertEqual(float(result[1, 1:].abs().sum()), 0.0)
+
     def test_rejects_nonprefix_future_mask(self) -> None:
         import torch
 

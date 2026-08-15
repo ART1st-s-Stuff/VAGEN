@@ -1136,6 +1136,16 @@ class GymAgentLoop(AgentLoopBase):
                     rollout_stop_reason=rollout_stop_reason,
                 )
                 output.extra_fields["terminal_state_trace"] = terminal_trace
+                if isinstance(
+                    self.joint_policy_config,
+                    K4MCTSGuidedPolicyConfig,
+                ):
+                    terminal_images = agent_data.sys_images + agent_data.cur_images
+                    if not terminal_images:
+                        raise RuntimeError(
+                            "K4 terminal WM supervision requires the real terminal image"
+                        )
+                    output.extra_fields["terminal_image_data"] = terminal_images
             return AgentState.TERMINATED
 
         return AgentState.PENDING
