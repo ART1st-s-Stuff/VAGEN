@@ -7,10 +7,14 @@ from collections.abc import Mapping, Sequence
 from numbers import Real
 from typing import Any
 
-from vagen.joint_policy import GuidedPolicyBehaviorRecord
+from vagen.joint_policy import (
+    GuidedPolicyBehaviorRecord,
+    K4MCTSGuidedBehaviorRecord,
+)
 
 DECISION_LEDGER_SCHEMA = "vagen_decision_ledger_v1"
 GUIDED_DECISION_LEDGER_SCHEMA = "vagen_decision_ledger_v2_frozen_q_guided"
+K4_GUIDED_DECISION_LEDGER_SCHEMA = "vagen_decision_ledger_v3_k4_mcts_guided"
 
 _M1_DECISION_SOURCES = frozenset({"llm_text", "system_fallback"})
 _BASE_REQUIRED_FIELDS = frozenset(
@@ -92,7 +96,7 @@ def build_decision_ledger(
 
 def build_guided_decision_ledger(
     *,
-    behavior: GuidedPolicyBehaviorRecord,
+    behavior: Any,
     env_turn_reward: Real,
     env_terminated: bool,
     rollout_truncated: bool,
@@ -100,15 +104,22 @@ def build_guided_decision_ledger(
 ) -> dict[str, Any]:
     """Derive one M2 ledger from a validated rollout behavior record."""
 
-    behavior = GuidedPolicyBehaviorRecord.from_mapping(behavior.to_mapping())
+    if isinstance(behavior, K4MCTSGuidedBehaviorRecord):
+        behavior = K4MCTSGuidedBehaviorRecord.from_mapping(behavior.to_mapping())
+        schema = K4_GUIDED_DECISION_LEDGER_SCHEMA
+        source = "k4_mcts_guided"
+    else:
+        behavior = GuidedPolicyBehaviorRecord.from_mapping(behavior.to_mapping())
+        schema = GUIDED_DECISION_LEDGER_SCHEMA
+        source = "frozen_q_guided"
     action_id = behavior.guided_action_id
     ledger = _base_ledger(
-        schema=GUIDED_DECISION_LEDGER_SCHEMA,
+        schema=schema,
         action_space=behavior.action_space,
         action_space_names=behavior.action_space_names,
         executed_action_ids=[action_id],
         executed_action_names=[behavior.action_space_names[action_id]],
-        decision_sources=["frozen_q_guided"],
+        decision_sources=[source],
         decision_is_policy_sampled=[True],
         env_turn_reward=env_turn_reward,
         env_terminated=env_terminated,
@@ -178,12 +189,16 @@ def validate_decision_ledger(ledger: Mapping[str, Any]) -> None:
     schema = ledger.get("schema")
     if schema == DECISION_LEDGER_SCHEMA:
         required_fields = _BASE_REQUIRED_FIELDS
-    elif schema == GUIDED_DECISION_LEDGER_SCHEMA:
+    elif schema in {
+        GUIDED_DECISION_LEDGER_SCHEMA,
+        K4_GUIDED_DECISION_LEDGER_SCHEMA,
+    }:
         required_fields = _GUIDED_REQUIRED_FIELDS
     else:
         raise ValueError(
             f"unsupported decision ledger schema: {schema!r}; expected "
-            f"{DECISION_LEDGER_SCHEMA!r} or {GUIDED_DECISION_LEDGER_SCHEMA!r}"
+            f"{DECISION_LEDGER_SCHEMA!r}, {GUIDED_DECISION_LEDGER_SCHEMA!r}, "
+            f"or {K4_GUIDED_DECISION_LEDGER_SCHEMA!r}"
         )
 
     missing = required_fields - set(ledger)
@@ -242,14 +257,23 @@ def validate_decision_ledger(ledger: Mapping[str, Any]) -> None:
     else:
         if len(action_ids) != 1:
             raise ValueError("guided decision ledger must contain exactly one executed action")
-        if sources != ["frozen_q_guided"] or sampled != [True]:
+        expected_source = (
+            "k4_mcts_guided"
+            if schema == K4_GUIDED_DECISION_LEDGER_SCHEMA
+            else "frozen_q_guided"
+        )
+        if sources != [expected_source] or sampled != [True]:
             raise ValueError(
-                "guided decision ledger requires one frozen_q_guided policy-owned action"
+                "guided decision ledger requires one matching policy-owned action"
             )
         for field in ("snapshot_id", "contract_id", "behavior_record_id"):
             if not isinstance(ledger[field], str) or not ledger[field]:
                 raise ValueError(f"guided decision ledger {field} must be non-empty")
-        behavior = GuidedPolicyBehaviorRecord.from_mapping(ledger["behavior_record"])
+        behavior = (
+            K4MCTSGuidedBehaviorRecord.from_mapping(ledger["behavior_record"])
+            if schema == K4_GUIDED_DECISION_LEDGER_SCHEMA
+            else GuidedPolicyBehaviorRecord.from_mapping(ledger["behavior_record"])
+        )
         if ledger["snapshot_id"] != behavior.snapshot_id:
             raise ValueError("guided decision ledger snapshot_id does not match behavior")
         if ledger["contract_id"] != behavior.contract_id:
@@ -449,6 +473,7 @@ def _plain_sequence(value: Any, field: str) -> list[Any]:
 __all__ = [
     "DECISION_LEDGER_SCHEMA",
     "GUIDED_DECISION_LEDGER_SCHEMA",
+    "K4_GUIDED_DECISION_LEDGER_SCHEMA",
     "build_decision_ledger",
     "build_decision_ledger_from_env_info",
     "build_guided_decision_ledger",

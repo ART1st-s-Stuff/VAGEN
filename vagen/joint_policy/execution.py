@@ -162,10 +162,18 @@ class GuidedActionExecutionRequest:
 
 def validate_guided_action_execution_result(
     info: Mapping[str, Any],
-    request: GuidedActionExecutionRequest,
+    request: Any,
 ) -> None:
-    """Prove the environment executed exactly the authorized guided action."""
+    """Prove the environment executed exactly one legacy or K4 guided action."""
 
+    from .planning_execution import (
+        K4MCTSGuidedActionExecutionRequest,
+        validate_k4_guided_action_execution_result,
+    )
+
+    if isinstance(request, K4MCTSGuidedActionExecutionRequest):
+        validate_k4_guided_action_execution_result(info, request)
+        return
     if not isinstance(info, Mapping):
         raise ValueError("guided action execution result info must be a mapping")
     canonical = GuidedActionExecutionRequest.from_mapping(request.to_mapping())

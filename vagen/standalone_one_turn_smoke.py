@@ -26,7 +26,20 @@ def build_config(args: argparse.Namespace) -> Any:
     """Construct only model/rollout/environment config; no optimizer exists."""
 
     joint_policy: dict[str, Any]
-    if getattr(args, "guided", False):
+    if getattr(args, "k4_guided", False):
+        joint_policy = {
+            "enabled": True,
+            "implementation": "k4_mcts_guided_v1",
+            "alpha": args.joint_alpha,
+            "beta": args.joint_beta,
+            "prior_temperature": args.joint_prior_temperature,
+            "backprop_to_llm": True,
+            "score_dtype": args.joint_score_dtype,
+            "planning_horizon": args.planning_horizon,
+            "mcts_num_simulations": args.mcts_num_simulations,
+            "mcts_exploration_constant": args.mcts_exploration_constant,
+        }
+    elif getattr(args, "guided", False):
         joint_policy = {
             "enabled": True,
             "implementation": "frozen_q_guided_v1",
@@ -73,7 +86,7 @@ def build_config(args: argparse.Namespace) -> Any:
                     "expert_parallel_size": 1,
                     "max_num_batched_tokens": args.prompt_length
                     + args.response_length,
-                    "max_num_seqs": 1,
+                    "max_num_seqs": int(getattr(args, "max_num_seqs", 1)),
                     "enable_chunked_prefill": True,
                     "enable_prefix_caching": False,
                     "engine_kwargs": {
@@ -81,7 +94,9 @@ def build_config(args: argparse.Namespace) -> Any:
                     },
                     "agent": {
                         "_target_": "verl.workers.config.AgentLoopConfig",
-                        "num_workers": 1,
+                        "num_workers": int(
+                            getattr(args, "agent_loop_num_workers", 1)
+                        ),
                         "default_agent_loop": "gym_agent",
                         "agent_loop_config_path": str(args.agent_loop_config),
                         "custom_async_server": {

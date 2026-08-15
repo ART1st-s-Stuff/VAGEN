@@ -891,12 +891,24 @@ class AgentLoopManager:
         self.frozen_q_owner = None
         if initial_frozen_q_snapshot_state is None:
             return
-        from vagen.joint_policy.frozen_q_actor import FrozenQScoringActor
+        from vagen.joint_policy import K4MCTSGuidedPolicyConfig
 
-        owner = FrozenQScoringActor.remote(
-            initial_frozen_q_snapshot_state,
-            activation_version=activation_version,
-        )
+        if isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig):
+            from vagen.joint_policy.planning_owner import FrozenK4PlanningActor
+
+            owner = FrozenK4PlanningActor.remote(
+                initial_frozen_q_snapshot_state,
+                self.joint_policy_config.to_mapping(),
+                self.server_handles,
+                activation_version=activation_version,
+            )
+        else:
+            from vagen.joint_policy.frozen_q_actor import FrozenQScoringActor
+
+            owner = FrozenQScoringActor.remote(
+                initial_frozen_q_snapshot_state,
+                activation_version=activation_version,
+            )
         try:
             # Construction, CPU/thread resource validation, and snapshot restore
             # must finish before any worker can receive the handle.

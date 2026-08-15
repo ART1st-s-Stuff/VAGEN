@@ -26,8 +26,10 @@ from omegaconf import OmegaConf
 from vagen.joint_policy import (
     FrozenQGuidedPolicyConfig,
     GuidedActionDrawKey,
+    K4MCTSGuidedPolicyConfig,
     parse_joint_policy_section,
     sample_frozen_q_guided_action,
+    sample_k4_mcts_guided_action,
     validate_guided_action_execution_result,
 )
 import traceback
@@ -173,7 +175,7 @@ async def _build_joint_guided_execution(
     frozen_q_owner: Any,
     batch_pin: Mapping[str, Any],
     expected_draw_key: Mapping[str, Any],
-    policy_config: FrozenQGuidedPolicyConfig,
+    policy_config: Any,
     policy_state: Mapping[str, Any],
     response_ids: Sequence[int],
     response_mask: Sequence[int | bool],
@@ -198,15 +200,16 @@ async def _build_joint_guided_execution(
 
     if frozen_q_owner is None:
         raise RuntimeError("joint guided execution requires a frozen Q owner")
-    if not isinstance(policy_config, FrozenQGuidedPolicyConfig):
-        raise ValueError(
-            "joint guided execution requires FrozenQGuidedPolicyConfig"
-        )
+    if not isinstance(
+        policy_config,
+        (FrozenQGuidedPolicyConfig, K4MCTSGuidedPolicyConfig),
+    ):
+        raise ValueError("joint guided execution requires a supported policy config")
     if not isinstance(policy_state, Mapping):
         raise ValueError("joint guided execution policy_state must be a mapping")
     pin = FrozenQBatchPin.from_mapping(batch_pin)
     draw_key = GuidedActionDrawKey.from_mapping(expected_draw_key)
-    config = FrozenQGuidedPolicyConfig.from_mapping(
+    config = type(policy_config).from_mapping(
         {
             field: getattr(policy_config, field)
             for field in policy_config.__dataclass_fields__
@@ -241,30 +244,25 @@ async def _build_joint_guided_execution(
         raise ValueError(
             "joint guided execution requires distinct request and generation identities"
         )
-    score_result = FrozenQOwnerScoringResult.from_mapping(
-        await frozen_q_owner.score.remote(
-            {
-                "schema": FROZEN_Q_OWNER_SCORE_REQUEST_SCHEMA,
-                "batch_pin": pin.to_mapping(),
-                "policy_state": dict(policy_state),
-                "expected_request_id": request_id,
-                "expected_generation_id": generation_id,
-                "expected_latent_token_ids": list(
-                    generation_spec.injected_token_ids[:-1]
-                ),
-                "expected_action_start_token_id": (
-                    generation_spec.injected_token_ids[-1]
-                ),
-                "expected_action_token_ids": list(
-                    generation_spec.action_token_ids
-                ),
-                "expected_contract_id": pin.contract_id,
-            }
-        )
+    raw_score_result = await frozen_q_owner.score.remote(
+        {
+            "schema": FROZEN_Q_OWNER_SCORE_REQUEST_SCHEMA,
+            "batch_pin": pin.to_mapping(),
+            "policy_state": dict(policy_state),
+            "expected_request_id": request_id,
+            "expected_generation_id": generation_id,
+            "expected_latent_token_ids": list(
+                generation_spec.injected_token_ids[:-1]
+            ),
+            "expected_action_start_token_id": (
+                generation_spec.injected_token_ids[-1]
+            ),
+            "expected_action_token_ids": list(
+                generation_spec.action_token_ids
+            ),
+            "expected_contract_id": pin.contract_id,
+        }
     )
-    if score_result.batch_pin != pin:
-        raise ValueError("frozen Q scoring result does not match rollout batch pin")
-    score = score_result.scoring_record
     trace = NimlothPolicyResponseTrace.build(
         request_id=request_id,
         generation_id=generation_id,
@@ -275,28 +273,75 @@ async def _build_joint_guided_execution(
         generation_spec=generation_spec,
         tokenizer=tokenizer,
     )
-    draw = sample_frozen_q_guided_action(
-        action_space=action_space,
-        action_space_names=action_space_names,
-        action_token_ids=score.action_token_ids,
-        prior_logits=score.prior_logits,
-        frozen_all_action_q=score.frozen_all_action_q,
-        draw_key=draw_key,
-        config=config,
-    )
-    execution = build_guided_execution_from_scoring(
-        scoring_record=score,
-        expected_draw_key=draw_key,
-        action_draw=draw,
-        response_trace=trace,
-        generation_spec=generation_spec,
-        tokenizer=tokenizer,
-        expected_request_id=request_id,
-        expected_generation_id=generation_id,
-        expected_snapshot_id=pin.snapshot_id,
-        expected_contract_id=pin.contract_id,
-        expected_generation_spec_id=trace.generation_spec_id,
-    )
+    if isinstance(config, K4MCTSGuidedPolicyConfig):
+        from nimloth.training.rl.joint_behavior import (
+            build_k4_guided_execution_from_scoring,
+        )
+        from nimloth.training.rl.joint_planning_scoring import (
+            FrozenK4PlanningScoringRecord,
+        )
+
+        if (
+            not isinstance(raw_score_result, Mapping)
+            or raw_score_result.get("schema")
+            != "vagen_frozen_k4_owner_score_result_v1"
+            or raw_score_result.get("batch_pin") != pin.to_mapping()
+        ):
+            raise ValueError("K4 planning result does not match rollout batch pin")
+        score = FrozenK4PlanningScoringRecord.from_mapping(
+            raw_score_result.get("scoring_record")
+        )
+        draw = sample_k4_mcts_guided_action(
+            action_space=action_space,
+            action_space_names=action_space_names,
+            action_token_ids=score.action_token_ids,
+            prior_logits=score.prior_logits,
+            direct_all_action_q=score.direct_all_action_q,
+            planner_root_mean_values=score.planner_root_mean_values,
+            planner_root_visit_counts=score.planner_root_visit_counts,
+            draw_key=draw_key,
+            config=config,
+        )
+        execution = build_k4_guided_execution_from_scoring(
+            scoring_record=score,
+            expected_draw_key=draw_key,
+            action_draw=draw,
+            response_trace=trace,
+            generation_spec=generation_spec,
+            tokenizer=tokenizer,
+            expected_request_id=request_id,
+            expected_generation_id=generation_id,
+            expected_snapshot_id=pin.snapshot_id,
+            expected_contract_id=pin.contract_id,
+            expected_generation_spec_id=trace.generation_spec_id,
+        )
+    else:
+        score_result = FrozenQOwnerScoringResult.from_mapping(raw_score_result)
+        if score_result.batch_pin != pin:
+            raise ValueError("frozen Q scoring result does not match rollout batch pin")
+        score = score_result.scoring_record
+        draw = sample_frozen_q_guided_action(
+            action_space=action_space,
+            action_space_names=action_space_names,
+            action_token_ids=score.action_token_ids,
+            prior_logits=score.prior_logits,
+            frozen_all_action_q=score.frozen_all_action_q,
+            draw_key=draw_key,
+            config=config,
+        )
+        execution = build_guided_execution_from_scoring(
+            scoring_record=score,
+            expected_draw_key=draw_key,
+            action_draw=draw,
+            response_trace=trace,
+            generation_spec=generation_spec,
+            tokenizer=tokenizer,
+            expected_request_id=request_id,
+            expected_generation_id=generation_id,
+            expected_snapshot_id=pin.snapshot_id,
+            expected_contract_id=pin.contract_id,
+            expected_generation_spec_id=trace.generation_spec_id,
+        )
     return JointGuidedTurnArtifacts(
         batch_pin=pin,
         scoring_record=score,
@@ -740,13 +785,34 @@ class GymAgentLoop(AgentLoopBase):
                 max_response_tokens=max_new_tokens,
             )
             agent_data.turn_generation_spec = nimloth_spec
+            extra_args = nimloth_spec.to_extra_args()
+            if isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig):
+                pin = agent_data.joint_policy_batch_pin
+                if not isinstance(pin, Mapping):
+                    raise ValueError("K4 generation requires a manager batch pin")
+                snapshot_id = pin.get("snapshot_id")
+                activation_version = pin.get("activation_version")
+                if not isinstance(snapshot_id, str) or not snapshot_id:
+                    raise ValueError("K4 generation batch pin has no snapshot id")
+                if (
+                    isinstance(activation_version, bool)
+                    or not isinstance(activation_version, int)
+                    or activation_version < 0
+                ):
+                    raise ValueError("K4 generation batch pin has invalid activation")
+                extra_args.update(
+                    {
+                        "nimloth_k4_expected_snapshot_id": snapshot_id,
+                        "nimloth_k4_expected_activation_version": activation_version,
+                    }
+                )
             sampling_params_for_turn.update(
                 {
                     "max_new_tokens": nimloth_spec.max_output_tokens,
                     "logprobs": len(nimloth_spec.action_token_ids),
                     "ignore_eos": True,
                     "stop_token_ids": [nimloth_spec.action_end_token_id],
-                    "extra_args": nimloth_spec.to_extra_args(),
+                    "extra_args": extra_args,
                 }
             )
 
@@ -782,8 +848,14 @@ class GymAgentLoop(AgentLoopBase):
             agent_data.turn_generation_id = generation_id
             latent_hidden = output.policy_state.get("latent_hidden")
             action_logits = output.policy_state.get("action_logits")
+            expected_state_schema = (
+                "nimloth_policy_state_k4_mcts_v1"
+                if isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig)
+                else "nimloth_policy_state_v2"
+            )
+            planning_result = output.policy_state.get("frozen_k4_planning")
             if (
-                output.policy_state.get("schema") != "nimloth_policy_state_v2"
+                output.policy_state.get("schema") != expected_state_schema
                 or output.policy_state.get("latent_token_ids")
                 != list(nimloth_spec.injected_token_ids[:-1])
                 or output.policy_state.get("action_start_token_id")
@@ -801,6 +873,14 @@ class GymAgentLoop(AgentLoopBase):
                     for value in row
                 )
                 or any(not math.isfinite(float(value)) for value in action_logits)
+                or (
+                    isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig)
+                    and not isinstance(planning_result, Mapping)
+                )
+                or (
+                    not isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig)
+                    and planning_result is not None
+                )
             ):
                 raise RuntimeError("Nimloth turn returned invalid policy state")
             agent_data.turn_policy_state = output.policy_state
@@ -1007,13 +1087,18 @@ class GymAgentLoop(AgentLoopBase):
                 raise RuntimeError(
                     "guided draw turn index does not match executed environment turn"
                 )
+            scoring_field = (
+                "frozen_k4_planning_scoring"
+                if isinstance(self.joint_policy_config, K4MCTSGuidedPolicyConfig)
+                else "frozen_q_scoring"
+            )
             extra_fields.update(
                 {
                     # Historical no-concat turn_idx is one-based. This explicit
                     # field preserves the coordinator's zero-based draw identity.
                     "guided_turn_index": guided_turn_index,
                     "joint_policy_batch_pin": artifacts.batch_pin.to_mapping(),
-                    "frozen_q_scoring": artifacts.scoring_record.to_mapping(),
+                    scoring_field: artifacts.scoring_record.to_mapping(),
                     "policy_response_trace": artifacts.response_trace.to_mapping(),
                     "guided_action_draw": artifacts.action_draw.to_mapping(),
                     "guided_action_execution": artifacts.execution.to_mapping(),

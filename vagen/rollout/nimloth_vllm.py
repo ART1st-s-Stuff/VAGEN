@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -15,6 +16,9 @@ from verl.workers.rollout.vllm_rollout.vllm_async_server import (
 )
 
 _POLICY_STATE_SCHEMA = "nimloth_policy_state_v2"
+_K4_POLICY_STATE_SCHEMA = "nimloth_policy_state_k4_mcts_v1"
+_K4_EXPECTED_SNAPSHOT_KEY = "nimloth_k4_expected_snapshot_id"
+_K4_EXPECTED_ACTIVATION_KEY = "nimloth_k4_expected_activation_version"
 _TERMINAL_LATENT_STATE_SCHEMA = "nimloth_terminal_latent_state_v1"
 _CAPTURE_MODE_KEY = "nimloth_policy_state_capture_mode"
 _TERMINAL_CAPTURE_MODE = "terminal_latent_only"
@@ -68,6 +72,7 @@ def _policy_state_payload(
     latent_token_ids: tuple[int, ...],
     action_start_token_id: int,
     action_token_ids: tuple[int, ...],
+    frozen_k4_planning: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     latent_hidden = state.latent_hidden.tolist()
     action_logits = state.action_logits.tolist()
@@ -85,8 +90,12 @@ def _policy_state_payload(
         or any(not math.isfinite(float(value)) for value in action_logits)
     ):
         raise RuntimeError("Nimloth vLLM returned an invalid policy state")
-    return {
-        "schema": _POLICY_STATE_SCHEMA,
+    payload = {
+        "schema": (
+            _POLICY_STATE_SCHEMA
+            if frozen_k4_planning is None
+            else _K4_POLICY_STATE_SCHEMA
+        ),
         "request_id": str(request_id),
         "generation_id": str(generation_id),
         "latent_token_ids": list(latent_token_ids),
@@ -95,11 +104,55 @@ def _policy_state_payload(
         "latent_hidden": latent_hidden,
         "action_logits": action_logits,
     }
+    if frozen_k4_planning is not None:
+        payload["frozen_k4_planning"] = dict(frozen_k4_planning)
+    return payload
 
 
 @ray.remote(num_cpus=1)
 class NimlothVLLMHttpServer(vLLMHttpServerBase):
     """Install the K-slot processor and capture state from the same generation."""
+
+    async def install_frozen_k4_planner(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Install a shared immutable transport before a pinned rollout batch."""
+
+        from nimloth.backbone.qwen25vl.vllm_hidden import (
+            async_install_frozen_k4_planner,
+        )
+
+        fields = {
+            "transport_path",
+            "expected_snapshot_id",
+            "expected_source_step",
+            "expected_contract_id",
+            "expected_activation_version",
+        }
+        if not isinstance(request, dict) or set(request) != fields:
+            raise ValueError("K4 planner install request fields are invalid")
+        lock = getattr(self, "_nimloth_planner_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._nimloth_planner_lock = lock
+        async with lock:
+            installed = await async_install_frozen_k4_planner(
+                self.engine,
+                transport_path=request["transport_path"],
+                expected_snapshot_id=request["expected_snapshot_id"],
+                expected_source_step=request["expected_source_step"],
+                expected_contract_id=request["expected_contract_id"],
+                expected_activation_version=request["expected_activation_version"],
+            )
+        self._nimloth_planner_identity = {
+            "snapshot_id": installed["snapshot_id"],
+            "source_step": installed["source_step"],
+            "contract_id": installed["contract_id"],
+            "activation_version": installed["activation_version"],
+            "transport_path": installed["transport_path"],
+        }
+        return dict(self._nimloth_planner_identity)
 
     async def launch_server(
         self,
@@ -134,6 +187,8 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
         engine_kwargs["logits_processors"] = processor
         engine_kwargs["worker_extension_cls"] = _WORKER_EXTENSION
         engine_kwargs.setdefault("logprobs_mode", "processed_logprobs")
+        self._nimloth_planner_lock = asyncio.Lock()
+        self._nimloth_planner_identity = None
         await super().launch_server(
             master_address=master_address,
             master_port=master_port,
@@ -154,6 +209,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
             async_abort_policy_state_capture_for_request,
             async_pop_latent_state_capture_for_request,
             async_pop_policy_state_capture_for_request,
+            async_score_frozen_k4_planner,
             async_start_policy_state_capture_for_request,
         )
 
@@ -222,6 +278,33 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                         "Nimloth vLLM returned the wrong action-logit shape: "
                         f"{tuple(state.action_logits.shape)}"
                     )
+                expected_snapshot = extra_args.get(_K4_EXPECTED_SNAPSHOT_KEY)
+                expected_activation = extra_args.get(_K4_EXPECTED_ACTIVATION_KEY)
+                planning_score = None
+                if expected_snapshot is not None or expected_activation is not None:
+                    if not isinstance(expected_snapshot, str) or not expected_snapshot:
+                        raise ValueError("K4 generation requires expected snapshot id")
+                    if (
+                        isinstance(expected_activation, bool)
+                        or not isinstance(expected_activation, int)
+                        or expected_activation < 0
+                    ):
+                        raise ValueError("K4 generation requires activation version")
+                    identity = getattr(self, "_nimloth_planner_identity", None)
+                    if not isinstance(identity, dict) or (
+                        identity["snapshot_id"] != expected_snapshot
+                        or identity["activation_version"] != expected_activation
+                    ):
+                        raise RuntimeError(
+                            "K4 generation does not match installed planner identity"
+                        )
+                    async with self._nimloth_planner_lock:
+                        planning_score = await async_score_frozen_k4_planner(
+                            self.engine,
+                            latent_hidden=state.latent_hidden,
+                            expected_snapshot_id=expected_snapshot,
+                            expected_activation_version=expected_activation,
+                        )
                 policy_state = _policy_state_payload(
                     session_id,
                     generation_id,
@@ -229,6 +312,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                     latent_token_ids=latent_ids,
                     action_start_token_id=action_start_id,
                     action_token_ids=action_ids,
+                    frozen_k4_planning=planning_score,
                 )
         except BaseException:
             try:

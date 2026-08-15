@@ -107,11 +107,15 @@ class FrozenQGuidedPolicyConfig:
 
 def parse_joint_policy_section(
     raw: Mapping[str, Any],
-) -> FrozenQGuidedPolicyConfig | None:
-    """Parse the opt-in top-level config without creating disabled defaults."""
+) -> Any:
+    """Parse one explicit joint-policy implementation without defaults."""
 
     if not isinstance(raw, Mapping):
         raise ValueError("joint_policy section must be a mapping")
+    if raw.get("implementation") == "k4_mcts_guided_v1":
+        from .planning_contract import parse_k4_mcts_joint_policy_section
+
+        return parse_k4_mcts_joint_policy_section(raw)
     if "enabled" not in raw or not isinstance(raw["enabled"], bool):
         raise ValueError("joint_policy.enabled must be explicit bool")
     allowed = _REQUIRED_CONFIG_FIELDS | {"enabled"}

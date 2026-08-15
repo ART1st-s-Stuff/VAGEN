@@ -16,7 +16,7 @@ from PIL import Image
 from vagen.envs.gym_image_env import GymImageEnv
 from vagen.envs.navigation.utils.prompt import system_prompt, init_observation_template, action_template, get_format_instruction
 from vagen.envs.navigation.utils.parse import parse_response, compute_reward
-from vagen.joint_policy import GuidedActionExecutionRequest
+from vagen.joint_policy import parse_guided_action_execution_request
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ def _resolve_navigation_execution(
     guided_action_execution: Dict[str, Any] | None,
     *,
     prompt_format: str,
-) -> tuple[List[str], GuidedActionExecutionRequest | None]:
+) -> tuple[List[str], Any | None]:
     """Keep raw-response parsing as evidence while selecting an audited action."""
 
     if guided_action_execution is None:
@@ -84,7 +84,7 @@ def _resolve_navigation_execution(
         raise ValueError(
             "guided action execution requires prompt_format=nimloth"
         )
-    request = GuidedActionExecutionRequest.from_mapping(
+    request = parse_guided_action_execution_request(
         guided_action_execution
     )
     raw_response = parsed.get("llm_raw_response")

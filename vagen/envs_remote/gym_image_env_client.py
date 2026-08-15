@@ -40,7 +40,7 @@ from PIL import Image
 
 from vagen.envs.gym_image_env import GymImageEnv
 from vagen.joint_policy import (
-    GuidedActionExecutionRequest,
+    parse_guided_action_execution_request,
     validate_guided_action_execution_result,
 )
 from vagen.utils.remote_step_protocol import parse_remote_step_fields
@@ -437,7 +437,7 @@ class GymImageEnvClient(GymImageEnv):
         request = None
         method = "step"
         if guided_action_execution is not None:
-            request = GuidedActionExecutionRequest.from_mapping(
+            request = parse_guided_action_execution_request(
                 guided_action_execution
             )
             request.validate_raw_response(action_str)

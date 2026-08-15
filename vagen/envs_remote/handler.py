@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from vagen.joint_policy import GuidedActionExecutionRequest
+from vagen.joint_policy import parse_guided_action_execution_request
 
 LOGGER = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ class BaseGymHandler(ABC):
         action_str = params.get("action_str")
         if not isinstance(action_str, str) or not action_str:
             raise ValueError("guided environment step action_str must be non-empty")
-        request = GuidedActionExecutionRequest.from_mapping(
+        request = parse_guided_action_execution_request(
             params.get("guided_action_execution")
         )
         request.validate_raw_response(action_str)
