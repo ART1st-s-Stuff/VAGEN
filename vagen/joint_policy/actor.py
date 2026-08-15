@@ -145,7 +145,8 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
             planning_update = K4WorldModelUpdateModule(
                 planning_model,
                 self.k4_world_model_training,
-            ).train(True)
+            ).to(device=device).train(True)
+            _assert_module_device(planning_update, torch.device(device))
             self.current_k4_world_model = DistributedDataParallel(
                 planning_update,
                 device_ids=[device],
@@ -943,6 +944,22 @@ class JointDataParallelPPOActor(DataParallelPPOActor):
         if restored.snapshot_id != snapshot.snapshot_id:
             raise ValueError("K4 actor checkpoint transport contents mismatch")
         self._last_k4_transport = transport.to_mapping()
+
+
+def _assert_module_device(module: nn.Module, device: torch.device) -> None:
+    expected = torch.device(device)
+    mismatches = [
+        name
+        for name, tensor in (
+            list(module.named_parameters()) + list(module.named_buffers())
+        )
+        if tensor.device != expected
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "K4 planning module tensors are not on the rank device: "
+            f"{mismatches[:8]}"
+        )
 
 
 def _weighted_k4_sigreg_loss(

@@ -136,6 +136,28 @@ class K4WorldModelUpdateTest(unittest.TestCase):
                 )
             )
 
+    def test_actor_moves_complete_update_module_before_ddp(self) -> None:
+        import inspect
+        from vagen.joint_policy.actor import JointDataParallelPPOActor
+
+        source = inspect.getsource(JointDataParallelPPOActor.__init__)
+        move = source.index(").to(device=device).train(True)")
+        wrap = source.index("self.current_k4_world_model = DistributedDataParallel")
+        self.assertLess(move, wrap)
+
+    def test_complete_module_move_includes_sigreg_buffers(self) -> None:
+        import torch
+        from vagen.joint_policy.actor import _assert_module_device
+
+        module = self._module().to(device="meta")
+        _assert_module_device(module, torch.device("meta"))
+        self.assertTrue(
+            all(buffer.device.type == "meta" for buffer in module.buffers())
+        )
+        self.assertTrue(
+            all(parameter.device.type == "meta" for parameter in module.parameters())
+        )
+
     def test_one_optimizer_has_exact_named_groups(self) -> None:
         from vagen.joint_policy.k4_world_model_update import (
             build_k4_planning_optimizer,
