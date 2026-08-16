@@ -21,6 +21,7 @@ from .planning_contract import (
     k4_guided_log_probs_reference,
 )
 
+JOINT_ADVANTAGE_ESTIMATOR = "joint_frozen_v_gae"
 _IMPLEMENTATION = "replicated_joint_update_v1"
 _STOP_REASONS = frozenset(
     {
@@ -727,6 +728,7 @@ def _positive_int(value: Any, field: str) -> int:
 
 
 __all__ = [
+    "JOINT_ADVANTAGE_ESTIMATOR",
     "JointCriticOptimizerConfig",
     "JointTrainingConfig",
     "JointTrainingTargets",

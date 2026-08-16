@@ -142,7 +142,7 @@ actor_rollout_ref:
       agent_loop_config_path: ${oc.env:ID170_AGENT_CONFIG}
 
 algorithm:
-  adv_estimator: grpo
+  adv_estimator: joint_frozen_v_gae
   use_kl_in_reward: false
 
 filter:

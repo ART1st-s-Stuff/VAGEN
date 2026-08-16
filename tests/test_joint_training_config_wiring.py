@@ -111,7 +111,10 @@ class JointTrainingConfigWiringTest(unittest.TestCase):
                     "max_actor_ckpt_to_keep": 2,
                     "save_freq": -1,
                 },
-                "algorithm": {"use_kl_in_reward": False},
+                "algorithm": {
+                    "adv_estimator": "joint_frozen_v_gae",
+                    "use_kl_in_reward": False,
+                },
                 "critic": {"enable": None},
                 "filter": {"enable": False},
             }
@@ -252,6 +255,24 @@ assert cls.__name__ == 'vLLMAsyncRollout', cls
         custom = config.actor_rollout_ref.actor.custom_cls
         actor_type = load_extern_type(custom.path, custom.name)
         self.assertTrue(issubclass(actor_type, DataParallelPPOActor))
+
+    def test_joint_advantage_estimator_is_named_and_stock_grpo_is_rejected(self) -> None:
+        from omegaconf import open_dict
+        from vagen.joint_policy.training_contract import (
+            JOINT_ADVANTAGE_ESTIMATOR,
+        )
+        from vagen.main_ppo import _configure_joint_actor_extension
+
+        config = self._config()
+        self.assertEqual(JOINT_ADVANTAGE_ESTIMATOR, "joint_frozen_v_gae")
+        self.assertEqual(config.algorithm.adv_estimator, JOINT_ADVANTAGE_ESTIMATOR)
+        _configure_joint_actor_extension(config)
+
+        config = self._config()
+        with open_dict(config.algorithm):
+            config.algorithm.adv_estimator = "grpo"
+        with self.assertRaisesRegex(ValueError, "joint_frozen_v_gae"):
+            _configure_joint_actor_extension(config)
 
     def test_k4_actor_custom_config_preserves_search_contract(self) -> None:
         from omegaconf import open_dict

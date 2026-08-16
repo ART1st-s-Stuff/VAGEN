@@ -73,7 +73,10 @@ from vagen.joint_policy import (
     validate_k4_joint_training_alignment,
 )
 from vagen.joint_policy.integration_gate import parse_joint_integration_gate
-from vagen.joint_policy.training_contract import parse_joint_training_section
+from vagen.joint_policy.training_contract import (
+    JOINT_ADVANTAGE_ESTIMATOR,
+    parse_joint_training_section,
+)
 from vagen.utils.image_dump_actor import ImageDumpActor
 from vagen.utils.upload_hugging_face import HFUploadManager
 from vagen.utils.image_validation_logger import ValidationGenerationsLogger
@@ -489,6 +492,11 @@ class RayPPOTrainer:
                 "trainer.concat_multi_turn=false"
             )
         if self.joint_training_config is not None:
+            if self.config.algorithm.adv_estimator != JOINT_ADVANTAGE_ESTIMATOR:
+                raise ValueError(
+                    "joint training requires algorithm.adv_estimator="
+                    f"{JOINT_ADVANTAGE_ESTIMATOR}"
+                )
             if self.use_critic:
                 raise ValueError(
                     "joint training must disable the stock scalar critic role"

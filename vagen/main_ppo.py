@@ -432,7 +432,10 @@ def _configure_joint_actor_extension(config):
         validate_k4_joint_training_alignment,
     )
     from vagen.joint_policy.integration_gate import parse_joint_integration_gate
-    from vagen.joint_policy.training_contract import parse_joint_training_section
+    from vagen.joint_policy.training_contract import (
+        JOINT_ADVANTAGE_ESTIMATOR,
+        parse_joint_training_section,
+    )
 
     raw_training = config.get("joint_training", {"enabled": False})
     raw_policy = config.get("joint_policy", {"enabled": False})
@@ -466,6 +469,11 @@ def _configure_joint_actor_extension(config):
         if k4_world_model is not None:
             raise ValueError("K4 world-model training requires joint training")
         return None
+    if config.algorithm.adv_estimator != JOINT_ADVANTAGE_ESTIMATOR:
+        raise ValueError(
+            "joint training requires algorithm.adv_estimator="
+            f"{JOINT_ADVANTAGE_ESTIMATOR}; stock advantage estimators are not used"
+        )
     is_k4 = isinstance(policy, K4MCTSGuidedPolicyConfig)
     if is_k4 != (k4_world_model is not None):
         raise ValueError(
