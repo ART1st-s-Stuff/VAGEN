@@ -113,7 +113,7 @@ data:
   apply_chat_template_kwargs:
     enable_thinking: false
   custom_cls:
-    path: vagen/gym_agent_dataset.py
+    path: pkg://vagen.gym_agent_dataset
     name: AgenticDataset
 
 actor_rollout_ref:

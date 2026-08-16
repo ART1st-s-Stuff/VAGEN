@@ -50,6 +50,22 @@ def _env() -> dict[str, str]:
     }
 
 
+def test_id183_dataset_class_is_importable_without_vagen_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from verl.utils.import_utils import load_extern_type
+
+    source = OmegaConf.load(ROOT / "vagen/configs/joint_id183_canary.yaml")
+    monkeypatch.chdir(tmp_path)
+    assert source.data.custom_cls.path == "pkg://vagen.gym_agent_dataset"
+    dataset_type = load_extern_type(
+        source.data.custom_cls.path,
+        source.data.custom_cls.name,
+    )
+    assert dataset_type.__name__ == "AgenticDataset"
+
+
 def test_gate_phases_are_exactly_five_then_fresh_ten() -> None:
     first = JointIntegrationGate(
         implementation=K4_ID183_CANARY_GATE_IMPLEMENTATION,
