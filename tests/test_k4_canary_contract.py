@@ -111,8 +111,8 @@ def test_full_id183_config_accepts_both_phases_and_rejects_drift() -> None:
         assert first.trainer.val_before_train is True
         assert first.trainer.test_freq == -1
         assert first.trainer.save_freq == 5
-        assert first.trainer.nnodes == 2
-        assert first.trainer.n_gpus_per_node == 4
+        assert first.trainer.nnodes == 4
+        assert first.trainer.n_gpus_per_node == 2
         assert first.ray_kwargs.ray_init.address == "auto"
 
         second = _config_source()
@@ -142,7 +142,7 @@ def test_full_id183_config_accepts_both_phases_and_rejects_drift() -> None:
         drift = _config_source()
         drift.trainer.nnodes = 1
         drift.trainer.n_gpus_per_node = 8
-        with pytest.raises(ValueError, match="multi-node 2x4"):
+        with pytest.raises(ValueError, match="multi-node 4x2"):
             _configure_joint_actor_extension(drift)
 
 

@@ -500,7 +500,7 @@ def _configure_joint_actor_extension(config):
         and integration_gate.implementation
         == K4_ID183_CANARY_GATE_IMPLEMENTATION
     )
-    expected_topology = (2, 4) if is_id183_canary else (1, 8)
+    expected_topology = (4, 2) if is_id183_canary else (1, 8)
     actual_topology = (
         int(config.trainer.nnodes),
         int(config.trainer.n_gpus_per_node),
@@ -513,7 +513,7 @@ def _configure_joint_actor_extension(config):
     ):
         if is_id183_canary:
             raise ValueError(
-                "ID183 canary requires multi-node 2x4 actor DP8, "
+                "ID183 canary requires multi-node 4x2 actor DP8, "
                 "rollout TP8, and rollout DP1"
             )
         raise ValueError(
