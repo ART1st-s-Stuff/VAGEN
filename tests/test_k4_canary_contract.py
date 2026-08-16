@@ -115,6 +115,11 @@ def test_full_id183_config_accepts_both_phases_and_rejects_drift() -> None:
         with pytest.raises(ValueError, match="ID183.*checkpoint"):
             _configure_joint_actor_extension(drift)
 
+        drift = _config_source()
+        drift.joint_policy.beta = 85.0
+        with pytest.raises(ValueError, match="ID183.*numerical"):
+            _configure_joint_actor_extension(drift)
+
 
 def _rows(step: int) -> list[dict[str, object]]:
     rows = []
@@ -199,3 +204,15 @@ def test_canary_validation_summary_requires_exact_five_by_eight() -> None:
             expected_rows_per_source=8,
             expected_step=0,
         )
+
+    invalid = _rows(0)
+    invalid[0]["traj_success"] = True
+    with pytest.raises(ValueError, match="real number"):
+        summarize_canary_validation_rows(
+            invalid,
+            expected_data_sources=expected,
+            expected_rows_per_source=8,
+            expected_step=0,
+        )
+    gym_loop = (ROOT / "vagen/agent_loop/gym_agent_loop_no_concat.py").read_text()
+    assert '"traj_success": float(traj_success)' in gym_loop
