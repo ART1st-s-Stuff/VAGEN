@@ -907,6 +907,8 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
+        sample_data_sources = []
+        sample_rollout_sample_ids = []
         sample_images = []
 
         pad_token_id = self.tokenizer.pad_token_id
@@ -923,6 +925,33 @@ class RayPPOTrainer:
             # repeat test batch
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
+            )
+            strict_canary_provenance = (
+                self.joint_integration_gate is not None
+                and self.joint_integration_gate.experiment_id == 183
+            )
+            if "data_source" not in test_batch.non_tensor_batch:
+                if strict_canary_provenance:
+                    raise ValueError(
+                        "ID183 validation batch is missing data_source provenance"
+                    )
+                batch_data_sources = ["unknown"] * len(test_batch)
+            else:
+                batch_data_sources = test_batch.non_tensor_batch["data_source"]
+            if "rollout_sample_id" not in test_batch.non_tensor_batch:
+                if strict_canary_provenance:
+                    raise ValueError(
+                        "ID183 validation batch is missing stable "
+                        "rollout_sample_id provenance"
+                    )
+                batch_sample_ids = test_batch.non_tensor_batch["uid"]
+            else:
+                batch_sample_ids = test_batch.non_tensor_batch[
+                    "rollout_sample_id"
+                ]
+            sample_data_sources.extend(str(value) for value in batch_data_sources)
+            sample_rollout_sample_ids.extend(
+                str(value) for value in batch_sample_ids
             )
 
             # we only do validation on rule-based rm
@@ -1054,13 +1083,18 @@ class RayPPOTrainer:
         # dump generations
         val_data_dir = self.config.trainer.get("validation_data_dir", None)
         if val_data_dir:
+            validation_dump_extras = dict(reward_extra_infos_dict)
+            validation_dump_extras["data_source"] = sample_data_sources
+            validation_dump_extras["rollout_sample_id"] = (
+                sample_rollout_sample_ids
+            )
             self._dump_generations(
                 inputs=sample_inputs,
                 outputs=sample_outputs,
                 images=sample_images,
                 gts=sample_gts,
                 scores=sample_scores,
-                reward_extra_infos_dict=reward_extra_infos_dict,
+                reward_extra_infos_dict=validation_dump_extras,
                 dump_path=val_data_dir,
             )
 
@@ -1593,6 +1627,22 @@ class RayPPOTrainer:
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+
+        if (
+            self.joint_integration_gate is not None
+            and self.joint_integration_gate.experiment_id == 183
+        ):
+            expected_loaded_step = (
+                0
+                if self.joint_integration_gate.phase == "train_to_5"
+                else 5
+            )
+            if self.global_steps != expected_loaded_step:
+                raise ValueError(
+                    "ID183 canary loaded an unexpected checkpoint boundary"
+                )
+            if self.joint_integration_gate.phase == "resume_to_10":
+                print("ID183_K4_CANARY_RESUME_OK global_step=5")
 
         if (
             self.joint_integration_gate is not None

@@ -117,6 +117,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID183_CANARY_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
@@ -124,8 +125,9 @@ def _validate_joint_integration_gate_runtime(
         K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
+        K4_ID183_CANARY_GATE_IMPLEMENTATION,
     }:
-        _validate_k4_single_update_integration_gate_runtime(
+        _validate_k4_integration_gate_runtime(
             config,
             training=training,
             policy=policy,
@@ -224,7 +226,7 @@ def _validate_joint_integration_gate_runtime(
         raise ValueError("ID171 integration gate requires no-concat training")
 
 
-def _validate_k4_single_update_integration_gate_runtime(
+def _validate_k4_integration_gate_runtime(
     config,
     *,
     training,
@@ -253,6 +255,12 @@ def _validate_k4_single_update_integration_gate_runtime(
     actor_optim = training.actor_optimizer
     critic_optim = training.critic_optimizer
     planning_optim = world_model.optimizer if world_model is not None else None
+    from vagen.joint_policy.integration_gate import (
+        K4_ID183_CANARY_GATE_IMPLEMENTATION,
+    )
+
+    is_canary = gate.implementation == K4_ID183_CANARY_GATE_IMPLEMENTATION
+    expected_checkpoint_frequency = 5 if is_canary else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
         raise ValueError(
             f"ID{experiment_id} gate requires K4 policy and world-model training"
@@ -271,7 +279,7 @@ def _validate_k4_single_update_integration_gate_runtime(
         or training.ppo_clip_ratio != 0.2
         or training.token_kl_coefficient != 0.01
         or training.guided_entropy_coefficient != 0.01
-        or training.checkpoint_frequency != 1
+        or training.checkpoint_frequency != expected_checkpoint_frequency
         or training.initial_snapshot_source_step != 776
         or training.critic_qwen_hidden_dim != 2048
         or training.critic_grid_tokens != 16
@@ -320,19 +328,23 @@ def _validate_k4_single_update_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate snapshot root mismatch"
         )
+    expected_epochs = gate.expected_total_training_steps if is_canary else 1
     if (
         int(trainer.total_training_steps) != gate.expected_total_training_steps
-        or int(trainer.total_epochs) != 1
+        or int(trainer.total_epochs) != expected_epochs
         or trainer.resume_mode != gate.expected_resume_mode
     ):
         raise ValueError(
             f"ID{experiment_id} integration gate phase runtime mismatch"
         )
+    expected_run_prefix = (
+        "183_canary_k4schemeb_jointupdate_dp8_tp8_"
+        if is_canary
+        else f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
+    )
     if trainer.project_name != "vagen" or not str(
         trainer.experiment_name
-    ).startswith(
-        f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
-    ):
+    ).startswith(expected_run_prefix):
         raise ValueError(
             f"ID{experiment_id} integration gate W&B identity mismatch"
         )
@@ -340,17 +352,38 @@ def _validate_k4_single_update_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate requires console and W&B"
         )
-    if trainer.val_before_train or int(trainer.test_freq) != -1:
+    if is_canary:
+        is_first_phase = gate.phase == "train_to_5"
+        if (
+            bool(trainer.val_before_train) != is_first_phase
+            or int(trainer.test_freq) != (-1 if is_first_phase else 10)
+            or bool(trainer.get("val_only", False))
+        ):
+            raise ValueError("ID183 canary validation phase mismatch")
+        if (
+            int(trainer.save_freq) != 5
+            or int(trainer.max_actor_ckpt_to_keep) != 2
+        ):
+            raise ValueError("ID183 canary checkpoint schedule mismatch")
+    elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
         )
+    expected_train_file = f"train_navigation_joint_id{experiment_id}.yaml"
     if (
         int(config.data.train_batch_size) != 24
         or int(config.data.gen_batch_size) != 24
         or int(rollout.n) != 1
         or int(config.data.max_response_length) != 512
-        or not str(config.data.train_files).endswith(
-            f"train_navigation_joint_id{experiment_id}.yaml"
+        or not str(config.data.train_files).endswith(expected_train_file)
+        or (
+            is_canary
+            and (
+                int(config.data.val_batch_size) != 40
+                or not str(config.data.val_files).endswith(
+                    "val_navigation_joint_id183.yaml"
+                )
+            )
         )
     ):
         raise ValueError(
@@ -367,6 +400,13 @@ def _validate_k4_single_update_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate actor/rollout mismatch"
         )
+    if is_canary and (
+        int(rollout.val_kwargs.n) != 1
+        or float(rollout.val_kwargs.temperature) != 0.7
+        or float(rollout.val_kwargs.top_p) != 0.95
+        or not bool(rollout.val_kwargs.do_sample)
+    ):
+        raise ValueError("ID183 canary validation sampling mismatch")
     if rollout.get("engine_kwargs", {}).get("vllm", {}).get(
         "mm_encoder_tp_mode"
     ) != "data":

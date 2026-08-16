@@ -1,5 +1,6 @@
 """Contracts for VAGEN joint policies."""
 
+from .canary import summarize_canary_validation_rows
 from .contract import (
     GUIDED_BEHAVIOR_SCHEMA,
     FrozenQGuidedPolicyConfig,
@@ -101,6 +102,7 @@ __all__ = [
     "sample_frozen_q_guided_action",
     "sample_k4_mcts_guided_action",
     "selected_action_huber_loss",
+    "summarize_canary_validation_rows",
     "validate_guided_action_execution_result",
     "validate_k4_joint_training_alignment",
     "validate_k4_guided_action_execution_result",
