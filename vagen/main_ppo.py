@@ -353,6 +353,8 @@ def _validate_k4_integration_gate_runtime(
             f"ID{experiment_id} integration gate requires console and W&B"
         )
     if is_canary:
+        if str(config.ray_kwargs.ray_init.get("address", "")) != "auto":
+            raise ValueError("ID183 canary requires the external multi-node Ray cluster")
         is_first_phase = gate.phase == "train_to_5"
         if (
             bool(trainer.val_before_train) != is_first_phase
@@ -481,12 +483,31 @@ def _configure_joint_actor_extension(config):
         raise ValueError("joint training supports only FSDP actor strategy")
     if int(actor.get("ulysses_sequence_parallel_size", 1)) != 1:
         raise ValueError("joint training requires actor DP8 without sequence parallelism")
+    from vagen.joint_policy.integration_gate import (
+        K4_ID183_CANARY_GATE_IMPLEMENTATION,
+    )
+
+    is_id183_canary = (
+        integration_gate is not None
+        and integration_gate.implementation
+        == K4_ID183_CANARY_GATE_IMPLEMENTATION
+    )
+    expected_topology = (2, 4) if is_id183_canary else (1, 8)
+    actual_topology = (
+        int(config.trainer.nnodes),
+        int(config.trainer.n_gpus_per_node),
+    )
     if (
-        int(config.trainer.nnodes) != 1
-        or int(config.trainer.n_gpus_per_node) != 8
+        actual_topology != expected_topology
+        or actual_topology[0] * actual_topology[1] != 8
         or int(config.actor_rollout_ref.rollout.tensor_model_parallel_size) != 8
         or int(config.actor_rollout_ref.rollout.get("data_parallel_size", 1)) != 1
     ):
+        if is_id183_canary:
+            raise ValueError(
+                "ID183 canary requires multi-node 2x4 actor DP8, "
+                "rollout TP8, and rollout DP1"
+            )
         raise ValueError(
             "joint training requires one node, actor DP8, rollout TP8, and rollout DP1"
         )

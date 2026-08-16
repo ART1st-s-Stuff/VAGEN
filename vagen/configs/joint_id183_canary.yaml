@@ -192,6 +192,10 @@ huggingface_hub:
   private: false
   upload_contents: [hf_model]
 
+ray_kwargs:
+  ray_init:
+    address: auto
+
 trainer:
   project_name: vagen
   experiment_name: ${oc.env:ID183_RUN_NAME}
@@ -205,8 +209,8 @@ trainer:
   critic_warmup: 0
   concat_multi_turn: false
   balance_batch: true
-  nnodes: 1
-  n_gpus_per_node: 8
+  nnodes: 2
+  n_gpus_per_node: 4
   default_local_dir: ${oc.env:ID183_RUN_OUT}/checkpoints
   default_hdfs_dir: null
   remove_previous_ckpt_in_save: false

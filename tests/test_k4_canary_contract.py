@@ -95,6 +95,9 @@ def test_full_id183_config_accepts_both_phases_and_rejects_drift() -> None:
         assert first.trainer.val_before_train is True
         assert first.trainer.test_freq == -1
         assert first.trainer.save_freq == 5
+        assert first.trainer.nnodes == 2
+        assert first.trainer.n_gpus_per_node == 4
+        assert first.ray_kwargs.ray_init.address == "auto"
 
         second = _config_source()
         second.joint_integration_gate.phase = "resume_to_10"
@@ -119,6 +122,30 @@ def test_full_id183_config_accepts_both_phases_and_rejects_drift() -> None:
         drift.joint_policy.beta = 85.0
         with pytest.raises(ValueError, match="ID183.*numerical"):
             _configure_joint_actor_extension(drift)
+
+        drift = _config_source()
+        drift.trainer.nnodes = 1
+        drift.trainer.n_gpus_per_node = 8
+        with pytest.raises(ValueError, match="multi-node 2x4"):
+            _configure_joint_actor_extension(drift)
+
+
+def test_target_tp8_uses_verl_multinode_tcp_control_path() -> None:
+    spmd = (
+        ROOT
+        / "verl/verl/workers/rollout/vllm_rollout/vllm_rollout_spmd.py"
+    ).read_text()
+    replica = (
+        ROOT
+        / "verl/verl/workers/rollout/vllm_rollout/vllm_async_server.py"
+    ).read_text()
+    assert 'local_world_size = int(os.environ["RAY_LOCAL_WORLD_SIZE"])' in spmd
+    assert 'socket_type = "ipc" if tensor_parallel_size <= local_world_size else "tcp"' in spmd
+    assert 'address = f"tcp://{ip}:{port}"' in spmd
+    assert "if self.config.data_parallel_size == 1:" in replica
+    assert "gpus_per_node = self.world_size" in replica
+    assert "workers = self.workers[node_rank * gpus_per_node" in replica
+    assert "VERL_VLLM_ZMQ_ADDRESSES" in replica
 
 
 def _rows(step: int) -> list[dict[str, object]]:
