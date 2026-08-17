@@ -1538,10 +1538,16 @@ class RayPPOTrainer:
                         f"ID{self.joint_integration_gate.experiment_id} "
                         "source training contract mismatch"
                     )
+                if self.joint_integration_gate.experiment_id == 184:
+                    migration_marker = (
+                        "ID184_TRAINING_CONTRACT_PATH_MIGRATION_OK"
+                    )
+                else:
+                    migration_marker = (
+                        "ID185_TRAINING_CONTRACT_PATH_MIGRATION_OK"
+                    )
                 print(
-                    f"ID{self.joint_integration_gate.experiment_id}_"
-                    "TRAINING_CONTRACT_PATH_MIGRATION_OK "
-                    f"source={source_snapshot_root} "
+                    f"{migration_marker} source={source_snapshot_root} "
                     "destination="
                     f"{self.k4_world_model_training_config.snapshot_transport_root}"
                 )
