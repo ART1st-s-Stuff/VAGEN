@@ -119,6 +119,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
@@ -128,6 +129,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
     }:
         _validate_k4_integration_gate_runtime(
             config,
@@ -260,13 +262,17 @@ def _validate_k4_integration_gate_runtime(
     from vagen.joint_policy.integration_gate import (
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
     )
 
     is_canary = gate.implementation == K4_ID183_CANARY_GATE_IMPLEMENTATION
     is_continuation = (
         gate.implementation == K4_ID184_CONTINUE_GATE_IMPLEMENTATION
     )
-    is_multinode_run = is_canary or is_continuation
+    is_full_eval = (
+        gate.implementation == K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION
+    )
+    is_multinode_run = is_canary or is_continuation or is_full_eval
     expected_checkpoint_frequency = 5 if is_multinode_run else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
         raise ValueError(
@@ -350,6 +356,8 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "183_canary_k4schemeb_jointupdate_dp8_tp8_"
     elif is_continuation:
         expected_run_prefix = "184_continue_k4schemeb_jointupdate_dp8_tp8_"
+    elif is_full_eval:
+        expected_run_prefix = "185_eval_k4schemeb_dp8_tp8_source20_test5x60_"
     else:
         expected_run_prefix = (
             f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
@@ -410,6 +418,33 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError("ID184 deterministic expanded dataset mismatch")
+    elif is_full_eval:
+        if (
+            not bool(trainer.val_before_train)
+            or not bool(trainer.get("val_only", False))
+            or int(trainer.test_freq) != -1
+        ):
+            raise ValueError("ID185 validation-only schedule mismatch")
+        if (
+            int(trainer.save_freq) != 5
+            or int(trainer.max_actor_ckpt_to_keep) != 2
+        ):
+            raise ValueError("ID185 checkpoint safety mismatch")
+        expected_source_suffix = (
+            "/184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_"
+            "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
+            "cot07p095_val5x8_retry1/checkpoints/global_step_20"
+        )
+        if not str(trainer.resume_from_path).endswith(
+            expected_source_suffix
+        ):
+            raise ValueError("ID185 source checkpoint mismatch")
+        if trainer.get("joint_dataloader_resume_policy") != "exact":
+            raise ValueError("ID185 dataloader restore policy mismatch")
+        if not bool(config.data.get("shuffle", False)) or int(
+            config.data.get("seed", -1)
+        ) != 42184:
+            raise ValueError("ID185 source dataset identity mismatch")
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
@@ -539,6 +574,7 @@ def _configure_joint_actor_extension(config):
     from vagen.joint_policy.integration_gate import (
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
     )
 
     is_multinode_gate = (
@@ -547,6 +583,7 @@ def _configure_joint_actor_extension(config):
         in {
             K4_ID183_CANARY_GATE_IMPLEMENTATION,
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+            K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         }
     )
     expected_topology = (4, 2) if is_multinode_gate else (1, 8)

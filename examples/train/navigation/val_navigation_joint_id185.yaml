@@ -1,0 +1,87 @@
+# ID185 historical VAGEN full test300; all 60 tasks via explicit seeds 1..60.
+envs:
+  - name: RemoteEnv
+    n_envs: 60
+    data_source: navigation_base_test_id185
+    seed_list: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: base
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 60
+    data_source: navigation_common_sense_test_id185
+    seed_list: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: common_sense
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 60
+    data_source: navigation_complex_instruction_test_id185
+    seed_list: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: complex_instruction
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 60
+    data_source: navigation_visual_appearance_test_id185
+    seed_list: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: visual_appearance
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0
+  - name: RemoteEnv
+    n_envs: 60
+    data_source: navigation_long_horizon_test_id185
+    seed_list: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61]
+    max_turns: 20
+    response_length_per_turn: 512
+    config:
+      base_urls: "http://127.0.0.1:8000"
+      timeout: 500
+      retries: 3
+      eval_set: long_horizon
+      prompt_format: nimloth
+      latent_token_count: 16
+      max_actions_per_step: 1
+      per_turn_format_reward: 0.01
+      format_reward: 0.0
+      success_reward: 1.0

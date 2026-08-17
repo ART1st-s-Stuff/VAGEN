@@ -936,7 +936,7 @@ class RayPPOTrainer:
             )
             strict_canary_provenance = (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id in {183, 184}
+                and self.joint_integration_gate.experiment_id in {183, 184, 185}
             )
             if "data_source" not in test_batch.non_tensor_batch:
                 if strict_canary_provenance:
@@ -1510,7 +1510,7 @@ class RayPPOTrainer:
             )
             if (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id == 184
+                and self.joint_integration_gate.experiment_id in {184, 185}
             ):
                 from dataclasses import replace
                 from pathlib import Path
@@ -1535,10 +1535,12 @@ class RayPPOTrainer:
                     != expected_source_training_contract_id
                 ):
                     raise ValueError(
-                        "ID184 source training contract mismatch"
+                        f"ID{self.joint_integration_gate.experiment_id} "
+                        "source training contract mismatch"
                     )
                 print(
-                    "ID184_TRAINING_CONTRACT_PATH_MIGRATION_OK "
+                    f"ID{self.joint_integration_gate.experiment_id}_"
+                    "TRAINING_CONTRACT_PATH_MIGRATION_OK "
                     f"source={source_snapshot_root} "
                     "destination="
                     f"{self.k4_world_model_training_config.snapshot_transport_root}"
@@ -1706,7 +1708,7 @@ class RayPPOTrainer:
         self._load_checkpoint()
 
         if self.joint_integration_gate is not None and (
-            self.joint_integration_gate.experiment_id in {183, 184}
+            self.joint_integration_gate.experiment_id in {183, 184, 185}
         ):
             if self.joint_integration_gate.experiment_id == 183:
                 expected_loaded_step = (
@@ -1714,8 +1716,10 @@ class RayPPOTrainer:
                     if self.joint_integration_gate.phase == "train_to_5"
                     else 5
                 )
-            else:
+            elif self.joint_integration_gate.experiment_id == 184:
                 expected_loaded_step = 10
+            else:
+                expected_loaded_step = 20
             if self.global_steps != expected_loaded_step:
                 raise ValueError(
                     f"ID{self.joint_integration_gate.experiment_id} loaded "
@@ -1725,6 +1729,8 @@ class RayPPOTrainer:
                 print("ID183_K4_CANARY_RESUME_OK global_step=5")
             elif self.joint_integration_gate.phase == "resume_10_to_20":
                 print("ID184_K4_CONTINUE_RESUME_OK global_step=10")
+            elif self.joint_integration_gate.phase == "full_eval_test300":
+                print("ID185_K4_FULL_EVAL_RESTORE_OK global_step=20")
 
         if (
             self.joint_integration_gate is not None
