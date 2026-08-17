@@ -936,12 +936,13 @@ class RayPPOTrainer:
             )
             strict_canary_provenance = (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id == 183
+                and self.joint_integration_gate.experiment_id in {183, 184}
             )
             if "data_source" not in test_batch.non_tensor_batch:
                 if strict_canary_provenance:
                     raise ValueError(
-                        "ID183 validation batch is missing data_source provenance"
+                        f"ID{self.joint_integration_gate.experiment_id} "
+                        "validation batch is missing data_source provenance"
                     )
                 batch_data_sources = ["unknown"] * len(test_batch)
             else:
@@ -949,7 +950,8 @@ class RayPPOTrainer:
             if "rollout_sample_id" not in test_batch.non_tensor_batch:
                 if strict_canary_provenance:
                     raise ValueError(
-                        "ID183 validation batch is missing stable "
+                        f"ID{self.joint_integration_gate.experiment_id} "
+                        "validation batch is missing stable "
                         "rollout_sample_id provenance"
                     )
                 batch_sample_ids = test_batch.non_tensor_batch["uid"]
@@ -1501,14 +1503,53 @@ class RayPPOTrainer:
                 joint_training_contract_id,
             )
 
+            expected_training_contract_id = joint_training_contract_id(
+                self.joint_training_config,
+                self.joint_policy_config,
+                self.k4_world_model_training_config,
+            )
+            if (
+                self.joint_integration_gate is not None
+                and self.joint_integration_gate.experiment_id == 184
+            ):
+                from dataclasses import replace
+                from pathlib import Path
+
+                active_transport = joint["frozen_q_owner"][
+                    "active_snapshot_state"
+                ]["transport_path"]
+                source_snapshot_root = str(Path(active_transport).parents[1])
+                source_world_model = replace(
+                    self.k4_world_model_training_config,
+                    snapshot_transport_root=source_snapshot_root,
+                )
+                expected_source_training_contract_id = (
+                    joint_training_contract_id(
+                        self.joint_training_config,
+                        self.joint_policy_config,
+                        source_world_model,
+                    )
+                )
+                if (
+                    joint["training_contract_id"]
+                    != expected_source_training_contract_id
+                ):
+                    raise ValueError(
+                        "ID184 source training contract mismatch"
+                    )
+                print(
+                    "ID184_TRAINING_CONTRACT_PATH_MIGRATION_OK "
+                    f"source={source_snapshot_root} "
+                    "destination="
+                    f"{self.k4_world_model_training_config.snapshot_transport_root}"
+                )
+            elif (
+                joint["training_contract_id"]
+                != expected_training_contract_id
+            ):
+                raise ValueError("joint checkpoint training contract mismatch")
             if (
                 joint["global_step"] != self.global_steps
-                or joint["training_contract_id"]
-                != joint_training_contract_id(
-                    self.joint_training_config,
-                    self.joint_policy_config,
-                    self.k4_world_model_training_config,
-                )
                 or joint["run_seed"] != self.joint_training_config.run_seed
                 or joint["world_size"] != self.actor_rollout_wg.world_size
             ):
@@ -1541,18 +1582,46 @@ class RayPPOTrainer:
                 ):
                     raise ValueError("joint actor and frozen Q restore state mismatch")
 
-        # load dataloader,
-        # TODO: from remote not implemented yet
+        # A changed dataset cannot consume the source sampler cursor. ID184 is
+        # the one explicit exception: model/optimizer/RNG/joint state remain
+        # exact, while a new deterministic sampler starts from its own manifest.
         dataloader_local_path = os.path.join(global_step_folder, "data.pt")
-        if os.path.exists(dataloader_local_path):
-            dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
+        dataloader_policy = str(
+            self.config.trainer.get(
+                "joint_dataloader_resume_policy",
+                "exact",
+            )
+        )
+        if dataloader_policy not in {"exact", "reset"}:
+            raise ValueError("unsupported joint dataloader resume policy")
+        if dataloader_policy == "reset":
+            if (
+                self.joint_training_config is None
+                or self.joint_integration_gate is None
+                or self.joint_integration_gate.experiment_id != 184
+                or self.global_steps != 10
+                or not os.path.isfile(dataloader_local_path)
+            ):
+                raise ValueError(
+                    "joint dataloader reset is restricted to the complete "
+                    "ID184 step10 source checkpoint"
+                )
+            print("ID184_DATALOADER_RESET_OK global_step=10")
+        elif os.path.exists(dataloader_local_path):
+            dataloader_state_dict = torch.load(
+                dataloader_local_path,
+                weights_only=False,
+            )
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             if self.joint_training_config is not None:
                 raise ValueError(
                     f"joint checkpoint is missing dataloader state: {dataloader_local_path}"
                 )
-            print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
+            print(
+                f"Warning: No dataloader state found at {dataloader_local_path}, "
+                "will start from scratch"
+            )
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1636,21 +1705,26 @@ class RayPPOTrainer:
         # load checkpoint before doing anything
         self._load_checkpoint()
 
-        if (
-            self.joint_integration_gate is not None
-            and self.joint_integration_gate.experiment_id == 183
+        if self.joint_integration_gate is not None and (
+            self.joint_integration_gate.experiment_id in {183, 184}
         ):
-            expected_loaded_step = (
-                0
-                if self.joint_integration_gate.phase == "train_to_5"
-                else 5
-            )
+            if self.joint_integration_gate.experiment_id == 183:
+                expected_loaded_step = (
+                    0
+                    if self.joint_integration_gate.phase == "train_to_5"
+                    else 5
+                )
+            else:
+                expected_loaded_step = 10
             if self.global_steps != expected_loaded_step:
                 raise ValueError(
-                    "ID183 canary loaded an unexpected checkpoint boundary"
+                    f"ID{self.joint_integration_gate.experiment_id} loaded "
+                    "an unexpected checkpoint boundary"
                 )
             if self.joint_integration_gate.phase == "resume_to_10":
                 print("ID183_K4_CANARY_RESUME_OK global_step=5")
+            elif self.joint_integration_gate.phase == "resume_10_to_20":
+                print("ID184_K4_CONTINUE_RESUME_OK global_step=10")
 
         if (
             self.joint_integration_gate is not None

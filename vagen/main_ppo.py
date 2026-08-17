@@ -118,6 +118,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
+        K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
@@ -126,6 +127,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID181_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID182_INTEGRATION_GATE_IMPLEMENTATION,
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
+        K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
     }:
         _validate_k4_integration_gate_runtime(
             config,
@@ -257,10 +259,15 @@ def _validate_k4_integration_gate_runtime(
     planning_optim = world_model.optimizer if world_model is not None else None
     from vagen.joint_policy.integration_gate import (
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
+        K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
     )
 
     is_canary = gate.implementation == K4_ID183_CANARY_GATE_IMPLEMENTATION
-    expected_checkpoint_frequency = 5 if is_canary else 1
+    is_continuation = (
+        gate.implementation == K4_ID184_CONTINUE_GATE_IMPLEMENTATION
+    )
+    is_multinode_run = is_canary or is_continuation
+    expected_checkpoint_frequency = 5 if is_multinode_run else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
         raise ValueError(
             f"ID{experiment_id} gate requires K4 policy and world-model training"
@@ -328,7 +335,9 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate snapshot root mismatch"
         )
-    expected_epochs = gate.expected_total_training_steps if is_canary else 1
+    expected_epochs = (
+        gate.expected_total_training_steps if is_multinode_run else 1
+    )
     if (
         int(trainer.total_training_steps) != gate.expected_total_training_steps
         or int(trainer.total_epochs) != expected_epochs
@@ -337,11 +346,14 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate phase runtime mismatch"
         )
-    expected_run_prefix = (
-        "183_canary_k4schemeb_jointupdate_dp8_tp8_"
-        if is_canary
-        else f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
-    )
+    if is_canary:
+        expected_run_prefix = "183_canary_k4schemeb_jointupdate_dp8_tp8_"
+    elif is_continuation:
+        expected_run_prefix = "184_continue_k4schemeb_jointupdate_dp8_tp8_"
+    else:
+        expected_run_prefix = (
+            f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
+        )
     if trainer.project_name != "vagen" or not str(
         trainer.experiment_name
     ).startswith(expected_run_prefix):
@@ -352,9 +364,13 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate requires console and W&B"
         )
+    if is_multinode_run and str(
+        config.ray_kwargs.ray_init.get("address", "")
+    ) != "auto":
+        raise ValueError(
+            f"ID{experiment_id} requires the external multi-node Ray cluster"
+        )
     if is_canary:
-        if str(config.ray_kwargs.ray_init.get("address", "")) != "auto":
-            raise ValueError("ID183 canary requires the external multi-node Ray cluster")
         is_first_phase = gate.phase == "train_to_5"
         if (
             bool(trainer.val_before_train) != is_first_phase
@@ -367,6 +383,33 @@ def _validate_k4_integration_gate_runtime(
             or int(trainer.max_actor_ckpt_to_keep) != 2
         ):
             raise ValueError("ID183 canary checkpoint schedule mismatch")
+    elif is_continuation:
+        if (
+            not bool(trainer.val_before_train)
+            or int(trainer.test_freq) != 5
+            or bool(trainer.get("val_only", False))
+        ):
+            raise ValueError("ID184 validation schedule mismatch")
+        if (
+            int(trainer.save_freq) != 5
+            or int(trainer.max_actor_ckpt_to_keep) != 2
+        ):
+            raise ValueError("ID184 checkpoint schedule mismatch")
+        expected_source_suffix = (
+            "/183_canary_k4schemeb_jointupdate_dp8_tp8_u10_r5_"
+            "train3x8_t20_s100_c1_a1_b85p78297006578457_t1_"
+            "cot07p095_val5x8_retry2/checkpoints/global_step_10"
+        )
+        if not str(trainer.resume_from_path).endswith(
+            expected_source_suffix
+        ):
+            raise ValueError("ID184 source checkpoint mismatch")
+        if trainer.get("joint_dataloader_resume_policy") != "reset":
+            raise ValueError("ID184 dataloader reset policy mismatch")
+        if not bool(config.data.get("shuffle", False)) or int(
+            config.data.get("seed", -1)
+        ) != 42184:
+            raise ValueError("ID184 deterministic expanded dataset mismatch")
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
@@ -379,11 +422,11 @@ def _validate_k4_integration_gate_runtime(
         or int(config.data.max_response_length) != 512
         or not str(config.data.train_files).endswith(expected_train_file)
         or (
-            is_canary
+            is_multinode_run
             and (
                 int(config.data.val_batch_size) != 40
                 or not str(config.data.val_files).endswith(
-                    "val_navigation_joint_id183.yaml"
+                    f"val_navigation_joint_id{experiment_id}.yaml"
                 )
             )
         )
@@ -402,13 +445,15 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate actor/rollout mismatch"
         )
-    if is_canary and (
+    if is_multinode_run and (
         int(rollout.val_kwargs.n) != 1
         or float(rollout.val_kwargs.temperature) != 0.7
         or float(rollout.val_kwargs.top_p) != 0.95
         or not bool(rollout.val_kwargs.do_sample)
     ):
-        raise ValueError("ID183 canary validation sampling mismatch")
+        raise ValueError(
+            f"ID{experiment_id} validation sampling mismatch"
+        )
     if rollout.get("engine_kwargs", {}).get("vllm", {}).get(
         "mm_encoder_tp_mode"
     ) != "data":
@@ -493,14 +538,18 @@ def _configure_joint_actor_extension(config):
         raise ValueError("joint training requires actor DP8 without sequence parallelism")
     from vagen.joint_policy.integration_gate import (
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
+        K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
     )
 
-    is_id183_canary = (
+    is_multinode_gate = (
         integration_gate is not None
         and integration_gate.implementation
-        == K4_ID183_CANARY_GATE_IMPLEMENTATION
+        in {
+            K4_ID183_CANARY_GATE_IMPLEMENTATION,
+            K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
+        }
     )
-    expected_topology = (4, 2) if is_id183_canary else (1, 8)
+    expected_topology = (4, 2) if is_multinode_gate else (1, 8)
     actual_topology = (
         int(config.trainer.nnodes),
         int(config.trainer.n_gpus_per_node),
@@ -511,10 +560,10 @@ def _configure_joint_actor_extension(config):
         or int(config.actor_rollout_ref.rollout.tensor_model_parallel_size) != 8
         or int(config.actor_rollout_ref.rollout.get("data_parallel_size", 1)) != 1
     ):
-        if is_id183_canary:
+        if is_multinode_gate:
             raise ValueError(
-                "ID183 canary requires multi-node 4x2 actor DP8, "
-                "rollout TP8, and rollout DP1"
+                f"ID{integration_gate.experiment_id} requires multi-node "
+                "4x2 actor DP8, rollout TP8, and rollout DP1"
             )
         raise ValueError(
             "joint training requires one node, actor DP8, rollout TP8, and rollout DP1"
