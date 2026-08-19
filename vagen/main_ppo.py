@@ -445,6 +445,21 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError("ID185 source dataset identity mismatch")
+        if (
+            int(
+                trainer.get(
+                    "validation_batch_journal_expected_rows",
+                    -1,
+                )
+            )
+            != 300
+            or not str(
+                trainer.get("validation_batch_journal_dir", "")
+            ).endswith(
+                "/full_eval_test300/validation_batch_journal"
+            )
+        ):
+            raise ValueError("ID185 validation batch journal mismatch")
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"

@@ -18,12 +18,14 @@ PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import hashlib
 import json
 import os
 import uuid
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from pprint import pprint
 from typing import Any, Optional
 
@@ -163,6 +165,252 @@ def _assign_unique_validation_padding_identities(
 
     for key, values in values_by_key.items():
         batch.non_tensor_batch[key] = values
+
+
+def _journal_json_default(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"validation journal cannot serialize {type(value)!r}")
+
+
+def _atomic_write_new(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise FileExistsError(f"refusing to overwrite validation journal: {path}")
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            raise FileExistsError(
+                f"validation journal appeared concurrently: {path}"
+            )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_validation_batch_journal(
+    *,
+    journal_dir: str | os.PathLike[str],
+    global_step: int,
+    batch_index: int,
+    inputs: list[str],
+    outputs: list[str],
+    ground_truths: list[Any],
+    scores: list[float],
+    uids: list[str],
+    data_sources: list[str],
+    rollout_sample_ids: list[str],
+    rollout_repeat_indices: list[int],
+    reward_extra_infos: dict[str, list[Any]],
+) -> dict[str, Any]:
+    """Atomically persist one completed validation batch and its marker."""
+
+    if isinstance(batch_index, bool) or not isinstance(batch_index, int):
+        raise TypeError("validation journal batch_index must be int")
+    if batch_index < 0:
+        raise ValueError("validation journal batch_index must be nonnegative")
+    if isinstance(global_step, bool) or not isinstance(global_step, int):
+        raise TypeError("validation journal global_step must be int")
+    row_count = len(inputs)
+    fields = {
+        "outputs": outputs,
+        "ground_truths": ground_truths,
+        "scores": scores,
+        "uids": uids,
+        "data_sources": data_sources,
+        "rollout_sample_ids": rollout_sample_ids,
+        "rollout_repeat_indices": rollout_repeat_indices,
+    }
+    for name, values in fields.items():
+        if len(values) != row_count:
+            raise ValueError(
+                f"validation journal {name} length does not match inputs"
+            )
+    for name, values in reward_extra_infos.items():
+        if len(values) != row_count:
+            raise ValueError(
+                f"validation journal reward extra {name} length mismatch"
+            )
+
+    rows: list[dict[str, Any]] = []
+    identities: list[tuple[str, int]] = []
+    for row in range(row_count):
+        sample_id = rollout_sample_ids[row]
+        repeat_index = rollout_repeat_indices[row]
+        if not isinstance(sample_id, str) or not sample_id:
+            raise ValueError(
+                "validation journal sample identity must be non-empty str"
+            )
+        if isinstance(repeat_index, bool) or not isinstance(
+            repeat_index,
+            (int, np.integer),
+        ):
+            raise TypeError("validation journal repeat index must be int")
+        repeat_index = int(repeat_index)
+        if repeat_index < 0:
+            raise ValueError(
+                "validation journal repeat index must be nonnegative"
+            )
+        identities.append((sample_id, repeat_index))
+        entry = {
+            "input": inputs[row],
+            "output": outputs[row],
+            "gts": ground_truths[row],
+            "score": scores[row],
+            "step": global_step,
+            "uid": str(uids[row]),
+            "data_source": str(data_sources[row]),
+            "rollout_sample_id": sample_id,
+            "rollout_repeat_index": repeat_index,
+        }
+        for name, values in reward_extra_infos.items():
+            entry[name] = values[row]
+        rows.append(entry)
+    if len(set(identities)) != len(identities):
+        raise ValueError(
+            "validation journal batch contains duplicate sample/repeat identities"
+        )
+
+    encoded_lines = [
+        json.dumps(
+            row,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+            default=_journal_json_default,
+        )
+        for row in rows
+    ]
+    rows_payload = ("\n".join(encoded_lines) + "\n").encode("utf-8")
+    rows_sha256 = hashlib.sha256(rows_payload).hexdigest()
+    identity_payload = json.dumps(
+        identities,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    identity_sha256 = hashlib.sha256(identity_payload).hexdigest()
+    root = Path(journal_dir)
+    stem = f"batch_{batch_index:04d}"
+    rows_path = root / f"{stem}.jsonl"
+    marker_path = root / f"{stem}.complete.json"
+    if rows_path.exists() or marker_path.exists():
+        raise FileExistsError(
+            f"validation journal batch {batch_index} already exists"
+        )
+    marker = {
+        "schema": "vagen_validation_batch_journal_v1",
+        "global_step": global_step,
+        "batch_index": batch_index,
+        "row_count": row_count,
+        "rows_file": rows_path.name,
+        "rows_sha256": f"sha256:{rows_sha256}",
+        "identity_sha256": f"sha256:{identity_sha256}",
+    }
+    marker_payload = (
+        json.dumps(marker, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write_new(rows_path, rows_payload)
+    _atomic_write_new(marker_path, marker_payload)
+    print(
+        "VALIDATION_BATCH_JOURNAL_COMMIT "
+        f"batch_index={batch_index} rows={row_count} "
+        f"sha256={rows_sha256}"
+    )
+    return marker
+
+
+def _finalize_validation_batch_journal(
+    *,
+    journal_dir: str | os.PathLike[str],
+    global_step: int,
+    expected_batch_count: int,
+    expected_row_count: int,
+) -> dict[str, Any]:
+    """Verify all immutable batch files before publishing one complete marker."""
+
+    if expected_batch_count <= 0 or expected_row_count <= 0:
+        raise ValueError("validation journal expected counts must be positive")
+    root = Path(journal_dir)
+    markers = sorted(root.glob("batch_*.complete.json"))
+    if len(markers) != expected_batch_count:
+        raise ValueError(
+            "validation journal batch count mismatch: "
+            f"{len(markers)} != {expected_batch_count}"
+        )
+    all_identities: list[tuple[str, int]] = []
+    data_source_counts: dict[str, int] = defaultdict(int)
+    row_digests: list[str] = []
+    total_rows = 0
+    for expected_index, marker_path in enumerate(markers):
+        marker = json.loads(marker_path.read_text())
+        if marker != {
+            **marker,
+            "schema": "vagen_validation_batch_journal_v1",
+            "global_step": global_step,
+            "batch_index": expected_index,
+        }:
+            raise ValueError(
+                f"validation journal marker mismatch: {marker_path}"
+            )
+        rows_path = root / marker["rows_file"]
+        rows_payload = rows_path.read_bytes()
+        actual_digest = "sha256:" + hashlib.sha256(rows_payload).hexdigest()
+        if actual_digest != marker["rows_sha256"]:
+            raise ValueError(
+                f"validation journal row hash mismatch: {rows_path}"
+            )
+        rows = [
+            json.loads(line)
+            for line in rows_payload.decode("utf-8").splitlines()
+            if line
+        ]
+        if len(rows) != marker["row_count"]:
+            raise ValueError(
+                f"validation journal row count mismatch: {rows_path}"
+            )
+        for row in rows:
+            if row["step"] != global_step:
+                raise ValueError("validation journal row step mismatch")
+            identity = (
+                row["rollout_sample_id"],
+                int(row["rollout_repeat_index"]),
+            )
+            all_identities.append(identity)
+            data_source_counts[str(row["data_source"])] += 1
+        total_rows += len(rows)
+        row_digests.append(marker["rows_sha256"])
+    if total_rows != expected_row_count:
+        raise ValueError(
+            "validation journal total row count mismatch: "
+            f"{total_rows} != {expected_row_count}"
+        )
+    if len(set(all_identities)) != len(all_identities):
+        raise ValueError(
+            "validation journal contains duplicate sample/repeat identities"
+        )
+    complete = {
+        "schema": "vagen_validation_batch_journal_complete_v1",
+        "global_step": global_step,
+        "batch_count": expected_batch_count,
+        "row_count": total_rows,
+        "data_source_counts": dict(sorted(data_source_counts.items())),
+        "batch_rows_sha256": row_digests,
+    }
+    complete_payload = (
+        json.dumps(complete, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write_new(root / "complete.json", complete_payload)
+    print(
+        "VALIDATION_BATCH_JOURNAL_COMPLETE "
+        f"batches={expected_batch_count} rows={total_rows}"
+    )
+    return complete
 
 
 @dataclass
@@ -999,8 +1247,21 @@ class RayPPOTrainer:
 
         pad_token_id = self.tokenizer.pad_token_id
         skip_pad_tokens = self.config.trainer.get("skip_pad_tokens", True)
+        validation_journal_dir = self.config.trainer.get(
+            "validation_batch_journal_dir",
+            None,
+        )
+        validation_journal_expected_rows = self.config.trainer.get(
+            "validation_batch_journal_expected_rows",
+            None,
+        )
+        if validation_journal_dir and self.concat_multi_turn:
+            raise ValueError(
+                "validation batch journaling requires no-concat validation"
+            )
+        completed_validation_batches = 0
 
-        for test_data in self.val_dataloader:
+        for validation_batch_index, test_data in enumerate(self.val_dataloader):
             test_batch = DataProto.from_single_dict(test_data)
 
             if "uid" not in test_batch.non_tensor_batch:
@@ -1060,6 +1321,14 @@ class RayPPOTrainer:
                 # we need to create group_idx, traj_idx for each traj in no-concat mode
                 num_traj_per_sample = self.config.actor_rollout_ref.rollout.val_kwargs.n
                 self._assign_group_and_traj_idx(test_gen_batch, num_traj_per_sample)
+                batch_repeat_indices = [
+                    int(value)
+                    for value in test_gen_batch.non_tensor_batch[
+                        "rollout_repeat_index"
+                    ]
+                ]
+            else:
+                batch_repeat_indices = [0] * len(test_gen_batch)
 
             test_gen_batch.meta_info = {
                 "eos_token_id": self.tokenizer.eos_token_id,
@@ -1149,10 +1418,20 @@ class RayPPOTrainer:
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
+            batch_reward_extra_infos: dict[str, list[Any]] = {
+                "reward": list(scores),
+            }
             reward_extra_infos_dict["reward"].extend(scores)
             if "reward_extra_info" in result:
                 for key, lst in result["reward_extra_info"].items():
-                    reward_extra_infos_dict[key].extend(lst)
+                    batch_values = list(lst)
+                    if len(batch_values) != len(scores):
+                        raise ValueError(
+                            "validation reward extra batch length mismatch: "
+                            f"{key}"
+                        )
+                    batch_reward_extra_infos[key] = batch_values
+                    reward_extra_infos_dict[key].extend(batch_values)
 
             # Add token_level_scores to batch for custom metrics computation
             test_batch.batch["token_level_scores"] = reward_tensor
@@ -1167,7 +1446,41 @@ class RayPPOTrainer:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
-        
+
+            if validation_journal_dir:
+                _write_validation_batch_journal(
+                    journal_dir=validation_journal_dir,
+                    global_step=int(self.global_steps),
+                    batch_index=validation_batch_index,
+                    inputs=list(inputs),
+                    outputs=list(outputs),
+                    ground_truths=list(ground_truths),
+                    scores=list(scores),
+                    uids=[
+                        str(value)
+                        for value in test_batch.non_tensor_batch["uid"]
+                    ],
+                    data_sources=[str(value) for value in batch_data_sources],
+                    rollout_sample_ids=[
+                        str(value) for value in batch_sample_ids
+                    ],
+                    rollout_repeat_indices=batch_repeat_indices,
+                    reward_extra_infos=batch_reward_extra_infos,
+                )
+                completed_validation_batches += 1
+
+        if validation_journal_dir:
+            if validation_journal_expected_rows is None:
+                raise ValueError(
+                    "validation journal expected row count is required"
+                )
+            _finalize_validation_batch_journal(
+                journal_dir=validation_journal_dir,
+                global_step=int(self.global_steps),
+                expected_batch_count=completed_validation_batches,
+                expected_row_count=int(validation_journal_expected_rows),
+            )
+
         if self.config.trainer.get("replace_image_tokens_for_logging", False):
             sample_inputs = replace_image_tokens_for_logging(sample_inputs, processor=self.processor, tokenizer=self.tokenizer)
             sample_outputs = replace_image_tokens_for_logging(sample_outputs, processor=self.processor, tokenizer=self.tokenizer)

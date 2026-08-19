@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +14,11 @@ from vagen.joint_policy.integration_gate import (
     JointIntegrationGate,
 )
 from vagen.main_ppo import _configure_joint_actor_extension
-from vagen.ray_trainer import _assign_unique_validation_padding_identities
+from vagen.ray_trainer import (
+    _assign_unique_validation_padding_identities,
+    _finalize_validation_batch_journal,
+    _write_validation_batch_journal,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,6 +94,10 @@ def test_id185_config_accepts_only_exact_val_only_restore() -> None:
         assert config.trainer.val_only is True
         assert config.trainer.test_freq == -1
         assert config.trainer.save_freq == 5
+        assert config.trainer.validation_batch_journal_expected_rows == 300
+        assert config.trainer.validation_batch_journal_dir.endswith(
+            "/full_eval_test300/validation_batch_journal"
+        )
         assert config.data.val_batch_size == 40
         assert config.trainer.nnodes == 4
         assert config.trainer.n_gpus_per_node == 2
@@ -106,6 +115,11 @@ def test_id185_config_accepts_only_exact_val_only_restore() -> None:
         drift = _config_source()
         drift.trainer.joint_dataloader_resume_policy = "reset"
         with pytest.raises(ValueError, match="ID185.*dataloader"):
+            _configure_joint_actor_extension(drift)
+
+        drift = _config_source()
+        drift.trainer.validation_batch_journal_expected_rows = 40
+        with pytest.raises(ValueError, match="ID185.*journal"):
             _configure_joint_actor_extension(drift)
 
 
@@ -179,6 +193,114 @@ def test_id185_padding_rewrite_never_masks_real_duplicates() -> None:
     assert "guided rollout batch contains duplicate sample/repeat identities" in (
         ROOT / "vagen/agent_loop/agent_loop_no_concat.py"
     ).read_text()
+
+
+def _write_test_journal_batch(
+    root: Path,
+    batch_index: int,
+    sample_ids: list[str],
+    data_sources: list[str],
+) -> None:
+    count = len(sample_ids)
+    _write_validation_batch_journal(
+        journal_dir=root,
+        global_step=20,
+        batch_index=batch_index,
+        inputs=[f"input-{value}" for value in sample_ids],
+        outputs=[f"output-{value}" for value in sample_ids],
+        ground_truths=[{"target": value} for value in sample_ids],
+        scores=[float(index % 2) for index in range(count)],
+        uids=[f"uid-{value}" for value in sample_ids],
+        data_sources=data_sources,
+        rollout_sample_ids=sample_ids,
+        rollout_repeat_indices=[0] * count,
+        reward_extra_infos={
+            "reward": [float(index % 2) for index in range(count)],
+            "success": [bool(index % 2) for index in range(count)],
+        },
+    )
+
+
+def test_id185_validation_batch_journal_is_incremental_and_atomic(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "journal"
+    _write_test_journal_batch(
+        root,
+        batch_index=0,
+        sample_ids=["s0", "s1"],
+        data_sources=["base", "base"],
+    )
+    first_rows = [
+        json.loads(line)
+        for line in (root / "batch_0000.jsonl").read_text().splitlines()
+    ]
+    assert [row["rollout_sample_id"] for row in first_rows] == ["s0", "s1"]
+    assert not (root / "complete.json").exists()
+    with pytest.raises(FileExistsError, match="already exists"):
+        _write_test_journal_batch(
+            root,
+            batch_index=0,
+            sample_ids=["s0", "s1"],
+            data_sources=["base", "base"],
+        )
+
+    _write_test_journal_batch(
+        root,
+        batch_index=1,
+        sample_ids=["s2"],
+        data_sources=["long_horizon"],
+    )
+    complete = _finalize_validation_batch_journal(
+        journal_dir=root,
+        global_step=20,
+        expected_batch_count=2,
+        expected_row_count=3,
+    )
+    assert complete["row_count"] == 3
+    assert complete["batch_count"] == 2
+    assert complete["data_source_counts"] == {"base": 2, "long_horizon": 1}
+    assert json.loads((root / "complete.json").read_text()) == complete
+
+
+def test_id185_validation_journal_refuses_incomplete_or_duplicate_rows(
+    tmp_path: Path,
+) -> None:
+    incomplete = tmp_path / "incomplete"
+    _write_test_journal_batch(
+        incomplete,
+        batch_index=0,
+        sample_ids=["s0"],
+        data_sources=["base"],
+    )
+    with pytest.raises(ValueError, match="batch count"):
+        _finalize_validation_batch_journal(
+            journal_dir=incomplete,
+            global_step=20,
+            expected_batch_count=2,
+            expected_row_count=2,
+        )
+
+    duplicate = tmp_path / "duplicate"
+    _write_test_journal_batch(
+        duplicate,
+        batch_index=0,
+        sample_ids=["s0"],
+        data_sources=["base"],
+    )
+    _write_test_journal_batch(
+        duplicate,
+        batch_index=1,
+        sample_ids=["s0"],
+        data_sources=["base"],
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        _finalize_validation_batch_journal(
+            journal_dir=duplicate,
+            global_step=20,
+            expected_batch_count=2,
+            expected_row_count=2,
+        )
 
 
 def test_id185_restore_migrates_transport_without_training() -> None:

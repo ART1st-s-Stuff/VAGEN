@@ -223,6 +223,8 @@ trainer:
   del_local_ckpt_after_load: false
   rollout_data_dir: null
   validation_data_dir: ${oc.env:ID185_RUN_OUT}/validation
+  validation_batch_journal_dir: ${oc.env:ID185_RUN_OUT}/full_eval_test300/validation_batch_journal
+  validation_batch_journal_expected_rows: 300
   log_val_generations: 0
   skip_pad_tokens: true
   replace_image_tokens_for_logging: true
