@@ -87,6 +87,84 @@ from vagen.custom_metric.metric import METRIC_REGISTRY
 from vagen.custom_filter.filter import FILTER_REGISTRY
 
 
+def _assign_unique_validation_padding_identities(
+    batch: DataProto,
+    pad_size: int,
+) -> None:
+    """Give only framework-added validation padding rows dummy identities.
+
+    ``pad_dataproto_to_divisor`` copies real rows onto the tail.  Guided
+    rollout identity ownership must still reject duplicates among real rows,
+    while no-concat validation must be able to generate and then discard the
+    copied rows.  Synthetic UIDs are therefore assigned only to the known
+    padding suffix and remain outside the pre-padding UID set.
+    """
+
+    if isinstance(pad_size, bool) or not isinstance(pad_size, int):
+        raise TypeError("validation pad_size must be int")
+    if pad_size < 0:
+        raise ValueError("validation pad_size must be nonnegative")
+    if pad_size == 0:
+        return
+    total_size = len(batch)
+    if pad_size >= total_size:
+        raise ValueError("validation padding must leave at least one real row")
+    required = {
+        "uid",
+        "group_idx",
+        "rollout_sample_id",
+        "rollout_repeat_index",
+    }
+    missing = required - set(batch.non_tensor_batch)
+    if missing:
+        raise ValueError(
+            "validation padding identity rewrite is missing fields: "
+            f"{sorted(missing)}"
+        )
+
+    values_by_key: dict[str, np.ndarray] = {}
+    for key in required:
+        values = np.asarray(batch.non_tensor_batch[key], dtype=object)
+        if len(values) != total_size:
+            raise ValueError(
+                f"validation padding field {key} has wrong batch size"
+            )
+        values_by_key[key] = values.copy()
+
+    original_size = total_size - pad_size
+    original_uids = set(values_by_key["uid"][:original_size].tolist())
+    original_sample_ids = set(
+        values_by_key["rollout_sample_id"][:original_size].tolist()
+    )
+    generated: set[str] = set()
+    for offset, row in enumerate(range(original_size, total_size)):
+        source_uid = values_by_key["uid"][row]
+        source_sample_id = values_by_key["rollout_sample_id"][row]
+        source_repeat = values_by_key["rollout_repeat_index"][row]
+        identity_seed = (
+            "vagen-validation-padding-v1:"
+            f"{original_size}:{offset}:{source_uid!r}:"
+            f"{source_sample_id!r}:{source_repeat!r}"
+        )
+        synthetic = (
+            "__vagen_validation_padding__"
+            f"{uuid.uuid5(uuid.NAMESPACE_URL, identity_seed)}"
+        )
+        if (
+            synthetic in original_uids
+            or synthetic in original_sample_ids
+            or synthetic in generated
+        ):
+            raise ValueError("validation padding identity collision")
+        generated.add(synthetic)
+        values_by_key["uid"][row] = synthetic
+        values_by_key["group_idx"][row] = synthetic
+        values_by_key["rollout_sample_id"][row] = synthetic
+
+    for key, values in values_by_key.items():
+        batch.non_tensor_batch[key] = values
+
+
 @dataclass
 class ResourcePoolManager:
     """
@@ -1005,6 +1083,11 @@ class RayPPOTrainer:
                 original_uids = set(test_gen_batch.non_tensor_batch["uid"])
 
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, size_divisor)
+            if not self.concat_multi_turn and pad_size:
+                _assign_unique_validation_padding_identities(
+                    test_gen_batch_padded,
+                    pad_size,
+                )
             if not self.async_rollout_mode:
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
             else:

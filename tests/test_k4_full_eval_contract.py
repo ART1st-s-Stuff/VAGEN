@@ -13,6 +13,7 @@ from vagen.joint_policy.integration_gate import (
     JointIntegrationGate,
 )
 from vagen.main_ppo import _configure_joint_actor_extension
+from vagen.ray_trainer import _assign_unique_validation_padding_identities
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -106,6 +107,78 @@ def test_id185_config_accepts_only_exact_val_only_restore() -> None:
         drift.trainer.joint_dataloader_resume_policy = "reset"
         with pytest.raises(ValueError, match="ID185.*dataloader"):
             _configure_joint_actor_extension(drift)
+
+
+class _FakeBatch:
+    def __init__(self, rows: dict[str, list[object]]) -> None:
+        self.non_tensor_batch = {
+            key: __import__("numpy").array(values, dtype=object)
+            for key, values in rows.items()
+        }
+
+    def __len__(self) -> int:
+        return len(self.non_tensor_batch["uid"])
+
+
+def test_id185_validation_padding_gets_unique_dummy_identity() -> None:
+    batch = _FakeBatch(
+        {
+            "uid": ["u0", "u1", "u2", "u0"],
+            "group_idx": ["u0", "u1", "u2", "u0"],
+            "rollout_sample_id": ["s0", "s1", "s2", "s0"],
+            "rollout_repeat_index": [0, 0, 0, 0],
+        }
+    )
+    _assign_unique_validation_padding_identities(batch, pad_size=1)
+
+    assert batch.non_tensor_batch["uid"][:3].tolist() == ["u0", "u1", "u2"]
+    assert batch.non_tensor_batch["rollout_sample_id"][:3].tolist() == [
+        "s0",
+        "s1",
+        "s2",
+    ]
+    dummy_uid = batch.non_tensor_batch["uid"][3]
+    dummy_sample = batch.non_tensor_batch["rollout_sample_id"][3]
+    assert dummy_uid == dummy_sample
+    assert dummy_uid.startswith("__vagen_validation_padding__")
+    assert batch.non_tensor_batch["group_idx"][3] == dummy_uid
+    assert dummy_uid not in {"u0", "u1", "u2"}
+    assert len(
+        set(
+            zip(
+                batch.non_tensor_batch["rollout_sample_id"],
+                batch.non_tensor_batch["rollout_repeat_index"],
+                strict=True,
+            )
+        )
+    ) == 4
+
+
+def test_id185_zero_padding_is_an_identity_noop() -> None:
+    batch = _FakeBatch({"uid": ["u0"]})
+    before = batch.non_tensor_batch["uid"].copy()
+    _assign_unique_validation_padding_identities(batch, pad_size=0)
+    assert batch.non_tensor_batch["uid"].tolist() == before.tolist()
+
+
+def test_id185_padding_rewrite_never_masks_real_duplicates() -> None:
+    batch = _FakeBatch(
+        {
+            "uid": ["u0", "u0", "u0"],
+            "group_idx": ["u0", "u0", "u0"],
+            "rollout_sample_id": ["s0", "s0", "s0"],
+            "rollout_repeat_index": [0, 0, 0],
+        }
+    )
+    _assign_unique_validation_padding_identities(batch, pad_size=1)
+    assert batch.non_tensor_batch["uid"][:2].tolist() == ["u0", "u0"]
+    assert batch.non_tensor_batch["rollout_sample_id"][:2].tolist() == [
+        "s0",
+        "s0",
+    ]
+    assert "guided rollout batch contains duplicate sample/repeat identities" in (
+        ROOT / "vagen/agent_loop/agent_loop_no_concat.py"
+    ).read_text()
 
 
 def test_id185_restore_migrates_transport_without_training() -> None:
