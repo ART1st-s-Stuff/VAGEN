@@ -767,6 +767,14 @@ def _build_validation_rollout_browser_artifacts(
             }
             if joint:
                 record = _visualization_turn_record(raw)
+                if record["raw_response"] != raw_responses[turn_index]:
+                    raise ValueError(
+                        "evaluation rollout raw response provenance mismatch"
+                    )
+                if executed is None or record["executed_action"] != executed["name"]:
+                    raise ValueError(
+                        "evaluation rollout executed action provenance mismatch"
+                    )
                 ordered = sorted(record["action_ranking"], key=lambda row: row["action_id"])
                 turn["action_distribution"] = {
                     "kind": "guided_policy",
