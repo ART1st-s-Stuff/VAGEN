@@ -483,6 +483,23 @@ def _validate_k4_integration_gate_runtime(
             ).endswith(expected_journal_suffix)
         ):
             raise ValueError("ID185 validation batch journal mismatch")
+        if (
+            int(trainer.get("validation_rollout_browser_expected_rows", -1))
+            != expected_journal_rows
+            or trainer.get("validation_rollout_browser_policy_family")
+            != "vagen_k4_joint"
+            or not str(
+                trainer.get("validation_rollout_browser_dir", "")
+            ).endswith("/evaluation_browser")
+            or not str(
+                trainer.get("validation_rollout_browser_evaluation_id", "")
+            )
+            or str(
+                trainer.get("validation_rollout_browser_checkpoint_identity", "")
+            )
+            != str(trainer.resume_from_path)
+        ):
+            raise ValueError("ID185 rollout browser mismatch")
         if is_visualization and (
             trainer.get("validation_visualization_rollout_sample_id")
             is not None
@@ -553,6 +570,24 @@ def _validate_k4_integration_gate_runtime(
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
+        )
+    if (is_canary or is_continuation) and (
+        int(trainer.get("validation_rollout_browser_expected_rows", -1))
+        != 40
+        or trainer.get("validation_rollout_browser_policy_family")
+        != "vagen_k4_joint"
+        or not str(
+            trainer.get("validation_rollout_browser_dir", "")
+        ).endswith("/evaluation_browser")
+        or str(trainer.get("validation_rollout_browser_evaluation_id", ""))
+        != str(trainer.experiment_name)
+        or str(
+            trainer.get("validation_rollout_browser_checkpoint_identity", "")
+        )
+        != str(config.actor_rollout_ref.model.path)
+    ):
+        raise ValueError(
+            f"ID{experiment_id} rollout browser mismatch"
         )
     expected_train_file = f"train_navigation_joint_id{experiment_id}.yaml"
     if (

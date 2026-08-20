@@ -1072,6 +1072,8 @@ class GymAgentLoop(AgentLoopBase):
             "traj_idx": agent_data.traj_idx,
             "turn_idx": agent_data.env_turns,
             "rollout_stop_reason": rollout_stop_reason,
+            "raw_response": action_str,
+            "task_instruction": info.get("instruction"),
         }
         if decision_ledger is not None:
             extra_fields["decision_ledger"] = decision_ledger

@@ -98,6 +98,13 @@ def test_id185_config_accepts_only_exact_val_only_restore() -> None:
         assert config.trainer.validation_batch_journal_dir.endswith(
             "/full_eval_test300/validation_batch_journal"
         )
+        assert config.trainer.validation_rollout_browser_expected_rows == 300
+        assert config.trainer.validation_rollout_browser_policy_family == (
+            "vagen_k4_joint"
+        )
+        assert config.trainer.validation_rollout_browser_dir.endswith(
+            "/evaluation_browser"
+        )
         assert config.data.val_batch_size == 40
         assert config.trainer.nnodes == 4
         assert config.trainer.n_gpus_per_node == 2
@@ -120,6 +127,11 @@ def test_id185_config_accepts_only_exact_val_only_restore() -> None:
         drift = _config_source()
         drift.trainer.validation_batch_journal_expected_rows = 40
         with pytest.raises(ValueError, match="ID185.*journal"):
+            _configure_joint_actor_extension(drift)
+
+        drift = _config_source()
+        drift.trainer.validation_rollout_browser_expected_rows = 40
+        with pytest.raises(ValueError, match="ID185.*browser"):
             _configure_joint_actor_extension(drift)
 
 

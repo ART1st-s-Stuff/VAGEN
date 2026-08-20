@@ -525,6 +525,9 @@ def _visualization_turn_record(raw: dict[str, Any]) -> dict[str, Any]:
         "current_state_value": current_state_value,
         "executed_action_direct_q": direct_q[selected],
         "executed_action_predicted_value": root_values[selected],
+        "planning_horizon": config.planning_horizon,
+        "mcts_num_simulations": config.mcts_num_simulations,
+        "mcts_exploration_constant": config.mcts_exploration_constant,
         "action_ranking": action_ranking,
         "predicted_action_sequences": candidates,
         "env_turn_reward": float(ledger["env_turn_reward"]),
@@ -639,6 +642,243 @@ def _dump_single_rollout_visualization_audit(
         f"sample_id={payload['rollout_sample_id']} turns={payload['turn_count']}"
     )
     return payload
+
+
+def _actual_cot(raw_response: str) -> str | None:
+    if not isinstance(raw_response, str) or not raw_response.startswith("<think>"):
+        return None
+    boundary = raw_response.find("</think>")
+    return (
+        raw_response[: boundary + len("</think>")]
+        if boundary >= 0
+        else None
+    )
+
+
+def _build_validation_rollout_browser_artifacts(
+    batch: DataProto,
+    trajectory_metadata: dict[tuple[str, int], dict[str, Any]],
+    *,
+    policy_family: str,
+) -> list[Any]:
+    """Adapt unpadded per-turn VAGEN evidence without model replay."""
+
+    from nimloth.eval.rollout_browser.sft_adapter import RolloutBrowserArtifact
+    from nimloth.eval.rollout_browser.schema import ROLLOUT_AUDIT_SCHEMA
+
+    if len(batch) < 1:
+        raise ValueError("evaluation rollout browser batch is empty")
+    non_tensor = batch.non_tensor_batch
+    required = {
+        "group_idx",
+        "traj_idx",
+        "turn_idx",
+        "rollout_sample_id",
+        "rollout_repeat_index",
+        "rollout_stop_reason",
+        "task_instruction",
+        "raw_response",
+        "decision_ledger",
+        "image_data",
+    }
+    missing = required - set(non_tensor)
+    if missing:
+        raise ValueError(
+            "evaluation rollout browser is missing turn fields: "
+            f"{sorted(missing)}"
+        )
+    groups: dict[tuple[str, int], list[int]] = defaultdict(list)
+    for index in range(len(batch)):
+        key = (
+            str(non_tensor["rollout_sample_id"][index]),
+            int(non_tensor["rollout_repeat_index"][index]),
+        )
+        groups[key].append(index)
+    if set(groups) != set(trajectory_metadata):
+        raise ValueError("evaluation browser turn/trajectory identities do not align")
+    artifacts = []
+    for key in sorted(groups):
+        indices = sorted(groups[key], key=lambda index: int(non_tensor["turn_idx"][index]))
+        metadata = trajectory_metadata[key]
+        tasks = {str(non_tensor["task_instruction"][index]) for index in indices}
+        if len(tasks) != 1 or not next(iter(tasks)).strip() or tasks == {"None"}:
+            raise ValueError("evaluation rollout task instruction is missing or inconsistent")
+        task = next(iter(tasks))
+        joint = all(
+            non_tensor.get("frozen_k4_planning_scoring", [None] * len(batch))[index]
+            is not None
+            for index in indices
+        )
+        if any(
+            non_tensor.get("frozen_k4_planning_scoring", [None] * len(batch))[index]
+            is not None
+            for index in indices
+        ) != joint:
+            raise ValueError("evaluation rollout has partial K4 planning evidence")
+        raw_responses = [str(non_tensor["raw_response"][index]) for index in indices]
+        cots = [_actual_cot(response) for response in raw_responses]
+        has_cot = all(cot is not None for cot in cots)
+        turns = []
+        image_sources: dict[str, Any] = {}
+        action_space_names: list[str] | None = None
+        snapshot_ids: set[str] = set()
+        source_steps: set[int] = set()
+        has_terminal = False
+        for turn_index, index in enumerate(indices):
+            if int(non_tensor["turn_idx"][index]) != turn_index + 1:
+                raise ValueError("evaluation rollout turn indices are not contiguous")
+            raw = {name: values[index] for name, values in non_tensor.items()}
+            ledger = raw["decision_ledger"]
+            names = list(ledger["action_space_names"])
+            if action_space_names is None:
+                action_space_names = names
+            elif action_space_names != names:
+                raise ValueError("evaluation rollout action space changed between turns")
+            executed_ids = list(ledger["executed_action_ids"])
+            executed_names = list(ledger["executed_action_names"])
+            if len(executed_ids) != len(executed_names) or len(executed_ids) > 1:
+                raise ValueError("evaluation rollout requires at most one executed action")
+            executed = (
+                {"id": int(executed_ids[0]), "name": str(executed_names[0])}
+                if executed_ids
+                else None
+            )
+            images = raw["image_data"]
+            if not isinstance(images, (list, tuple, np.ndarray)) or not len(images):
+                raise ValueError("evaluation rollout turn is missing true image")
+            image_name = f"step_{turn_index:02d}_observation.png"
+            image_sources[image_name] = list(images)[-1]
+            turn: dict[str, Any] = {
+                "turn_index": turn_index,
+                "observation": {
+                    "text": "",
+                    "image": image_name,
+                    "sha256": "sha256:pending",
+                },
+                "raw_response": raw_responses[turn_index],
+                "cot": cots[turn_index],
+                "executed_action": executed,
+                "environment": {
+                    "reward": float(ledger["env_turn_reward"]),
+                    "terminated": bool(ledger["env_terminated"]),
+                    "truncated": bool(ledger["rollout_truncated"]),
+                    "stop_reason": str(raw["rollout_stop_reason"]),
+                },
+            }
+            if joint:
+                record = _visualization_turn_record(raw)
+                ordered = sorted(record["action_ranking"], key=lambda row: row["action_id"])
+                turn["action_distribution"] = {
+                    "kind": "guided_policy",
+                    "log_probabilities": [
+                        math.log(float(row["guided_probability"]))
+                        if float(row["guided_probability"]) > 0.0
+                        else None
+                        for row in ordered
+                    ],
+                    "prior_probabilities": [
+                        float(row["prior_probability"]) for row in ordered
+                    ],
+                }
+                turn["direct_q"] = {
+                    "values": [float(row["direct_q"]) for row in ordered],
+                    "state_value": float(record["current_state_value"]),
+                }
+                candidates = [
+                    {
+                        "action_ids": list(row["action_ids"]),
+                        "actions": list(row["actions"]),
+                        "score": float(row["predicted_value"]),
+                        "visits": int(row["visits"]),
+                    }
+                    for row in record["predicted_action_sequences"]
+                ]
+                turn["planner"] = {
+                    "search_mode": "mcts",
+                    "horizon": int(record["planning_horizon"]),
+                    "num_simulations": int(record["mcts_num_simulations"]),
+                    "exploration_constant": float(record["mcts_exploration_constant"]),
+                    "root_scores": [
+                        float(row["predicted_root_value"]) for row in ordered
+                    ],
+                    "root_visits": [int(row["root_visits"]) for row in ordered],
+                    "candidates": candidates,
+                }
+                snapshot_ids.add(str(record["snapshot_id"]))
+                source_steps.add(int(record["snapshot_source_step"]))
+            terminal_images = raw.get("terminal_image_data")
+            terminal_trace = raw.get("terminal_state_trace")
+            if terminal_images is not None or terminal_trace is not None:
+                if turn_index != len(indices) - 1:
+                    raise ValueError("evaluation terminal evidence is not final")
+                if (
+                    not isinstance(terminal_images, (list, tuple, np.ndarray))
+                    or not len(terminal_images)
+                    or not isinstance(terminal_trace, dict)
+                ):
+                    raise ValueError("evaluation terminal evidence is incomplete")
+                terminal_name = "terminal_observation.png"
+                image_sources[terminal_name] = list(terminal_images)[-1]
+                terminal_raw = str(terminal_trace["raw_response"])
+                turn["terminal"] = {
+                    "observation": {
+                        "text": "",
+                        "image": terminal_name,
+                        "sha256": "sha256:pending",
+                    },
+                    "raw_response": terminal_raw,
+                    "cot": _actual_cot(terminal_raw),
+                    "stop_reason": str(terminal_trace["rollout_stop_reason"]),
+                    "action_executed": False,
+                }
+                has_terminal = True
+            turns.append(turn)
+        final_ledger = non_tensor["decision_ledger"][indices[-1]]
+        if joint and (len(snapshot_ids) != 1 or len(source_steps) != 1):
+            raise ValueError("evaluation rollout snapshot identity changed between turns")
+        audit = {
+            "schema": ROLLOUT_AUDIT_SCHEMA,
+            "identity": {
+                "rollout_sample_id": key[0],
+                "rollout_repeat_index": key[1],
+                "record_id": str(non_tensor["group_idx"][indices[0]]),
+            },
+            "policy_family": policy_family,
+            "action_space": {
+                "id": str(final_ledger["action_space"]),
+                "version": 1,
+                "names": action_space_names,
+            },
+            "capabilities": {
+                "task": True,
+                "observations": True,
+                "terminal_observation": has_terminal,
+                "cot": has_cot,
+                "token_trace": False,
+                "action_distribution": joint,
+                "direct_q": joint,
+                "state_value": joint,
+                "planner": joint,
+                "mcts": joint,
+            },
+            "task": task,
+            "data_source": metadata["data_source"],
+            "seed": metadata["seed"],
+            "split": metadata["split"],
+            "success": bool(metadata["success"]),
+            "reward": float(metadata["reward"]),
+            "terminated": bool(final_ledger["env_terminated"]),
+            "truncated": bool(final_ledger["rollout_truncated"]),
+            "stop_reason": str(non_tensor["rollout_stop_reason"][indices[-1]]),
+            "turn_count": len(turns),
+            "provenance": {
+                "snapshot_id": next(iter(snapshot_ids)) if snapshot_ids else None,
+                "source_step": next(iter(source_steps)) if source_steps else None,
+            },
+            "turns": turns,
+        }
+        artifacts.append(RolloutBrowserArtifact(audit=audit, image_sources=image_sources))
+    return artifacts
 
 
 @dataclass
@@ -1499,6 +1739,39 @@ class RayPPOTrainer:
             "validation_visualization_audit_dir",
             None,
         )
+        rollout_browser_root = self.config.trainer.get(
+            "validation_rollout_browser_dir",
+            None,
+        )
+        rollout_browser_dir = (
+            str(Path(str(rollout_browser_root)) / f"global_step_{self.global_steps}")
+            if rollout_browser_root
+            else None
+        )
+        rollout_browser_expected_rows = self.config.trainer.get(
+            "validation_rollout_browser_expected_rows",
+            None,
+        )
+        rollout_browser_policy_family = self.config.trainer.get(
+            "validation_rollout_browser_policy_family",
+            None,
+        )
+        rollout_browser_evaluation_id = self.config.trainer.get(
+            "validation_rollout_browser_evaluation_id",
+            None,
+        )
+        rollout_browser_checkpoint_identity = self.config.trainer.get(
+            "validation_rollout_browser_checkpoint_identity",
+            None,
+        )
+        rollout_browser_snapshot_identity = self.config.trainer.get(
+            "validation_rollout_browser_snapshot_identity",
+            None,
+        )
+        rollout_browser_source_step = self.config.trainer.get(
+            "validation_rollout_browser_source_step",
+            None,
+        )
         has_sample_selector = bool(visualization_sample_id)
         has_source_seed_selector = (
             bool(visualization_data_source) and visualization_seed is not None
@@ -1519,6 +1792,26 @@ class RayPPOTrainer:
             )
         visualization_match_count = 0
         visualization_audit_count = 0
+        rollout_browser_batch_count = 0
+        if rollout_browser_dir:
+            required_browser_values = {
+                "expected_rows": rollout_browser_expected_rows,
+                "policy_family": rollout_browser_policy_family,
+                "evaluation_id": rollout_browser_evaluation_id,
+                "checkpoint_identity": rollout_browser_checkpoint_identity,
+            }
+            missing_browser_values = [
+                name for name, value in required_browser_values.items() if value is None
+            ]
+            if missing_browser_values:
+                raise ValueError(
+                    "validation rollout browser is missing config: "
+                    f"{sorted(missing_browser_values)}"
+                )
+            if self.concat_multi_turn:
+                raise ValueError(
+                    "validation rollout browser requires no-concat validation"
+                )
         if validation_journal_dir and self.concat_multi_turn:
             raise ValueError(
                 "validation batch journaling requires no-concat validation"
@@ -1536,6 +1829,11 @@ class RayPPOTrainer:
             # repeat test batch
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
+            )
+            batch_seeds = (
+                [int(value) for value in test_batch.non_tensor_batch["seed"]]
+                if "seed" in test_batch.non_tensor_batch
+                else [None] * len(test_batch)
             )
             if visualization_audit_dir:
                 required_selector_fields = {"rollout_sample_id"}
@@ -1660,6 +1958,7 @@ class RayPPOTrainer:
                 test_output_gen_batch_padded = self.async_rollout_manager.generate_sequences(test_gen_batch_padded)
 
             # unpad
+            rollout_browser_turn_batch = None
             if self.concat_multi_turn:
                 test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             else:
@@ -1670,6 +1969,8 @@ class RayPPOTrainer:
                     if uid in original_uids
                 ]
                 test_output_gen_batch = test_output_gen_batch_padded.select_idxs(valid_indices)
+                if rollout_browser_dir:
+                    rollout_browser_turn_batch = test_output_gen_batch
                 if visualization_audit_dir:
                     _dump_single_rollout_visualization_audit(
                         test_output_gen_batch,
@@ -1736,6 +2037,51 @@ class RayPPOTrainer:
                     batch_reward_extra_infos[key] = batch_values
                     reward_extra_infos_dict[key].extend(batch_values)
 
+            if rollout_browser_dir:
+                if rollout_browser_turn_batch is None:
+                    raise RuntimeError(
+                        "validation rollout browser lost pre-concat turn batch"
+                    )
+                trajectory_metadata = {}
+                success_values = batch_reward_extra_infos.get("traj_success")
+                if success_values is None:
+                    raise ValueError(
+                        "validation rollout browser requires traj_success reward metadata"
+                    )
+                for row_index, sample_id in enumerate(batch_sample_ids):
+                    identity = (str(sample_id), int(batch_repeat_indices[row_index]))
+                    if identity in trajectory_metadata:
+                        raise ValueError(
+                            "validation rollout browser metadata contains duplicate identity"
+                        )
+                    seed = batch_seeds[row_index]
+                    if seed is None:
+                        raise ValueError(
+                            "validation rollout browser requires environment seed"
+                        )
+                    trajectory_metadata[identity] = {
+                        "data_source": str(batch_data_sources[row_index]),
+                        "seed": int(seed),
+                        "split": "validation",
+                        "reward": float(scores[row_index]),
+                        "success": bool(success_values[row_index]),
+                    }
+                artifacts = _build_validation_rollout_browser_artifacts(
+                    rollout_browser_turn_batch,
+                    trajectory_metadata,
+                    policy_family=str(rollout_browser_policy_family),
+                )
+                from nimloth.eval.rollout_browser import (
+                    write_evaluation_browser_batch,
+                )
+
+                write_evaluation_browser_batch(
+                    Path(str(rollout_browser_dir)),
+                    artifacts,
+                    batch_index=rollout_browser_batch_count,
+                )
+                rollout_browser_batch_count += 1
+
             # Add token_level_scores to batch for custom metrics computation
             test_batch.batch["token_level_scores"] = reward_tensor
 
@@ -1777,6 +2123,29 @@ class RayPPOTrainer:
         ):
             raise ValueError(
                 "validation visualization did not produce exactly one rollout"
+            )
+        if rollout_browser_dir:
+            from nimloth.eval.rollout_browser import finalize_evaluation_browser
+
+            finalize_evaluation_browser(
+                Path(str(rollout_browser_dir)),
+                evaluation={
+                    "evaluation_id": str(rollout_browser_evaluation_id),
+                    "policy_family": str(rollout_browser_policy_family),
+                    "global_step": int(self.global_steps),
+                    "source_step": (
+                        int(rollout_browser_source_step)
+                        if rollout_browser_source_step is not None
+                        else None
+                    ),
+                    "checkpoint_identity": (
+                        f"{rollout_browser_checkpoint_identity}"
+                        f"@global_step_{self.global_steps}"
+                    ),
+                    "snapshot_identity": rollout_browser_snapshot_identity,
+                },
+                expected_rollouts=int(rollout_browser_expected_rows),
+                expected_batches=rollout_browser_batch_count,
             )
         if validation_journal_dir:
             if validation_journal_expected_rows is None:

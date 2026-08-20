@@ -225,6 +225,13 @@ trainer:
   validation_data_dir: ${oc.env:ID185_RUN_OUT}/validation
   validation_batch_journal_dir: ${oc.env:ID185_RUN_OUT}/full_eval_test300/validation_batch_journal
   validation_batch_journal_expected_rows: 300
+  validation_rollout_browser_dir: ${oc.env:ID185_RUN_OUT}/evaluation_browser
+  validation_rollout_browser_expected_rows: 300
+  validation_rollout_browser_policy_family: vagen_k4_joint
+  validation_rollout_browser_evaluation_id: ${oc.env:ID185_RUN_NAME}
+  validation_rollout_browser_checkpoint_identity: ${oc.env:ID185_SOURCE_CHECKPOINT}
+  validation_rollout_browser_snapshot_identity: null
+  validation_rollout_browser_source_step: null
   log_val_generations: 0
   skip_pad_tokens: true
   replace_image_tokens_for_logging: true

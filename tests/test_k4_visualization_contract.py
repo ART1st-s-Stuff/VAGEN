@@ -79,6 +79,13 @@ def test_id185_visualization_config_is_one_read_only_rollout() -> None:
         assert config.trainer.validation_visualization_audit_dir.endswith(
             "/visualization/rollout_audit"
         )
+        assert config.trainer.validation_rollout_browser_expected_rows == 1
+        assert config.trainer.validation_rollout_browser_policy_family == (
+            "vagen_k4_joint"
+        )
+        assert config.trainer.validation_rollout_browser_dir.endswith(
+            "/evaluation_browser"
+        )
 
 
 def test_visualization_audit_atomically_persists_true_image(tmp_path: Path) -> None:
