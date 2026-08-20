@@ -121,6 +121,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
         K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
@@ -133,6 +134,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
         K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     }:
         _validate_k4_integration_gate_runtime(
@@ -268,6 +270,7 @@ def _validate_k4_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
         K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
@@ -283,6 +286,9 @@ def _validate_k4_integration_gate_runtime(
     is_id186_continuation = (
         gate.implementation == K4_ID186_CONTINUE_GATE_IMPLEMENTATION
     )
+    is_id187_source20 = (
+        gate.implementation == K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION
+    )
     is_id188_step0 = (
         gate.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION
     )
@@ -292,6 +298,7 @@ def _validate_k4_integration_gate_runtime(
         or is_full_eval
         or is_visualization
         or is_id186_continuation
+        or is_id187_source20
         or is_id188_step0
     )
     expected_checkpoint_frequency = 5 if is_multinode_run else 1
@@ -385,6 +392,8 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "185_visualize_k4schemeb_dp8_tp8_source20_base_"
     elif is_id186_continuation:
         expected_run_prefix = "186_continue_k4schemeb_jointupdate_dp8_tp8_"
+    elif is_id187_source20:
+        expected_run_prefix = "187_smoke_rollout_browser_k4_dp8_tp8_source20_"
     elif is_id188_step0:
         expected_run_prefix = "188_smoke_rollout_browser_k4_dp8_tp8_step0_"
     else:
@@ -448,18 +457,18 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError("ID184 deterministic expanded dataset mismatch")
-    elif is_full_eval or is_visualization:
+    elif is_full_eval or is_visualization or is_id187_source20:
         if (
             not bool(trainer.val_before_train)
             or not bool(trainer.get("val_only", False))
             or int(trainer.test_freq) != -1
         ):
-            raise ValueError("ID185 validation-only schedule mismatch")
+            raise ValueError(f"ID{experiment_id} validation-only schedule mismatch")
         if (
             int(trainer.save_freq) != 5
             or int(trainer.max_actor_ckpt_to_keep) != 2
         ):
-            raise ValueError("ID185 checkpoint safety mismatch")
+            raise ValueError(f"ID{experiment_id} checkpoint safety mismatch")
         expected_source_suffix = (
             "/184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_"
             "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
@@ -468,17 +477,18 @@ def _validate_k4_integration_gate_runtime(
         if not str(trainer.resume_from_path).endswith(
             expected_source_suffix
         ):
-            raise ValueError("ID185 source checkpoint mismatch")
+            raise ValueError(f"ID{experiment_id} source checkpoint mismatch")
         if trainer.get("joint_dataloader_resume_policy") != "exact":
-            raise ValueError("ID185 dataloader restore policy mismatch")
+            raise ValueError(f"ID{experiment_id} dataloader restore policy mismatch")
         if not bool(config.data.get("shuffle", False)) or int(
             config.data.get("seed", -1)
         ) != 42184:
-            raise ValueError("ID185 source dataset identity mismatch")
-        expected_journal_rows = 1 if is_visualization else 300
+            raise ValueError(f"ID{experiment_id} source dataset identity mismatch")
+        is_single_visualization = is_visualization or is_id187_source20
+        expected_journal_rows = 1 if is_single_visualization else 300
         expected_journal_suffix = (
             "/visualization/validation_batch_journal"
-            if is_visualization
+            if is_single_visualization
             else "/full_eval_test300/validation_batch_journal"
         )
         if (
@@ -493,7 +503,7 @@ def _validate_k4_integration_gate_runtime(
                 trainer.get("validation_batch_journal_dir", "")
             ).endswith(expected_journal_suffix)
         ):
-            raise ValueError("ID185 validation batch journal mismatch")
+            raise ValueError(f"ID{experiment_id} validation batch journal mismatch")
         if (
             int(trainer.get("validation_rollout_browser_expected_rows", -1))
             != expected_journal_rows
@@ -510,12 +520,12 @@ def _validate_k4_integration_gate_runtime(
             )
             != str(trainer.resume_from_path)
         ):
-            raise ValueError("ID185 rollout browser mismatch")
-        if is_visualization and (
+            raise ValueError(f"ID{experiment_id} rollout browser mismatch")
+        if is_single_visualization and (
             trainer.get("validation_visualization_rollout_sample_id")
             is not None
             or trainer.get("validation_visualization_data_source")
-            != "navigation_base_test_id185"
+            != f"navigation_base_test_id{experiment_id}"
             or not 1
             <= int(trainer.get("validation_visualization_seed", -1))
             <= 60
@@ -523,7 +533,7 @@ def _validate_k4_integration_gate_runtime(
                 trainer.get("validation_visualization_audit_dir", "")
             ).endswith("/visualization/rollout_audit")
         ):
-            raise ValueError("ID185 visualization audit identity mismatch")
+            raise ValueError(f"ID{experiment_id} visualization audit identity mismatch")
     elif is_id188_step0:
         if (
             not bool(trainer.val_before_train)
@@ -782,6 +792,7 @@ def _configure_joint_actor_extension(config):
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
         K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
@@ -793,6 +804,7 @@ def _configure_joint_actor_extension(config):
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
             K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+            K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
     )

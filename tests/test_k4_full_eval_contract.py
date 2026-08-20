@@ -319,7 +319,7 @@ def test_id185_restore_migrates_transport_without_training() -> None:
     source = (ROOT / "vagen/ray_trainer.py").read_text()
     assert "ID185_TRAINING_CONTRACT_PATH_MIGRATION_OK" in source
     assert "ID185_K4_FULL_EVAL_RESTORE_OK global_step=20" in source
-    assert "experiment_id in {183, 184, 185, 186, 188}" in source
+    assert "experiment_id in {183, 184, 185, 186, 187, 188}" in source
 
 
 def test_id185_uses_all_historical_vagen_test_tasks() -> None:

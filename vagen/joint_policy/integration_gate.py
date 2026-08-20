@@ -23,6 +23,7 @@ K4_ID183_CANARY_GATE_IMPLEMENTATION = "id183_k4_10update_canary_v1"
 K4_ID184_CONTINUE_GATE_IMPLEMENTATION = "id184_k4_continue_to20_v1"
 K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION = "id185_k4_full_eval_test300_v1"
 K4_ID186_CONTINUE_GATE_IMPLEMENTATION = "id186_k4_continue_to40_v1"
+K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION = "id187_k4_source20_browser_v1"
 K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION = "id188_k4_step0_browser_v1"
 
 
@@ -70,6 +71,10 @@ class JointIntegrationGate:
                 186,
                 {"resume_20_to_30", "resume_30_to_40"},
             ),
+            K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION: (
+                187,
+                {"source20_visualize_one"},
+            ),
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION: (
                 188,
                 {"step0_visualize_one"},
@@ -96,6 +101,8 @@ class JointIntegrationGate:
             return 20
         if self.implementation == K4_ID186_CONTINUE_GATE_IMPLEMENTATION:
             return 30 if self.phase == "resume_20_to_30" else 40
+        if self.implementation == K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION:
+            return 20
         if self.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION:
             return 1
         if self.implementation in {
@@ -113,6 +120,7 @@ class JointIntegrationGate:
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
             K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+            K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
         }:
             return "resume_path"
         return (
@@ -170,6 +178,7 @@ __all__ = [
     "K4_ID184_CONTINUE_GATE_IMPLEMENTATION",
     "K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION",
     "K4_ID186_CONTINUE_GATE_IMPLEMENTATION",
+    "K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION",
     "K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION",
     "JointIntegrationGate",
     "parse_joint_integration_gate",
