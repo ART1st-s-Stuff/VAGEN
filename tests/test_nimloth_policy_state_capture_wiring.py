@@ -264,6 +264,7 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
             "extra_args": {
                 "nimloth_k4_expected_snapshot_id": "sha256:" + "1" * 64,
                 "nimloth_k4_expected_activation_version": 3,
+                "nimloth_k4_capture_mcts_trace": True,
                 "nimloth_turn_response": {
                     "close_text": "</think>",
                     "close_token_ids": [7],
@@ -319,6 +320,7 @@ class NimlothPolicyStateCaptureWiringTest(unittest.TestCase):
         self.assertEqual(kwargs["latent_hidden"].tolist(), [[1.0, 2.0], [3.0, 4.0]])
         self.assertEqual(kwargs["expected_snapshot_id"], "sha256:" + "1" * 64)
         self.assertEqual(kwargs["expected_activation_version"], 3)
+        self.assertIs(kwargs["capture_mcts_trace"], True)
         self.assertEqual(output.policy_state["schema"], "nimloth_policy_state_k4_mcts_v1")
         self.assertEqual(output.policy_state["request_id"], "request-k4")
         self.assertEqual(output.policy_state["generation_id"], "generation-k4")

@@ -19,6 +19,7 @@ _POLICY_STATE_SCHEMA = "nimloth_policy_state_v2"
 _K4_POLICY_STATE_SCHEMA = "nimloth_policy_state_k4_mcts_v1"
 _K4_EXPECTED_SNAPSHOT_KEY = "nimloth_k4_expected_snapshot_id"
 _K4_EXPECTED_ACTIVATION_KEY = "nimloth_k4_expected_activation_version"
+_K4_CAPTURE_MCTS_TRACE_KEY = "nimloth_k4_capture_mcts_trace"
 _TERMINAL_LATENT_STATE_SCHEMA = "nimloth_terminal_latent_state_v1"
 _CAPTURE_MODE_KEY = "nimloth_policy_state_capture_mode"
 _TERMINAL_CAPTURE_MODE = "terminal_latent_only"
@@ -280,6 +281,9 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                     )
                 expected_snapshot = extra_args.get(_K4_EXPECTED_SNAPSHOT_KEY)
                 expected_activation = extra_args.get(_K4_EXPECTED_ACTIVATION_KEY)
+                capture_mcts_trace = extra_args.get(_K4_CAPTURE_MCTS_TRACE_KEY, False)
+                if not isinstance(capture_mcts_trace, bool):
+                    raise ValueError("K4 MCTS trace capture flag must be bool")
                 planning_score = None
                 if expected_snapshot is not None or expected_activation is not None:
                     if not isinstance(expected_snapshot, str) or not expected_snapshot:
@@ -304,6 +308,7 @@ class NimlothVLLMHttpServer(vLLMHttpServerBase):
                             latent_hidden=state.latent_hidden,
                             expected_snapshot_id=expected_snapshot,
                             expected_activation_version=expected_activation,
+                            capture_mcts_trace=capture_mcts_trace,
                         )
                 policy_state = _policy_state_payload(
                     session_id,

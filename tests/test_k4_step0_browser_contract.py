@@ -53,6 +53,7 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
         assert config.trainer.resume_mode == "disable"
         assert config.trainer.total_training_steps == 1
         assert config.trainer.validation_rollout_browser_expected_rows == 1
+        assert config.trainer.validation_rollout_browser_capture_mcts_process is True
         assert config.trainer.validation_rollout_browser_source_step == 776
         assert config.trainer.validation_rollout_browser_checkpoint_identity == _env()[
             "ID188_ACTOR_MODEL"
@@ -66,6 +67,11 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.validation_rollout_browser_expected_rows = 40
+        with pytest.raises(ValueError, match="ID188.*browser"):
+            _configure_joint_actor_extension(drift)
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.validation_rollout_browser_capture_mcts_process = False
         with pytest.raises(ValueError, match="ID188.*browser"):
             _configure_joint_actor_extension(drift)
 

@@ -437,6 +437,9 @@ class GymAgentLoop(AgentLoopBase):
         cls.decision_ledger_enabled = parse_decision_ledger_enabled(
             config.get("decision_ledger")
         )
+        cls.capture_mcts_trace = bool(
+            config.trainer.get("validation_rollout_browser_capture_mcts_process", False)
+        )
         raw_joint_policy = config.get("joint_policy")
         if OmegaConf.is_config(raw_joint_policy):
             raw_joint_policy = OmegaConf.to_container(
@@ -804,6 +807,7 @@ class GymAgentLoop(AgentLoopBase):
                     {
                         "nimloth_k4_expected_snapshot_id": snapshot_id,
                         "nimloth_k4_expected_activation_version": activation_version,
+                        "nimloth_k4_capture_mcts_trace": self.capture_mcts_trace,
                     }
                 )
             sampling_params_for_turn.update(

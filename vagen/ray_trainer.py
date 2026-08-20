@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import hashlib
+import io
 import json
 import math
 import os
@@ -414,6 +415,73 @@ def _finalize_validation_batch_journal(
     return complete
 
 
+def _pack_k4_state_trace(
+    raw: dict[str, Any],
+    *,
+    turn_index: int,
+) -> tuple[dict[str, Any], dict[str, Any], str, bytes]:
+    policy_state = raw.get("policy_state")
+    if not isinstance(policy_state, dict):
+        raise ValueError("K4 browser requires same-generation policy state")
+    planning = policy_state.get("frozen_k4_planning")
+    if not isinstance(planning, dict):
+        raise ValueError("K4 browser requires frozen planning state evidence")
+    latent_hidden = np.asarray(policy_state.get("latent_hidden"), dtype=np.float32)
+    current_state = np.asarray(planning.get("current_state"), dtype=np.float32)
+    process = deepcopy(planning.get("mcts_trace"))
+    if latent_hidden.shape != (16, 2048) or current_state.shape != (8, 1024):
+        raise ValueError("K4 browser state tensor shape mismatch")
+    if not np.isfinite(latent_hidden).all() or not np.isfinite(current_state).all():
+        raise ValueError("K4 browser state tensor is non-finite")
+    if not isinstance(process, dict) or process.get("schema") != "nimloth_k4_mcts_process_v1":
+        raise ValueError("K4 browser requires complete MCTS process trace")
+    nodes = process.get("tree_nodes")
+    simulations = process.get("simulations")
+    if not isinstance(nodes, list) or not nodes or not isinstance(simulations, list):
+        raise ValueError("K4 browser MCTS process is incomplete")
+    node_states = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValueError("K4 browser MCTS node must be a mapping")
+        predicted = node.pop("predicted_state", None)
+        if not node.get("sequence"):
+            if predicted is not None:
+                raise ValueError("K4 MCTS root must reuse current_state")
+            node["state_index"] = None
+            continue
+        array = np.asarray(predicted, dtype=np.float32)
+        if array.shape != (8, 1024) or not np.isfinite(array).all():
+            raise ValueError("K4 predicted state tensor is invalid")
+        node["state_index"] = len(node_states)
+        node_states.append(array)
+    if not node_states:
+        raise ValueError("K4 MCTS trace contains no predicted states")
+    stacked = np.stack(node_states).astype(np.float32, copy=False)
+    archive_name = f"step_{turn_index:02d}_model_states.npz"
+    buffer = io.BytesIO()
+    np.savez_compressed(
+        buffer,
+        latent_hidden=latent_hidden,
+        current_state=current_state,
+        mcts_node_states=stacked,
+    )
+    model_state = {
+        "schema": "nimloth_k4_model_state_archive_v1",
+        "archive": archive_name,
+        "sha256": "sha256:pending",
+        "arrays": {
+            "latent_hidden": {"key": "latent_hidden", "dtype": "float32", "shape": [16, 2048]},
+            "current_state": {"key": "current_state", "dtype": "float32", "shape": [8, 1024]},
+            "mcts_node_states": {
+                "key": "mcts_node_states",
+                "dtype": "float32",
+                "shape": list(stacked.shape),
+            },
+        },
+    }
+    return model_state, process, archive_name, buffer.getvalue()
+
+
 def _visualization_turn_record(raw: dict[str, Any]) -> dict[str, Any]:
     required = {
         "decision_ledger",
@@ -720,6 +788,7 @@ def _build_validation_rollout_browser_artifacts(
         has_cot = all(cot is not None for cot in cots)
         turns = []
         image_sources: dict[str, Any] = {}
+        binary_sources: dict[str, bytes] = {}
         action_space_names: list[str] | None = None
         snapshot_ids: set[str] = set()
         source_steps: set[int] = set()
@@ -801,6 +870,11 @@ def _build_validation_rollout_browser_artifacts(
                     }
                     for row in record["predicted_action_sequences"]
                 ]
+                model_state, mcts_process, archive_name, archive_bytes = (
+                    _pack_k4_state_trace(raw, turn_index=turn_index)
+                )
+                binary_sources[archive_name] = archive_bytes
+                turn["model_state"] = model_state
                 turn["planner"] = {
                     "search_mode": "mcts",
                     "horizon": int(record["planning_horizon"]),
@@ -811,6 +885,7 @@ def _build_validation_rollout_browser_artifacts(
                     ],
                     "root_visits": [int(row["root_visits"]) for row in ordered],
                     "candidates": candidates,
+                    "mcts_process": mcts_process,
                 }
                 snapshot_ids.add(str(record["snapshot_id"]))
                 source_steps.add(int(record["snapshot_source_step"]))
@@ -868,6 +943,8 @@ def _build_validation_rollout_browser_artifacts(
                 "state_value": joint,
                 "planner": joint,
                 "mcts": joint,
+                "model_state": joint,
+                "mcts_process": joint,
             },
             "task": task,
             "data_source": metadata["data_source"],
@@ -885,7 +962,13 @@ def _build_validation_rollout_browser_artifacts(
             },
             "turns": turns,
         }
-        artifacts.append(RolloutBrowserArtifact(audit=audit, image_sources=image_sources))
+        artifacts.append(
+            RolloutBrowserArtifact(
+                audit=audit,
+                image_sources=image_sources,
+                binary_sources=binary_sources,
+            )
+        )
     return artifacts
 
 

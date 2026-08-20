@@ -58,6 +58,7 @@ def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
         assert config.trainer.resume_from_path == SOURCE
         assert config.trainer.val_only is True
         assert config.trainer.validation_rollout_browser_expected_rows == 1
+        assert config.trainer.validation_rollout_browser_capture_mcts_process is True
         assert config.trainer.validation_rollout_browser_checkpoint_identity == SOURCE
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
@@ -67,5 +68,10 @@ def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.validation_rollout_browser_expected_rows = 40
+        with pytest.raises(ValueError, match="ID187.*browser"):
+            _configure_joint_actor_extension(drift)
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.validation_rollout_browser_capture_mcts_process = False
         with pytest.raises(ValueError, match="ID187.*browser"):
             _configure_joint_actor_extension(drift)

@@ -111,6 +111,86 @@ def test_standard_vagen_rollout_declares_missing_planner_capabilities(
     assert manifest["rollout_count"] == 1
 
 
+def _policy_state_with_complete_mcts_trace():
+    sequence_nodes = [()] + [tuple([0] * depth) for depth in range(1, 5)]
+    nodes = [
+        {
+            "sequence": list(sequence),
+            "depth": len(sequence),
+            "predicted_state": (
+                None if not sequence else np.full((8, 1024), len(sequence), dtype=np.float32).tolist()
+            ),
+            "visit_count": 100,
+            "value_sum": 50.0,
+            "mean_value": 0.5,
+        }
+        for sequence in sequence_nodes
+    ]
+    simulations = [
+        {
+            "simulation_index": index,
+            "selection_steps": [
+                {
+                    "depth": depth,
+                    "parent_sequence": [0] * depth,
+                    "parent_visit_count": index,
+                    "operation": "expand" if index == 0 else "select",
+                    "action_id": 0,
+                    "child_sequence": [0] * (depth + 1),
+                    "uct_candidates": (
+                        []
+                        if index == 0
+                        else [
+                            {
+                                "action_id": 0,
+                                "child_sequence": [0] * (depth + 1),
+                                "visit_count": index,
+                                "mean_value": 0.5,
+                                "exploration_bonus": 0.1,
+                                "uct_score": 0.6,
+                            }
+                        ]
+                    ),
+                }
+                for depth in range(4)
+            ],
+            "leaf": {
+                "sequence": [0, 0, 0, 0],
+                "decision_sequence": [0, 0, 0],
+                "action_id": 0,
+                "action_values": [0.5, 0.1],
+                "value": 0.5,
+            },
+            "backups": [
+                {
+                    "sequence": [0] * depth,
+                    "visit_count_before": index,
+                    "value_sum_before": index * 0.5,
+                    "visit_count_after": index + 1,
+                    "value_sum_after": (index + 1) * 0.5,
+                    "mean_value_after": 0.5,
+                }
+                for depth in range(5)
+            ],
+        }
+        for index in range(100)
+    ]
+    return {
+        "latent_hidden": np.zeros((16, 2048), dtype=np.float32).tolist(),
+        "frozen_k4_planning": {
+            "current_state": np.ones((8, 1024), dtype=np.float32).tolist(),
+            "mcts_trace": {
+                "schema": "nimloth_k4_mcts_process_v1",
+                "num_simulations": 100,
+                "horizon": 4,
+                "exploration_constant": 1.0,
+                "tree_nodes": nodes,
+                "simulations": simulations,
+            },
+        },
+    }
+
+
 def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
     sample = "sha256:k4"
     ledger = _ledger()
@@ -133,6 +213,7 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
                 "raw_response": "<think>forward</think><action>",
                 "decision_ledger": ledger,
                 "frozen_k4_planning_scoring": {"present": True},
+                "policy_state": _policy_state_with_complete_mcts_trace(),
                 "image_data": [Image.new("RGB", (8, 8), "red")],
                 "terminal_image_data": [Image.new("RGB", (8, 8), "blue")],
                 "terminal_state_trace": {
@@ -208,8 +289,18 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
     assert len(planner["candidates"]) == 100
     assert sum(row["visits"] for row in planner["candidates"]) == 100
     assert artifact.audit["capabilities"]["direct_q"] is True
+    assert artifact.audit["capabilities"]["model_state"] is True
+    assert artifact.audit["capabilities"]["mcts_process"] is True
+    assert len(planner["mcts_process"]["simulations"]) == 100
+    assert artifact.audit["turns"][0]["model_state"]["arrays"]["current_state"]["shape"] == [8, 1024]
     root = tmp_path / "k4-browser"
     write_evaluation_browser_batch(root, [artifact], batch_index=0)
+    archives = list(root.glob("batches/batch_0000/rollouts/*/step_00_model_states.npz"))
+    assert len(archives) == 1
+    with np.load(archives[0], allow_pickle=False) as state_archive:
+        assert state_archive["latent_hidden"].shape == (16, 2048)
+        assert state_archive["current_state"].shape == (8, 1024)
+        assert state_archive["mcts_node_states"].shape == (4, 8, 1024)
     manifest = finalize_evaluation_browser(
         root,
         evaluation={

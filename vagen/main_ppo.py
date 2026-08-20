@@ -519,6 +519,15 @@ def _validate_k4_integration_gate_runtime(
                 trainer.get("validation_rollout_browser_checkpoint_identity", "")
             )
             != str(trainer.resume_from_path)
+            or (
+                is_id187_source20
+                and not bool(
+                    trainer.get(
+                        "validation_rollout_browser_capture_mcts_process",
+                        False,
+                    )
+                )
+            )
         ):
             raise ValueError(f"ID{experiment_id} rollout browser mismatch")
         if is_single_visualization and (
@@ -571,6 +580,12 @@ def _validate_k4_integration_gate_runtime(
             or int(
                 trainer.get("validation_rollout_browser_source_step", -1)
             ) != 776
+            or not bool(
+                trainer.get(
+                    "validation_rollout_browser_capture_mcts_process",
+                    False,
+                )
+            )
         ):
             raise ValueError("ID188 rollout browser mismatch")
         if (

@@ -230,6 +230,7 @@ trainer:
   validation_visualization_audit_dir: ${oc.env:ID187_RUN_OUT}/visualization/rollout_audit
   validation_rollout_browser_dir: ${oc.env:ID187_RUN_OUT}/evaluation_browser
   validation_rollout_browser_expected_rows: 1
+  validation_rollout_browser_capture_mcts_process: true
   validation_rollout_browser_policy_family: vagen_k4_joint
   validation_rollout_browser_evaluation_id: ${oc.env:ID187_RUN_NAME}
   validation_rollout_browser_checkpoint_identity: ${oc.env:ID187_SOURCE_CHECKPOINT}
