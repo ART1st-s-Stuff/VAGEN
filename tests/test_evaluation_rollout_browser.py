@@ -5,6 +5,10 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
+from nimloth.eval.rollout_browser import (
+    finalize_evaluation_browser,
+    write_evaluation_browser_batch,
+)
 from vagen.ray_trainer import _build_validation_rollout_browser_artifacts
 
 
@@ -55,7 +59,9 @@ def _metadata(sample):
     }
 
 
-def test_standard_vagen_rollout_declares_missing_planner_capabilities() -> None:
+def test_standard_vagen_rollout_declares_missing_planner_capabilities(
+    tmp_path,
+) -> None:
     sample = "sha256:sample"
     batch = FakeBatch(
         [
@@ -87,9 +93,25 @@ def test_standard_vagen_rollout_declares_missing_planner_capabilities() -> None:
     assert audit["capabilities"]["planner"] is False
     assert audit["capabilities"]["action_distribution"] is False
     assert audit["turns"][0]["executed_action"]["name"] == "move_forward"
+    root = tmp_path / "browser"
+    write_evaluation_browser_batch(root, artifacts, batch_index=0)
+    manifest = finalize_evaluation_browser(
+        root,
+        evaluation={
+            "evaluation_id": "vagen-greedy",
+            "policy_family": "vagen_greedy",
+            "global_step": 0,
+            "source_step": None,
+            "checkpoint_identity": "sha256:model",
+            "snapshot_identity": None,
+        },
+        expected_rollouts=1,
+        expected_batches=1,
+    )
+    assert manifest["rollout_count"] == 1
 
 
-def test_k4_vagen_rollout_preserves_all_planner_candidates() -> None:
+def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
     sample = "sha256:k4"
     ledger = _ledger()
     ledger["schema"] = "vagen_decision_ledger_v3_k4_mcts_guided"
@@ -186,3 +208,20 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates() -> None:
     assert len(planner["candidates"]) == 100
     assert sum(row["visits"] for row in planner["candidates"]) == 100
     assert artifact.audit["capabilities"]["direct_q"] is True
+    root = tmp_path / "k4-browser"
+    write_evaluation_browser_batch(root, [artifact], batch_index=0)
+    manifest = finalize_evaluation_browser(
+        root,
+        evaluation={
+            "evaluation_id": "vagen-k4",
+            "policy_family": "vagen_k4_joint",
+            "global_step": 20,
+            "source_step": None,
+            "checkpoint_identity": "sha256:model",
+            "snapshot_identity": None,
+        },
+        expected_rollouts=1,
+        expected_batches=1,
+    )
+    assert manifest["snapshot_identity"] == "sha256:snapshot"
+    assert manifest["source_step"] == 796
