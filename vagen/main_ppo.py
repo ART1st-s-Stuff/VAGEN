@@ -472,12 +472,11 @@ def _validate_k4_integration_gate_runtime(
         ):
             raise ValueError("ID185 validation batch journal mismatch")
         if is_visualization and (
-            not str(
-                trainer.get(
-                    "validation_visualization_rollout_sample_id",
-                    "",
-                )
-            ).startswith("sha256:")
+            trainer.get("validation_visualization_rollout_sample_id")
+            is not None
+            or trainer.get("validation_visualization_data_source")
+            != "navigation_base_test_id185"
+            or int(trainer.get("validation_visualization_seed", -1)) != 1
             or not str(
                 trainer.get("validation_visualization_audit_dir", "")
             ).endswith("/visualization/rollout_audit")

@@ -50,7 +50,6 @@ def _env() -> dict[str, str]:
             "185_visualize_k4schemeb_dp8_tp8_source20_base_failed"
         ),
         "ID185_VIS_AGENT_CONFIG": "/tmp/agent.yaml",
-        "ID185_VIS_ROLLOUT_SAMPLE_ID": "sha256:" + "a" * 64,
     }
 
 
@@ -72,9 +71,10 @@ def test_id185_visualization_config_is_one_read_only_rollout() -> None:
         assert config.trainer.val_only is True
         assert set(config.trainer.logger) == {"console"}
         assert config.trainer.validation_batch_journal_expected_rows == 1
-        assert config.trainer.validation_visualization_rollout_sample_id.startswith(
-            "sha256:"
+        assert config.trainer.validation_visualization_data_source == (
+            "navigation_base_test_id185"
         )
+        assert config.trainer.validation_visualization_seed == 1
         assert config.trainer.validation_visualization_audit_dir.endswith(
             "/visualization/rollout_audit"
         )

@@ -225,7 +225,8 @@ trainer:
   validation_data_dir: ${oc.env:ID185_VIS_RUN_OUT}/validation
   validation_batch_journal_dir: ${oc.env:ID185_VIS_RUN_OUT}/visualization/validation_batch_journal
   validation_batch_journal_expected_rows: 1
-  validation_visualization_rollout_sample_id: ${oc.env:ID185_VIS_ROLLOUT_SAMPLE_ID}
+  validation_visualization_data_source: navigation_base_test_id185
+  validation_visualization_seed: 1
   validation_visualization_audit_dir: ${oc.env:ID185_VIS_RUN_OUT}/visualization/rollout_audit
   log_val_generations: 0
   skip_pad_tokens: true

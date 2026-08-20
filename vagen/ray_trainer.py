@@ -1487,13 +1487,35 @@ class RayPPOTrainer:
             "validation_visualization_rollout_sample_id",
             None,
         )
+        visualization_data_source = self.config.trainer.get(
+            "validation_visualization_data_source",
+            None,
+        )
+        visualization_seed = self.config.trainer.get(
+            "validation_visualization_seed",
+            None,
+        )
         visualization_audit_dir = self.config.trainer.get(
             "validation_visualization_audit_dir",
             None,
         )
-        if bool(visualization_sample_id) != bool(visualization_audit_dir):
+        has_sample_selector = bool(visualization_sample_id)
+        has_source_seed_selector = (
+            bool(visualization_data_source) and visualization_seed is not None
+        )
+        if (
+            has_sample_selector == has_source_seed_selector
+            or not visualization_audit_dir
+        ) and any(
+            (
+                has_sample_selector,
+                bool(visualization_data_source),
+                visualization_seed is not None,
+                bool(visualization_audit_dir),
+            )
+        ):
             raise ValueError(
-                "validation visualization sample and audit directory must be paired"
+                "validation visualization requires exactly one paired selector"
             )
         visualization_match_count = 0
         visualization_audit_count = 0
@@ -1515,18 +1537,35 @@ class RayPPOTrainer:
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
             )
-            if visualization_sample_id:
-                if "rollout_sample_id" not in test_batch.non_tensor_batch:
+            if visualization_audit_dir:
+                required_selector_fields = {"rollout_sample_id"}
+                if has_source_seed_selector:
+                    required_selector_fields |= {"data_source", "seed"}
+                missing_selector_fields = required_selector_fields - set(
+                    test_batch.non_tensor_batch
+                )
+                if missing_selector_fields:
                     raise ValueError(
-                        "validation visualization requires rollout_sample_id"
+                        "validation visualization is missing selector fields: "
+                        f"{sorted(missing_selector_fields)}"
                     )
-                selected = [
-                    index
-                    for index, sample_id in enumerate(
-                        test_batch.non_tensor_batch["rollout_sample_id"]
-                    )
-                    if str(sample_id) == str(visualization_sample_id)
-                ]
+                selected = []
+                for index, sample_id in enumerate(
+                    test_batch.non_tensor_batch["rollout_sample_id"]
+                ):
+                    if has_sample_selector:
+                        matches = str(sample_id) == str(
+                            visualization_sample_id
+                        )
+                    else:
+                        matches = (
+                            str(test_batch.non_tensor_batch["data_source"][index])
+                            == str(visualization_data_source)
+                            and int(test_batch.non_tensor_batch["seed"][index])
+                            == int(visualization_seed)
+                        )
+                    if matches:
+                        selected.append(index)
                 if not selected:
                     continue
                 test_batch = test_batch.select_idxs(selected)
@@ -1733,7 +1772,7 @@ class RayPPOTrainer:
                 )
                 completed_validation_batches += 1
 
-        if visualization_sample_id and (
+        if visualization_audit_dir and (
             visualization_match_count != 1 or visualization_audit_count != 1
         ):
             raise ValueError(
