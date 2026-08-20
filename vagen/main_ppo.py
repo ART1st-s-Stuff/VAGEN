@@ -120,6 +120,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+        K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
@@ -130,6 +131,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+        K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
     }:
         _validate_k4_integration_gate_runtime(
             config,
@@ -263,6 +265,7 @@ def _validate_k4_integration_gate_runtime(
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+        K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
     )
 
     is_canary = gate.implementation == K4_ID183_CANARY_GATE_IMPLEMENTATION
@@ -274,8 +277,15 @@ def _validate_k4_integration_gate_runtime(
     )
     is_full_eval = is_id185 and gate.phase == "full_eval_test300"
     is_visualization = is_id185 and gate.phase == "visualize_one"
+    is_id186_continuation = (
+        gate.implementation == K4_ID186_CONTINUE_GATE_IMPLEMENTATION
+    )
     is_multinode_run = (
-        is_canary or is_continuation or is_full_eval or is_visualization
+        is_canary
+        or is_continuation
+        or is_full_eval
+        or is_visualization
+        or is_id186_continuation
     )
     expected_checkpoint_frequency = 5 if is_multinode_run else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
@@ -364,6 +374,8 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "185_eval_k4schemeb_dp8_tp8_source20_test5x60_"
     elif is_visualization:
         expected_run_prefix = "185_visualize_k4schemeb_dp8_tp8_source20_base_"
+    elif is_id186_continuation:
+        expected_run_prefix = "186_continue_k4schemeb_jointupdate_dp8_tp8_"
     else:
         expected_run_prefix = (
             f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
@@ -484,6 +496,60 @@ def _validate_k4_integration_gate_runtime(
             ).endswith("/visualization/rollout_audit")
         ):
             raise ValueError("ID185 visualization audit identity mismatch")
+    elif is_id186_continuation:
+        first_phase = gate.phase == "resume_20_to_30"
+        if (
+            bool(trainer.val_before_train) != first_phase
+            or int(trainer.test_freq) != 5
+            or bool(trainer.get("val_only", False))
+        ):
+            raise ValueError("ID186 validation schedule mismatch")
+        if (
+            int(trainer.save_freq) != 5
+            or int(trainer.max_actor_ckpt_to_keep) != 2
+        ):
+            raise ValueError("ID186 checkpoint schedule mismatch")
+        if first_phase:
+            expected_source_suffix = (
+                "/184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_"
+                "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
+                "cot07p095_val5x8_retry1/checkpoints/global_step_20"
+            )
+        else:
+            expected_source_suffix = (
+                "/186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_"
+                "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
+                "cot07p095_val5x8/checkpoints/global_step_30"
+            )
+        if not str(trainer.resume_from_path).endswith(expected_source_suffix):
+            raise ValueError("ID186 source checkpoint mismatch")
+        if trainer.get("joint_dataloader_resume_policy") != "exact":
+            raise ValueError("ID186 dataloader restore policy mismatch")
+        if not bool(config.data.get("shuffle", False)) or int(
+            config.data.get("seed", -1)
+        ) != 42184:
+            raise ValueError("ID186 deterministic dataset mismatch")
+        head_ip = os.environ.get("ID186_HEAD_IP", "")
+        job_id = os.environ.get("SLURM_JOB_ID", "")
+        expected_override = (
+            f"http://{head_ip}:{19700 + int(job_id) % 300}"
+            if head_ip and job_id.isdigit()
+            else ""
+        )
+        if (
+            os.environ.get("VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE")
+            != expected_override
+            or os.environ.get(
+                "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE_SCOPE"
+            )
+            != "id186_exact_continuation_v1"
+        ):
+            raise ValueError("ID186 environment transport migration mismatch")
+        train_config_text = Path(str(config.data.train_files)).read_text()
+        if expected_override in train_config_text:
+            raise ValueError(
+                "ID186 transport URL must not alter checkpoint-bound dataset IDs"
+            )
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
@@ -614,6 +680,7 @@ def _configure_joint_actor_extension(config):
         K4_ID183_CANARY_GATE_IMPLEMENTATION,
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+        K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
     )
 
     is_multinode_gate = (
@@ -623,6 +690,7 @@ def _configure_joint_actor_extension(config):
             K4_ID183_CANARY_GATE_IMPLEMENTATION,
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+            K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
         }
     )
     expected_topology = (4, 2) if is_multinode_gate else (1, 8)

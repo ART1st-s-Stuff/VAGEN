@@ -30,6 +30,48 @@ class _Client:
 
 
 class RemoteSessionRoutingTest(unittest.TestCase):
+    def test_scoped_transport_override_preserves_dataset_config(self) -> None:
+        try:
+            from vagen.envs_remote import gym_image_env_client as module
+        except ImportError as exc:
+            self.skipTest(f"remote-client dependencies unavailable: {exc}")
+
+        config = {
+            "base_urls": "http://immutable-checkpoint-url",
+            "timeout": 10,
+            "eval_set": "base_train",
+        }
+        with mock.patch.dict(
+            module.os.environ,
+            {
+                "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE": "http://current-server",
+                "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE_SCOPE": (
+                    "id186_exact_continuation_v1"
+                ),
+            },
+            clear=False,
+        ):
+            env = module.GymImageEnvClient(config)
+        self.assertEqual(env.base_urls, ["http://current-server"])
+        self.assertEqual(config["base_urls"], "http://immutable-checkpoint-url")
+        self.assertEqual(env._remote_env_config, {"eval_set": "base_train"})
+
+    def test_transport_override_fails_without_exact_scope(self) -> None:
+        try:
+            from vagen.envs_remote import gym_image_env_client as module
+        except ImportError as exc:
+            self.skipTest(f"remote-client dependencies unavailable: {exc}")
+
+        with mock.patch.dict(
+            module.os.environ,
+            {"VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE": "http://current-server"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "exact ID186"):
+                module.GymImageEnvClient(
+                    {"base_urls": "http://immutable-checkpoint-url"}
+                )
+
     def test_state_mutating_step_is_never_retried(self) -> None:
         try:
             from vagen.envs_remote import gym_image_env_client as module

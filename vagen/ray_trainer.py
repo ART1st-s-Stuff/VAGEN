@@ -1572,7 +1572,7 @@ class RayPPOTrainer:
                 visualization_match_count += len(test_batch)
             strict_canary_provenance = (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id in {183, 184, 185}
+                and self.joint_integration_gate.experiment_id in {183, 184, 185, 186}
             )
             if "data_source" not in test_batch.non_tensor_batch:
                 if strict_canary_provenance:
@@ -2215,7 +2215,7 @@ class RayPPOTrainer:
             )
             if (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id in {184, 185}
+                and self.joint_integration_gate.experiment_id in {184, 185, 186}
             ):
                 from dataclasses import replace
                 from pathlib import Path
@@ -2247,9 +2247,13 @@ class RayPPOTrainer:
                     migration_marker = (
                         "ID184_TRAINING_CONTRACT_PATH_MIGRATION_OK"
                     )
-                else:
+                elif self.joint_integration_gate.experiment_id == 185:
                     migration_marker = (
                         "ID185_TRAINING_CONTRACT_PATH_MIGRATION_OK"
+                    )
+                else:
+                    migration_marker = (
+                        "ID186_TRAINING_CONTRACT_PATH_MIGRATION_OK"
                     )
                 print(
                     f"{migration_marker} source={source_snapshot_root} "
@@ -2419,7 +2423,7 @@ class RayPPOTrainer:
         self._load_checkpoint()
 
         if self.joint_integration_gate is not None and (
-            self.joint_integration_gate.experiment_id in {183, 184, 185}
+            self.joint_integration_gate.experiment_id in {183, 184, 185, 186}
         ):
             if self.joint_integration_gate.experiment_id == 183:
                 expected_loaded_step = (
@@ -2429,8 +2433,12 @@ class RayPPOTrainer:
                 )
             elif self.joint_integration_gate.experiment_id == 184:
                 expected_loaded_step = 10
-            else:
+            elif self.joint_integration_gate.experiment_id == 185:
                 expected_loaded_step = 20
+            elif self.joint_integration_gate.phase == "resume_20_to_30":
+                expected_loaded_step = 20
+            else:
+                expected_loaded_step = 30
             if self.global_steps != expected_loaded_step:
                 raise ValueError(
                     f"ID{self.joint_integration_gate.experiment_id} loaded "
@@ -2444,6 +2452,14 @@ class RayPPOTrainer:
                 print("ID185_K4_FULL_EVAL_RESTORE_OK global_step=20")
             elif self.joint_integration_gate.phase == "visualize_one":
                 print("ID185_K4_VISUALIZATION_RESTORE_OK global_step=20")
+            elif self.joint_integration_gate.phase in {
+                "resume_20_to_30",
+                "resume_30_to_40",
+            }:
+                print(
+                    "ID186_K4_CONTINUE_RESUME_OK "
+                    f"global_step={self.global_steps}"
+                )
 
         if (
             self.joint_integration_gate is not None

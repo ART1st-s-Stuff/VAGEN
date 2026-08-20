@@ -22,6 +22,7 @@ K4_ID182_INTEGRATION_GATE_IMPLEMENTATION = (
 K4_ID183_CANARY_GATE_IMPLEMENTATION = "id183_k4_10update_canary_v1"
 K4_ID184_CONTINUE_GATE_IMPLEMENTATION = "id184_k4_continue_to20_v1"
 K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION = "id185_k4_full_eval_test300_v1"
+K4_ID186_CONTINUE_GATE_IMPLEMENTATION = "id186_k4_continue_to40_v1"
 
 
 @dataclass(frozen=True)
@@ -64,6 +65,10 @@ class JointIntegrationGate:
                 185,
                 {"full_eval_test300", "visualize_one"},
             ),
+            K4_ID186_CONTINUE_GATE_IMPLEMENTATION: (
+                186,
+                {"resume_20_to_30", "resume_30_to_40"},
+            ),
         }
         if self.implementation not in contracts:
             raise ValueError("unsupported joint integration gate implementation")
@@ -84,6 +89,8 @@ class JointIntegrationGate:
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         }:
             return 20
+        if self.implementation == K4_ID186_CONTINUE_GATE_IMPLEMENTATION:
+            return 30 if self.phase == "resume_20_to_30" else 40
         if self.implementation in {
             K4_ID179_INTEGRATION_GATE_IMPLEMENTATION,
             K4_ID180_INTEGRATION_GATE_IMPLEMENTATION,
@@ -98,6 +105,7 @@ class JointIntegrationGate:
         if self.implementation in {
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
+            K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
         }:
             return "resume_path"
         return (
@@ -154,6 +162,7 @@ __all__ = [
     "K4_ID183_CANARY_GATE_IMPLEMENTATION",
     "K4_ID184_CONTINUE_GATE_IMPLEMENTATION",
     "K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION",
+    "K4_ID186_CONTINUE_GATE_IMPLEMENTATION",
     "JointIntegrationGate",
     "parse_joint_integration_gate",
 ]

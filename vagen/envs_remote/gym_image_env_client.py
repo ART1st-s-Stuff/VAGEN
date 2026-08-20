@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,8 +88,25 @@ class GymImageEnvClient(GymImageEnv):
         """
         super().__init__(env_config)
 
-        # Extract client config — resolve URLs
-        raw_urls = env_config.get("base_urls",None)
+        # Connection transport may migrate while the immutable dataset config
+        # (and therefore rollout_sample_id) remains exactly checkpoint-bound.
+        override_url = os.environ.get("VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE")
+        override_scope = os.environ.get(
+            "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE_SCOPE"
+        )
+        if override_url is not None:
+            if override_scope != "id186_exact_continuation_v1":
+                raise ValueError(
+                    "remote environment URL override requires the exact "
+                    "ID186 continuation scope"
+                )
+            raw_urls = override_url
+        else:
+            if override_scope is not None:
+                raise ValueError(
+                    "remote environment URL override scope has no URL"
+                )
+            raw_urls = env_config.get("base_urls", None)
         if not raw_urls:
             url_file = env_config.get("url_file", "/root/projects/viewsuite/client_url.txt")
             with open(url_file) as f:
