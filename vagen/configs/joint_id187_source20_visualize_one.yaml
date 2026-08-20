@@ -211,9 +211,9 @@ trainer:
   critic_warmup: 0
   concat_multi_turn: false
   balance_batch: true
-  nnodes: 2
-  n_gpus_per_node: 4
-  joint_process_on_nodes: [6, 2]
+  nnodes: 1
+  n_gpus_per_node: 8
+  joint_process_on_nodes: [8]
   default_local_dir: ${oc.env:ID187_RUN_OUT}/checkpoints
   default_hdfs_dir: null
   remove_previous_ckpt_in_save: false

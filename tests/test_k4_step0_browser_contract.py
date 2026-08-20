@@ -48,9 +48,9 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
         config = _config()
         training = _configure_joint_actor_extension(config)
         assert training.initial_snapshot_source_step == 776
-        assert config.trainer.nnodes == 2
-        assert config.trainer.n_gpus_per_node == 4
-        assert list(config.trainer.joint_process_on_nodes) == [6, 2]
+        assert config.trainer.nnodes == 1
+        assert config.trainer.n_gpus_per_node == 8
+        assert list(config.trainer.joint_process_on_nodes) == [8]
         assert config.trainer.val_before_train is True
         assert config.trainer.val_only is True
         assert config.trainer.resume_mode == "disable"

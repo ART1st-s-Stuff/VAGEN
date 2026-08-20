@@ -55,9 +55,9 @@ def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
         config = _config()
         _configure_joint_actor_extension(config)
         assert config.trainer.resume_mode == "resume_path"
-        assert config.trainer.nnodes == 2
-        assert config.trainer.n_gpus_per_node == 4
-        assert list(config.trainer.joint_process_on_nodes) == [6, 2]
+        assert config.trainer.nnodes == 1
+        assert config.trainer.n_gpus_per_node == 8
+        assert list(config.trainer.joint_process_on_nodes) == [8]
         assert config.trainer.resume_from_path == SOURCE
         assert config.trainer.val_only is True
         assert config.trainer.validation_rollout_browser_expected_rows == 1
