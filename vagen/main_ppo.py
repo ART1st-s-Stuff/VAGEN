@@ -121,6 +121,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
     if gate.implementation in {
@@ -132,6 +133,7 @@ def _validate_joint_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     }:
         _validate_k4_integration_gate_runtime(
             config,
@@ -266,6 +268,7 @@ def _validate_k4_integration_gate_runtime(
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
     is_canary = gate.implementation == K4_ID183_CANARY_GATE_IMPLEMENTATION
@@ -280,12 +283,16 @@ def _validate_k4_integration_gate_runtime(
     is_id186_continuation = (
         gate.implementation == K4_ID186_CONTINUE_GATE_IMPLEMENTATION
     )
+    is_id188_step0 = (
+        gate.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION
+    )
     is_multinode_run = (
         is_canary
         or is_continuation
         or is_full_eval
         or is_visualization
         or is_id186_continuation
+        or is_id188_step0
     )
     expected_checkpoint_frequency = 5 if is_multinode_run else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
@@ -358,6 +365,8 @@ def _validate_k4_integration_gate_runtime(
     expected_epochs = (
         gate.expected_total_training_steps if is_multinode_run else 1
     )
+    if is_id188_step0 and trainer.resume_mode != gate.expected_resume_mode:
+        raise ValueError("ID188 resume must be disabled")
     if (
         int(trainer.total_training_steps) != gate.expected_total_training_steps
         or int(trainer.total_epochs) != expected_epochs
@@ -376,6 +385,8 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "185_visualize_k4schemeb_dp8_tp8_source20_base_"
     elif is_id186_continuation:
         expected_run_prefix = "186_continue_k4schemeb_jointupdate_dp8_tp8_"
+    elif is_id188_step0:
+        expected_run_prefix = "188_smoke_rollout_browser_k4_dp8_tp8_step0_"
     else:
         expected_run_prefix = (
             f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
@@ -513,6 +524,57 @@ def _validate_k4_integration_gate_runtime(
             ).endswith("/visualization/rollout_audit")
         ):
             raise ValueError("ID185 visualization audit identity mismatch")
+    elif is_id188_step0:
+        if (
+            not bool(trainer.val_before_train)
+            or not bool(trainer.get("val_only", False))
+            or int(trainer.test_freq) != -1
+        ):
+            raise ValueError("ID188 validation-only schedule mismatch")
+        if trainer.resume_mode != "disable" or trainer.get("resume_from_path"):
+            raise ValueError("ID188 resume must be disabled")
+        if (
+            int(trainer.save_freq) != 5
+            or int(trainer.max_actor_ckpt_to_keep) != 2
+        ):
+            raise ValueError("ID188 checkpoint safety mismatch")
+        if (
+            int(trainer.get("validation_batch_journal_expected_rows", -1)) != 1
+            or not str(
+                trainer.get("validation_batch_journal_dir", "")
+            ).endswith("/visualization/validation_batch_journal")
+        ):
+            raise ValueError("ID188 validation batch journal mismatch")
+        if (
+            int(trainer.get("validation_rollout_browser_expected_rows", -1)) != 1
+            or trainer.get("validation_rollout_browser_policy_family")
+            != "vagen_k4_joint"
+            or not str(
+                trainer.get("validation_rollout_browser_dir", "")
+            ).endswith("/evaluation_browser")
+            or str(
+                trainer.get("validation_rollout_browser_evaluation_id", "")
+            ) != str(trainer.experiment_name)
+            or str(
+                trainer.get("validation_rollout_browser_checkpoint_identity", "")
+            ) != str(config.actor_rollout_ref.model.path)
+            or int(
+                trainer.get("validation_rollout_browser_source_step", -1)
+            ) != 776
+        ):
+            raise ValueError("ID188 rollout browser mismatch")
+        if (
+            trainer.get("validation_visualization_rollout_sample_id") is not None
+            or trainer.get("validation_visualization_data_source")
+            != "navigation_base_test_id188"
+            or not 1 <= int(
+                trainer.get("validation_visualization_seed", -1)
+            ) <= 60
+            or not str(
+                trainer.get("validation_visualization_audit_dir", "")
+            ).endswith("/visualization/rollout_audit")
+        ):
+            raise ValueError("ID188 visualization audit identity mismatch")
     elif is_id186_continuation:
         first_phase = gate.phase == "resume_20_to_30"
         if (
@@ -720,6 +782,7 @@ def _configure_joint_actor_extension(config):
         K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
         K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
         K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+        K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
     )
 
     is_multinode_gate = (
@@ -730,6 +793,7 @@ def _configure_joint_actor_extension(config):
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
             K4_ID186_CONTINUE_GATE_IMPLEMENTATION,
+            K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
     )
     expected_topology = (4, 2) if is_multinode_gate else (1, 8)

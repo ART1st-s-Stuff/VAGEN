@@ -1878,7 +1878,7 @@ class RayPPOTrainer:
                 visualization_match_count += len(test_batch)
             strict_canary_provenance = (
                 self.joint_integration_gate is not None
-                and self.joint_integration_gate.experiment_id in {183, 184, 185, 186}
+                and self.joint_integration_gate.experiment_id in {183, 184, 185, 186, 188}
             )
             if "data_source" not in test_batch.non_tensor_batch:
                 if strict_canary_provenance:
@@ -2812,7 +2812,7 @@ class RayPPOTrainer:
         self._load_checkpoint()
 
         if self.joint_integration_gate is not None and (
-            self.joint_integration_gate.experiment_id in {183, 184, 185, 186}
+            self.joint_integration_gate.experiment_id in {183, 184, 185, 186, 188}
         ):
             if self.joint_integration_gate.experiment_id == 183:
                 expected_loaded_step = (
@@ -2824,6 +2824,8 @@ class RayPPOTrainer:
                 expected_loaded_step = 10
             elif self.joint_integration_gate.experiment_id == 185:
                 expected_loaded_step = 20
+            elif self.joint_integration_gate.experiment_id == 188:
+                expected_loaded_step = 0
             elif self.joint_integration_gate.phase == "resume_20_to_30":
                 expected_loaded_step = 20
             else:
@@ -2841,6 +2843,8 @@ class RayPPOTrainer:
                 print("ID185_K4_FULL_EVAL_RESTORE_OK global_step=20")
             elif self.joint_integration_gate.phase == "visualize_one":
                 print("ID185_K4_VISUALIZATION_RESTORE_OK global_step=20")
+            elif self.joint_integration_gate.phase == "step0_visualize_one":
+                print("ID188_K4_STEP0_BOOTSTRAP_OK global_step=0")
             elif self.joint_integration_gate.phase in {
                 "resume_20_to_30",
                 "resume_30_to_40",
