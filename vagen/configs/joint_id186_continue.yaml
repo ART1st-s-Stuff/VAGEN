@@ -219,7 +219,7 @@ trainer:
   max_actor_ckpt_to_keep: 2
   resume_mode: resume_path
   resume_from_path: ${oc.env:ID186_SOURCE_CHECKPOINT}
-  joint_dataloader_resume_policy: exact
+  joint_dataloader_resume_policy: reset
   del_local_ckpt_after_load: false
   rollout_data_dir: ${oc.env:ID186_RUN_OUT}/rollout_data
   validation_data_dir: ${oc.env:ID186_RUN_OUT}/validation

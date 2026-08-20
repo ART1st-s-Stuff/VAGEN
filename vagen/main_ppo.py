@@ -535,12 +535,16 @@ def _validate_k4_integration_gate_runtime(
         else:
             expected_source_suffix = (
                 "/186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_"
-                "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
+                "train3x1200_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
                 "cot07p095_val5x8/checkpoints/global_step_30"
             )
         if not str(trainer.resume_from_path).endswith(expected_source_suffix):
             raise ValueError("ID186 source checkpoint mismatch")
-        if trainer.get("joint_dataloader_resume_policy") != "exact":
+        expected_dataloader_policy = "reset" if first_phase else "exact"
+        if (
+            trainer.get("joint_dataloader_resume_policy")
+            != expected_dataloader_policy
+        ):
             raise ValueError("ID186 dataloader restore policy mismatch")
         if not bool(config.data.get("shuffle", False)) or int(
             config.data.get("seed", -1)

@@ -18,11 +18,10 @@ from vagen.main_ppo import _configure_joint_actor_extension
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "vagen/configs/joint_id186_continue.yaml"
 TRAIN = ROOT / "examples/train/navigation/train_navigation_joint_id186.yaml"
-ID184_TRAIN = ROOT / "examples/train/navigation/train_navigation_joint_id184.yaml"
 VAL = ROOT / "examples/train/navigation/val_navigation_joint_id186.yaml"
 RUN_NAME = (
     "186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_"
-    "train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
+    "train3x1200_b24_t20_s100_c1_a1_b85p78297006578457_t1_"
     "cot07p095_val5x8"
 )
 
@@ -99,7 +98,7 @@ def test_id186_phase1_accepts_only_exact_step20_continuation() -> None:
         assert config.trainer.val_before_train is True
         assert config.trainer.test_freq == 5
         assert config.trainer.save_freq == 5
-        assert config.trainer.joint_dataloader_resume_policy == "exact"
+        assert config.trainer.joint_dataloader_resume_policy == "reset"
         assert config.trainer.resume_from_path.endswith("global_step_20")
         assert config.trainer.validation_rollout_browser_expected_rows == 40
         assert config.trainer.validation_rollout_browser_policy_family == (
@@ -110,7 +109,7 @@ def test_id186_phase1_accepts_only_exact_step20_continuation() -> None:
         )
 
         drift = _config_source()
-        drift.trainer.joint_dataloader_resume_policy = "reset"
+        drift.trainer.joint_dataloader_resume_policy = "exact"
         with pytest.raises(ValueError, match="ID186.*dataloader"):
             _configure_joint_actor_extension(drift)
 
@@ -138,6 +137,7 @@ def test_id186_phase2_accepts_only_fresh_step30_resume() -> None:
         config.trainer.total_training_steps = 40
         config.trainer.total_epochs = 40
         config.trainer.val_before_train = False
+        config.trainer.joint_dataloader_resume_policy = "exact"
         config.trainer.resume_from_path = f"/tmp/{RUN_NAME}/checkpoints/global_step_30"
         _configure_joint_actor_extension(config)
 
@@ -152,11 +152,10 @@ def test_id186_phase2_accepts_only_fresh_step30_resume() -> None:
             _configure_joint_actor_extension(drift)
 
 
-def test_id186_reuses_the_defined_training_set_and_small_validation() -> None:
-    assert yaml.safe_load(TRAIN.read_text()) == yaml.safe_load(ID184_TRAIN.read_text())
+def test_id186_uses_all_training_tasks_and_small_validation() -> None:
     train = yaml.safe_load(TRAIN.read_text())["envs"]
     val = yaml.safe_load(VAL.read_text())["envs"]
-    assert len(train) == 3 and all(row["n_envs"] == 60 for row in train)
+    assert len(train) == 3 and all(row["n_envs"] == 1200 for row in train)
     assert {row["config"]["eval_set"] for row in train} == {
         "base_train",
         "common_sense_train",
@@ -176,5 +175,6 @@ def test_id186_restore_runtime_is_explicit_for_both_boundaries() -> None:
     source = (ROOT / "vagen/ray_trainer.py").read_text()
     assert "ID186_TRAINING_CONTRACT_PATH_MIGRATION_OK" in source
     assert "ID186_K4_CONTINUE_RESUME_OK" in source
+    assert "ID186_DATALOADER_RESET_OK global_step=20" in source
     assert '"resume_20_to_30"' in source
     assert '"resume_30_to_40"' in source

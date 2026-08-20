@@ -2676,9 +2676,9 @@ class RayPPOTrainer:
                 ):
                     raise ValueError("joint actor and frozen Q restore state mismatch")
 
-        # A changed dataset cannot consume the source sampler cursor. ID184 is
-        # the one explicit exception: model/optimizer/RNG/joint state remain
-        # exact, while a new deterministic sampler starts from its own manifest.
+        # A changed dataset cannot consume the source sampler cursor. ID184 and
+        # ID186 phase1 are explicit exceptions: model/optimizer/RNG/joint state
+        # remain exact while the new deterministic full-split sampler restarts.
         dataloader_local_path = os.path.join(global_step_folder, "data.pt")
         dataloader_policy = str(
             self.config.trainer.get(
@@ -2689,18 +2689,30 @@ class RayPPOTrainer:
         if dataloader_policy not in {"exact", "reset"}:
             raise ValueError("unsupported joint dataloader resume policy")
         if dataloader_policy == "reset":
+            id184_reset = (
+                self.joint_integration_gate is not None
+                and self.joint_integration_gate.experiment_id == 184
+                and self.global_steps == 10
+            )
+            id186_reset = (
+                self.joint_integration_gate is not None
+                and self.joint_integration_gate.experiment_id == 186
+                and self.joint_integration_gate.phase == "resume_20_to_30"
+                and self.global_steps == 20
+            )
             if (
                 self.joint_training_config is None
-                or self.joint_integration_gate is None
-                or self.joint_integration_gate.experiment_id != 184
-                or self.global_steps != 10
+                or not (id184_reset or id186_reset)
                 or not os.path.isfile(dataloader_local_path)
             ):
                 raise ValueError(
-                    "joint dataloader reset is restricted to the complete "
-                    "ID184 step10 source checkpoint"
+                    "joint dataloader reset is restricted to an approved "
+                    "complete continuation checkpoint"
                 )
-            print("ID184_DATALOADER_RESET_OK global_step=10")
+            if id184_reset:
+                print("ID184_DATALOADER_RESET_OK global_step=10")
+            else:
+                print("ID186_DATALOADER_RESET_OK global_step=20")
         elif os.path.exists(dataloader_local_path):
             dataloader_state_dict = torch.load(
                 dataloader_local_path,
