@@ -571,7 +571,7 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
         )
-    if (is_canary or is_continuation) and (
+    if (is_canary or is_continuation or is_id186_continuation) and (
         int(trainer.get("validation_rollout_browser_expected_rows", -1))
         != 40
         or trainer.get("validation_rollout_browser_policy_family")

@@ -101,6 +101,13 @@ def test_id186_phase1_accepts_only_exact_step20_continuation() -> None:
         assert config.trainer.save_freq == 5
         assert config.trainer.joint_dataloader_resume_policy == "exact"
         assert config.trainer.resume_from_path.endswith("global_step_20")
+        assert config.trainer.validation_rollout_browser_expected_rows == 40
+        assert config.trainer.validation_rollout_browser_policy_family == (
+            "vagen_k4_joint"
+        )
+        assert config.trainer.validation_rollout_browser_dir.endswith(
+            "/evaluation_browser"
+        )
 
         drift = _config_source()
         drift.trainer.joint_dataloader_resume_policy = "reset"
@@ -110,6 +117,11 @@ def test_id186_phase1_accepts_only_exact_step20_continuation() -> None:
         drift = _config_source()
         drift.trainer.resume_from_path = "/tmp/global_step_20"
         with pytest.raises(ValueError, match="ID186.*checkpoint"):
+            _configure_joint_actor_extension(drift)
+
+        drift = _config_source()
+        drift.trainer.validation_rollout_browser_expected_rows = 8
+        with pytest.raises(ValueError, match="ID186.*browser"):
             _configure_joint_actor_extension(drift)
 
     missing_override = _env()
