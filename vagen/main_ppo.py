@@ -823,7 +823,21 @@ def _configure_joint_actor_extension(config):
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
     )
-    expected_topology = (4, 2) if is_multinode_gate else (1, 8)
+    is_heterogeneous_6x2_gate = (
+        integration_gate is not None
+        and integration_gate.implementation
+        in {
+            K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
+            K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
+        }
+    )
+    expected_topology = (
+        (2, 4)
+        if is_heterogeneous_6x2_gate
+        else (4, 2)
+        if is_multinode_gate
+        else (1, 8)
+    )
     actual_topology = (
         int(config.trainer.nnodes),
         int(config.trainer.n_gpus_per_node),
@@ -835,13 +849,24 @@ def _configure_joint_actor_extension(config):
         or int(config.actor_rollout_ref.rollout.get("data_parallel_size", 1)) != 1
     ):
         if is_multinode_gate:
+            topology_name = (
+                "heterogeneous 6+2 physical topology"
+                if is_heterogeneous_6x2_gate
+                else "multi-node 4x2"
+            )
             raise ValueError(
-                f"ID{integration_gate.experiment_id} requires multi-node "
-                "4x2 actor DP8, rollout TP8, and rollout DP1"
+                f"ID{integration_gate.experiment_id} requires {topology_name}, "
+                "actor DP8, rollout TP8, and rollout DP1"
             )
         raise ValueError(
             "joint training requires one node, actor DP8, rollout TP8, and rollout DP1"
         )
+    process_on_nodes = list(config.trainer.get("joint_process_on_nodes", []))
+    if is_heterogeneous_6x2_gate:
+        if process_on_nodes != [6, 2]:
+            raise ValueError("ID187/188 runtime requires heterogeneous Ray pool [6, 2]")
+    elif process_on_nodes:
+        raise ValueError("joint_process_on_nodes is only approved for ID187/188")
     if actor.ppo_epochs != 1:
         raise ValueError("joint training requires exactly one PPO epoch")
     if config.trainer.critic_warmup != 0:
@@ -1003,8 +1028,13 @@ class TaskRunner:
         from verl.trainer.ppo.ray_trainer import Role
 
         global_pool_id = "global_pool"
+        process_on_nodes = list(config.trainer.get("joint_process_on_nodes", []))
         resource_pool_spec = {
-            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+            global_pool_id: (
+                process_on_nodes
+                if process_on_nodes
+                else [config.trainer.n_gpus_per_node] * config.trainer.nnodes
+            ),
         }
         # TODO Here you can use the new registration method to support dynamic registration of roles
         if config.reward_model.enable_resource_pool:

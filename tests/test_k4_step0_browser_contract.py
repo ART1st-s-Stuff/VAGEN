@@ -48,6 +48,9 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
         config = _config()
         training = _configure_joint_actor_extension(config)
         assert training.initial_snapshot_source_step == 776
+        assert config.trainer.nnodes == 2
+        assert config.trainer.n_gpus_per_node == 4
+        assert list(config.trainer.joint_process_on_nodes) == [6, 2]
         assert config.trainer.val_before_train is True
         assert config.trainer.val_only is True
         assert config.trainer.resume_mode == "disable"
@@ -68,6 +71,11 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.validation_rollout_browser_expected_rows = 40
         with pytest.raises(ValueError, match="ID188.*browser"):
+            _configure_joint_actor_extension(drift)
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.joint_process_on_nodes = [4, 4]
+        with pytest.raises(ValueError, match="heterogeneous Ray pool"):
             _configure_joint_actor_extension(drift)
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))

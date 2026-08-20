@@ -55,6 +55,9 @@ def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
         config = _config()
         _configure_joint_actor_extension(config)
         assert config.trainer.resume_mode == "resume_path"
+        assert config.trainer.nnodes == 2
+        assert config.trainer.n_gpus_per_node == 4
+        assert list(config.trainer.joint_process_on_nodes) == [6, 2]
         assert config.trainer.resume_from_path == SOURCE
         assert config.trainer.val_only is True
         assert config.trainer.validation_rollout_browser_expected_rows == 1
@@ -69,6 +72,11 @@ def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.validation_rollout_browser_expected_rows = 40
         with pytest.raises(ValueError, match="ID187.*browser"):
+            _configure_joint_actor_extension(drift)
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.joint_process_on_nodes = [4, 4]
+        with pytest.raises(ValueError, match="heterogeneous Ray pool"):
             _configure_joint_actor_extension(drift)
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
