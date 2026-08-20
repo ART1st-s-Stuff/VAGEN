@@ -50,6 +50,7 @@ def _env() -> dict[str, str]:
             "185_visualize_k4schemeb_dp8_tp8_source20_base_failed"
         ),
         "ID185_VIS_AGENT_CONFIG": "/tmp/agent.yaml",
+        "ID185_VIS_SEED": "2",
     }
 
 
@@ -74,7 +75,7 @@ def test_id185_visualization_config_is_one_read_only_rollout() -> None:
         assert config.trainer.validation_visualization_data_source == (
             "navigation_base_test_id185"
         )
-        assert config.trainer.validation_visualization_seed == 1
+        assert int(config.trainer.validation_visualization_seed) == 2
         assert config.trainer.validation_visualization_audit_dir.endswith(
             "/visualization/rollout_audit"
         )

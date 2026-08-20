@@ -476,7 +476,9 @@ def _validate_k4_integration_gate_runtime(
             is not None
             or trainer.get("validation_visualization_data_source")
             != "navigation_base_test_id185"
-            or int(trainer.get("validation_visualization_seed", -1)) != 1
+            or not 1
+            <= int(trainer.get("validation_visualization_seed", -1))
+            <= 60
             or not str(
                 trainer.get("validation_visualization_audit_dir", "")
             ).endswith("/visualization/rollout_audit")
