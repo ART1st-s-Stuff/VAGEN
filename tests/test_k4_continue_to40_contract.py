@@ -88,7 +88,7 @@ def test_id186_gate_has_two_exact_resume_phases() -> None:
         )
 
 
-def test_id186_phase1_accepts_only_exact_step20_continuation() -> None:
+def test_id186_phase1_resets_only_full_dataset_sampler() -> None:
     with patch.dict(os.environ, _env()):
         config = _config_source()
         training = _configure_joint_actor_extension(config)

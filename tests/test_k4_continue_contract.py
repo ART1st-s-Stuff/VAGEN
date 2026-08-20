@@ -119,7 +119,8 @@ def test_id184_restore_migrates_only_the_snapshot_transport_path() -> None:
     assert "snapshot_transport_root=source_snapshot_root" in source
     assert "ID184_DATALOADER_RESET_OK global_step=10" in source
     assert 'joint_dataloader_resume_policy",' in source
-    assert 'self.joint_integration_gate.experiment_id != 184' in source
+    assert "id184_reset = (" in source
+    assert "ID186_DATALOADER_RESET_OK global_step=20" in source
 
 
 def test_id184_expands_only_training_to_three_by_sixty_unique_tasks() -> None:
