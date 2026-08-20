@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import hashlib
 import json
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -411,6 +412,233 @@ def _finalize_validation_batch_journal(
         f"batches={expected_batch_count} rows={total_rows}"
     )
     return complete
+
+
+def _visualization_turn_record(raw: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "decision_ledger",
+        "frozen_k4_planning_scoring",
+        "policy_response_trace",
+        "guided_action_draw",
+        "guided_action_execution",
+        "turn_idx",
+        "guided_turn_index",
+        "rollout_stop_reason",
+    }
+    missing = required - set(raw)
+    if missing:
+        raise ValueError(
+            "visualization turn is missing fields: " f"{sorted(missing)}"
+        )
+    ledger = raw["decision_ledger"]
+    behavior = ledger["behavior_record"]
+    scoring = raw["frozen_k4_planning_scoring"]
+    trace = raw["policy_response_trace"]
+    if behavior["snapshot_id"] != scoring["snapshot_id"]:
+        raise ValueError("visualization turn snapshot identity mismatch")
+    names = list(behavior["action_space_names"])
+    action_count = len(names)
+    vectors = {
+        "prior_log_probs": behavior["prior_log_probs"],
+        "direct_all_action_q": behavior["direct_all_action_q"],
+        "planner_root_mean_values": behavior["planner_root_mean_values"],
+        "planner_root_visit_counts": behavior["planner_root_visit_counts"],
+    }
+    if any(len(values) != action_count for values in vectors.values()):
+        raise ValueError("visualization action vectors do not align")
+    from vagen.joint_policy.planning_contract import (
+        K4MCTSGuidedPolicyConfig,
+        k4_guided_log_probs_reference,
+    )
+
+    config = K4MCTSGuidedPolicyConfig.from_mapping(
+        behavior["policy_config"]
+    )
+    _, guided_log_probs = k4_guided_log_probs_reference(
+        behavior["prior_logits"],
+        behavior["planner_root_mean_values"],
+        config,
+    )
+    prior_probs = [math.exp(value) for value in behavior["prior_log_probs"]]
+    guided_probs = [math.exp(value) for value in guided_log_probs]
+    direct_q = [float(value) for value in behavior["direct_all_action_q"]]
+    root_values = [
+        float(value) for value in behavior["planner_root_mean_values"]
+    ]
+    visits = [int(value) for value in behavior["planner_root_visit_counts"]]
+    current_state_value = sum(
+        probability * value
+        for probability, value in zip(guided_probs, direct_q, strict=True)
+    )
+    selected = int(behavior["guided_action_id"])
+    action_rows = [
+        {
+            "action_id": action_id,
+            "action": name,
+            "prior_probability": prior_probs[action_id],
+            "guided_probability": guided_probs[action_id],
+            "direct_q": direct_q[action_id],
+            "predicted_root_value": root_values[action_id],
+            "root_visits": visits[action_id],
+            "is_prior_action": action_id == int(behavior["prior_action_id"]),
+            "is_executed_action": action_id == selected,
+        }
+        for action_id, name in enumerate(names)
+    ]
+    action_ranking = sorted(
+        action_rows,
+        key=lambda row: (
+            -row["guided_probability"],
+            -row["predicted_root_value"],
+            row["action_id"],
+        ),
+    )
+    candidates = []
+    for sequence, value, count in zip(
+        scoring["candidate_sequences"],
+        scoring["candidate_mean_values"],
+        scoring["candidate_visit_counts"],
+        strict=True,
+    ):
+        candidates.append(
+            {
+                "action_ids": [int(action_id) for action_id in sequence],
+                "actions": [names[int(action_id)] for action_id in sequence],
+                "predicted_value": float(value),
+                "visits": int(count),
+            }
+        )
+    candidates.sort(
+        key=lambda row: (-row["visits"], -row["predicted_value"], row["action_ids"])
+    )
+    raw_response = trace["raw_response"]
+    if not isinstance(raw_response, str) or "</think>" not in raw_response:
+        raise ValueError("visualization turn raw CoT is malformed")
+    cot = raw_response.split("</think>", 1)[0] + "</think>"
+    return {
+        "turn_index": int(raw["guided_turn_index"]),
+        "turn_number": int(raw["turn_idx"]),
+        "cot": cot,
+        "raw_response": raw_response,
+        "prior_action": names[int(behavior["prior_action_id"])],
+        "executed_action": names[selected],
+        "current_state_value": current_state_value,
+        "executed_action_direct_q": direct_q[selected],
+        "executed_action_predicted_value": root_values[selected],
+        "action_ranking": action_ranking,
+        "predicted_action_sequences": candidates,
+        "env_turn_reward": float(ledger["env_turn_reward"]),
+        "env_terminated": bool(ledger["env_terminated"]),
+        "rollout_truncated": bool(ledger["rollout_truncated"]),
+        "rollout_stop_reason": str(raw["rollout_stop_reason"]),
+        "planner_latency_seconds": float(scoring["planner_latency_seconds"]),
+        "snapshot_id": behavior["snapshot_id"],
+        "snapshot_source_step": int(scoring["snapshot_source_step"]),
+        "request_id": scoring["request_id"],
+        "generation_id": scoring["generation_id"],
+    }
+
+
+def _dump_single_rollout_visualization_audit(
+    batch: DataProto,
+    audit_dir: str | os.PathLike[str],
+) -> dict[str, Any]:
+    """Atomically persist true per-turn images and immutable planning evidence."""
+
+    if len(batch) < 1:
+        raise ValueError("visualization audit requires at least one turn")
+    root = Path(audit_dir)
+    if root.exists():
+        raise FileExistsError(f"visualization audit output already exists: {root}")
+    temporary = root.parent / f".{root.name}.{uuid.uuid4().hex}.tmp"
+    temporary.mkdir(parents=True)
+    try:
+        non_tensor = batch.non_tensor_batch
+        group_ids = {str(value) for value in non_tensor["group_idx"]}
+        trajectory_ids = {int(value) for value in non_tensor["traj_idx"]}
+        if len(group_ids) != 1 or trajectory_ids != {0}:
+            raise ValueError("visualization audit requires exactly one trajectory")
+        order = sorted(
+            range(len(batch)),
+            key=lambda index: int(non_tensor["turn_idx"][index]),
+        )
+        turns = []
+        for position, index in enumerate(order):
+            raw = {key: values[index] for key, values in non_tensor.items()}
+            turn = _visualization_turn_record(raw)
+            if turn["turn_index"] != position:
+                raise ValueError("visualization audit turn indices are not contiguous")
+            images = raw.get("image_data")
+            if (
+                not isinstance(images, (list, tuple, np.ndarray))
+                or len(images) == 0
+            ):
+                raise ValueError("visualization turn is missing true observation image")
+            observation = list(images)[-1]
+            image_name = f"step_{position:02d}_observation.png"
+            observation.save(temporary / image_name, format="PNG")
+            turn["observation_image"] = image_name
+            terminal_images = raw.get("terminal_image_data")
+            terminal_trace = raw.get("terminal_state_trace")
+            if terminal_images is not None or terminal_trace is not None:
+                if position != len(order) - 1:
+                    raise ValueError("terminal visualization evidence is not last")
+                if (
+                    not isinstance(terminal_images, (list, tuple, np.ndarray))
+                    or len(terminal_images) == 0
+                    or not isinstance(terminal_trace, dict)
+                ):
+                    raise ValueError("terminal visualization evidence is incomplete")
+                terminal_name = "terminal_observation.png"
+                list(terminal_images)[-1].save(
+                    temporary / terminal_name,
+                    format="PNG",
+                )
+                terminal_raw = terminal_trace["raw_response"]
+                turn["terminal"] = {
+                    "observation_image": terminal_name,
+                    "cot": (
+                        terminal_raw.split("</think>", 1)[0] + "</think>"
+                        if "</think>" in terminal_raw
+                        else terminal_raw
+                    ),
+                    "raw_response": terminal_raw,
+                    "rollout_stop_reason": terminal_trace[
+                        "rollout_stop_reason"
+                    ],
+                }
+            turns.append(turn)
+        payload = {
+            "schema": "vagen_single_rollout_visualization_audit_v1",
+            "rollout_sample_id": str(
+                non_tensor["rollout_sample_id"][order[0]]
+            ),
+            "rollout_repeat_index": int(
+                non_tensor["rollout_repeat_index"][order[0]]
+            ),
+            "turn_count": len(turns),
+            "success": bool(
+                non_tensor["reward_extra_info"][order[-1]]["traj_success"]
+            ),
+            "turns": turns,
+        }
+        audit_path = temporary / "rollout_audit.json"
+        audit_path.write_text(
+            json.dumps(payload, indent=2, allow_nan=False) + "\n"
+        )
+        with audit_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.rename(temporary, root)
+    finally:
+        if temporary.exists():
+            import shutil
+
+            shutil.rmtree(temporary)
+    print(
+        "SINGLE_ROLLOUT_VISUALIZATION_AUDIT_COMPLETE "
+        f"sample_id={payload['rollout_sample_id']} turns={payload['turn_count']}"
+    )
+    return payload
 
 
 @dataclass
@@ -1255,6 +1483,20 @@ class RayPPOTrainer:
             "validation_batch_journal_expected_rows",
             None,
         )
+        visualization_sample_id = self.config.trainer.get(
+            "validation_visualization_rollout_sample_id",
+            None,
+        )
+        visualization_audit_dir = self.config.trainer.get(
+            "validation_visualization_audit_dir",
+            None,
+        )
+        if bool(visualization_sample_id) != bool(visualization_audit_dir):
+            raise ValueError(
+                "validation visualization sample and audit directory must be paired"
+            )
+        visualization_match_count = 0
+        visualization_audit_count = 0
         if validation_journal_dir and self.concat_multi_turn:
             raise ValueError(
                 "validation batch journaling requires no-concat validation"
@@ -1273,6 +1515,22 @@ class RayPPOTrainer:
             test_batch = test_batch.repeat(
                 repeat_times=self.config.actor_rollout_ref.rollout.val_kwargs.n, interleave=True
             )
+            if visualization_sample_id:
+                if "rollout_sample_id" not in test_batch.non_tensor_batch:
+                    raise ValueError(
+                        "validation visualization requires rollout_sample_id"
+                    )
+                selected = [
+                    index
+                    for index, sample_id in enumerate(
+                        test_batch.non_tensor_batch["rollout_sample_id"]
+                    )
+                    if str(sample_id) == str(visualization_sample_id)
+                ]
+                if not selected:
+                    continue
+                test_batch = test_batch.select_idxs(selected)
+                visualization_match_count += len(test_batch)
             strict_canary_provenance = (
                 self.joint_integration_gate is not None
                 and self.joint_integration_gate.experiment_id in {183, 184, 185}
@@ -1373,6 +1631,12 @@ class RayPPOTrainer:
                     if uid in original_uids
                 ]
                 test_output_gen_batch = test_output_gen_batch_padded.select_idxs(valid_indices)
+                if visualization_audit_dir:
+                    _dump_single_rollout_visualization_audit(
+                        test_output_gen_batch,
+                        visualization_audit_dir,
+                    )
+                    visualization_audit_count += 1
                 # Concatenate multi-turn trajectories into single entries
                 test_output_gen_batch = concat_val_multi_turn(test_output_gen_batch, test_gen_batch,self.tokenizer)
                 # after this, we can assume no-concat mode and concat_multi_turn can be handled equally
@@ -1451,7 +1715,7 @@ class RayPPOTrainer:
                 _write_validation_batch_journal(
                     journal_dir=validation_journal_dir,
                     global_step=int(self.global_steps),
-                    batch_index=validation_batch_index,
+                    batch_index=completed_validation_batches,
                     inputs=list(inputs),
                     outputs=list(outputs),
                     ground_truths=list(ground_truths),
@@ -1469,6 +1733,12 @@ class RayPPOTrainer:
                 )
                 completed_validation_batches += 1
 
+        if visualization_sample_id and (
+            visualization_match_count != 1 or visualization_audit_count != 1
+        ):
+            raise ValueError(
+                "validation visualization did not produce exactly one rollout"
+            )
         if validation_journal_dir:
             if validation_journal_expected_rows is None:
                 raise ValueError(
@@ -2133,6 +2403,8 @@ class RayPPOTrainer:
                 print("ID184_K4_CONTINUE_RESUME_OK global_step=10")
             elif self.joint_integration_gate.phase == "full_eval_test300":
                 print("ID185_K4_FULL_EVAL_RESTORE_OK global_step=20")
+            elif self.joint_integration_gate.phase == "visualize_one":
+                print("ID185_K4_VISUALIZATION_RESTORE_OK global_step=20")
 
         if (
             self.joint_integration_gate is not None

@@ -62,7 +62,7 @@ class JointIntegrationGate:
             ),
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION: (
                 185,
-                {"full_eval_test300"},
+                {"full_eval_test300", "visualize_one"},
             ),
         }
         if self.implementation not in contracts:

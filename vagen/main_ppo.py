@@ -269,10 +269,14 @@ def _validate_k4_integration_gate_runtime(
     is_continuation = (
         gate.implementation == K4_ID184_CONTINUE_GATE_IMPLEMENTATION
     )
-    is_full_eval = (
+    is_id185 = (
         gate.implementation == K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION
     )
-    is_multinode_run = is_canary or is_continuation or is_full_eval
+    is_full_eval = is_id185 and gate.phase == "full_eval_test300"
+    is_visualization = is_id185 and gate.phase == "visualize_one"
+    is_multinode_run = (
+        is_canary or is_continuation or is_full_eval or is_visualization
+    )
     expected_checkpoint_frequency = 5 if is_multinode_run else 1
     if not isinstance(policy, K4MCTSGuidedPolicyConfig) or world_model is None:
         raise ValueError(
@@ -358,6 +362,8 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "184_continue_k4schemeb_jointupdate_dp8_tp8_"
     elif is_full_eval:
         expected_run_prefix = "185_eval_k4schemeb_dp8_tp8_source20_test5x60_"
+    elif is_visualization:
+        expected_run_prefix = "185_visualize_k4schemeb_dp8_tp8_source20_base_"
     else:
         expected_run_prefix = (
             f"{experiment_id}_gate_k4schemeb_jointupdate_dp8_tp8_"
@@ -368,9 +374,10 @@ def _validate_k4_integration_gate_runtime(
         raise ValueError(
             f"ID{experiment_id} integration gate W&B identity mismatch"
         )
-    if set(trainer.logger) != {"console", "wandb"}:
+    expected_loggers = {"console"} if is_visualization else {"console", "wandb"}
+    if set(trainer.logger) != expected_loggers:
         raise ValueError(
-            f"ID{experiment_id} integration gate requires console and W&B"
+            f"ID{experiment_id} integration gate logger mismatch"
         )
     if is_multinode_run and str(
         config.ray_kwargs.ray_init.get("address", "")
@@ -418,7 +425,7 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError("ID184 deterministic expanded dataset mismatch")
-    elif is_full_eval:
+    elif is_full_eval or is_visualization:
         if (
             not bool(trainer.val_before_train)
             or not bool(trainer.get("val_only", False))
@@ -445,6 +452,12 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError("ID185 source dataset identity mismatch")
+        expected_journal_rows = 1 if is_visualization else 300
+        expected_journal_suffix = (
+            "/visualization/validation_batch_journal"
+            if is_visualization
+            else "/full_eval_test300/validation_batch_journal"
+        )
         if (
             int(
                 trainer.get(
@@ -452,14 +465,24 @@ def _validate_k4_integration_gate_runtime(
                     -1,
                 )
             )
-            != 300
+            != expected_journal_rows
             or not str(
                 trainer.get("validation_batch_journal_dir", "")
-            ).endswith(
-                "/full_eval_test300/validation_batch_journal"
-            )
+            ).endswith(expected_journal_suffix)
         ):
             raise ValueError("ID185 validation batch journal mismatch")
+        if is_visualization and (
+            not str(
+                trainer.get(
+                    "validation_visualization_rollout_sample_id",
+                    "",
+                )
+            ).startswith("sha256:")
+            or not str(
+                trainer.get("validation_visualization_audit_dir", "")
+            ).endswith("/visualization/rollout_audit")
+        ):
+            raise ValueError("ID185 visualization audit identity mismatch")
     elif trainer.val_before_train or int(trainer.test_freq) != -1:
         raise ValueError(
             f"ID{experiment_id} integration gate forbids validation rollout"
