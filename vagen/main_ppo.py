@@ -823,7 +823,7 @@ def _configure_joint_actor_extension(config):
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
     )
-    is_heterogeneous_6x2_gate = (
+    is_browser_1x8_gate = (
         integration_gate is not None
         and integration_gate.implementation
         in {
@@ -832,8 +832,8 @@ def _configure_joint_actor_extension(config):
         }
     )
     expected_topology = (
-        (2, 4)
-        if is_heterogeneous_6x2_gate
+        (1, 8)
+        if is_browser_1x8_gate
         else (4, 2)
         if is_multinode_gate
         else (1, 8)
@@ -848,23 +848,23 @@ def _configure_joint_actor_extension(config):
         or int(config.actor_rollout_ref.rollout.tensor_model_parallel_size) != 8
         or int(config.actor_rollout_ref.rollout.get("data_parallel_size", 1)) != 1
     ):
-        if is_multinode_gate:
-            topology_name = (
-                "heterogeneous 6+2 physical topology"
-                if is_heterogeneous_6x2_gate
-                else "multi-node 4x2"
-            )
+        if is_browser_1x8_gate:
             raise ValueError(
-                f"ID{integration_gate.experiment_id} requires {topology_name}, "
+                f"ID{integration_gate.experiment_id} requires one-node 1x8, "
+                "actor DP8, rollout TP8, and rollout DP1"
+            )
+        if is_multinode_gate:
+            raise ValueError(
+                f"ID{integration_gate.experiment_id} requires multi-node 4x2, "
                 "actor DP8, rollout TP8, and rollout DP1"
             )
         raise ValueError(
             "joint training requires one node, actor DP8, rollout TP8, and rollout DP1"
         )
     process_on_nodes = list(config.trainer.get("joint_process_on_nodes", []))
-    if is_heterogeneous_6x2_gate:
-        if process_on_nodes != [6, 2]:
-            raise ValueError("ID187/188 runtime requires heterogeneous Ray pool [6, 2]")
+    if is_browser_1x8_gate:
+        if process_on_nodes != [8]:
+            raise ValueError("ID187/188 runtime requires one-node Ray pool [8]")
     elif process_on_nodes:
         raise ValueError("joint_process_on_nodes is only approved for ID187/188")
     if actor.ppo_epochs != 1:
