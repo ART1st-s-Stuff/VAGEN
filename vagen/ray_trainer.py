@@ -429,7 +429,7 @@ def _pack_k4_state_trace(
     latent_hidden = np.asarray(policy_state.get("latent_hidden"), dtype=np.float32)
     current_state = np.asarray(planning.get("current_state"), dtype=np.float32)
     process = deepcopy(planning.get("mcts_trace"))
-    if latent_hidden.shape != (16, 2048) or current_state.shape != (8, 1024):
+    if latent_hidden.shape != (16, 2048) or current_state.shape != (16, 1024):
         raise ValueError("K4 browser state tensor shape mismatch")
     if not np.isfinite(latent_hidden).all() or not np.isfinite(current_state).all():
         raise ValueError("K4 browser state tensor is non-finite")
@@ -450,7 +450,7 @@ def _pack_k4_state_trace(
             node["state_index"] = None
             continue
         array = np.asarray(predicted, dtype=np.float32)
-        if array.shape != (8, 1024) or not np.isfinite(array).all():
+        if array.shape != (16, 1024) or not np.isfinite(array).all():
             raise ValueError("K4 predicted state tensor is invalid")
         node["state_index"] = len(node_states)
         node_states.append(array)
@@ -471,7 +471,7 @@ def _pack_k4_state_trace(
         "sha256": "sha256:pending",
         "arrays": {
             "latent_hidden": {"key": "latent_hidden", "dtype": "float32", "shape": [16, 2048]},
-            "current_state": {"key": "current_state", "dtype": "float32", "shape": [8, 1024]},
+            "current_state": {"key": "current_state", "dtype": "float32", "shape": [16, 1024]},
             "mcts_node_states": {
                 "key": "mcts_node_states",
                 "dtype": "float32",

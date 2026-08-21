@@ -118,7 +118,7 @@ def _policy_state_with_complete_mcts_trace():
             "sequence": list(sequence),
             "depth": len(sequence),
             "predicted_state": (
-                None if not sequence else np.full((8, 1024), len(sequence), dtype=np.float32).tolist()
+                None if not sequence else np.full((16, 1024), len(sequence), dtype=np.float32).tolist()
             ),
             "visit_count": 100,
             "value_sum": 50.0,
@@ -178,7 +178,7 @@ def _policy_state_with_complete_mcts_trace():
     return {
         "latent_hidden": np.zeros((16, 2048), dtype=np.float32).tolist(),
         "frozen_k4_planning": {
-            "current_state": np.ones((8, 1024), dtype=np.float32).tolist(),
+            "current_state": np.ones((16, 1024), dtype=np.float32).tolist(),
             "mcts_trace": {
                 "schema": "nimloth_k4_mcts_process_v1",
                 "num_simulations": 100,
@@ -292,15 +292,15 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
     assert artifact.audit["capabilities"]["model_state"] is True
     assert artifact.audit["capabilities"]["mcts_process"] is True
     assert len(planner["mcts_process"]["simulations"]) == 100
-    assert artifact.audit["turns"][0]["model_state"]["arrays"]["current_state"]["shape"] == [8, 1024]
+    assert artifact.audit["turns"][0]["model_state"]["arrays"]["current_state"]["shape"] == [16, 1024]
     root = tmp_path / "k4-browser"
     write_evaluation_browser_batch(root, [artifact], batch_index=0)
     archives = list(root.glob("batches/batch_0000/rollouts/*/step_00_model_states.npz"))
     assert len(archives) == 1
     with np.load(archives[0], allow_pickle=False) as state_archive:
         assert state_archive["latent_hidden"].shape == (16, 2048)
-        assert state_archive["current_state"].shape == (8, 1024)
-        assert state_archive["mcts_node_states"].shape == (4, 8, 1024)
+        assert state_archive["current_state"].shape == (16, 1024)
+        assert state_archive["mcts_node_states"].shape == (4, 16, 1024)
     manifest = finalize_evaluation_browser(
         root,
         evaluation={
