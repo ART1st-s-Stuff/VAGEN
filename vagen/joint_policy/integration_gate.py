@@ -73,7 +73,7 @@ class JointIntegrationGate:
             ),
             K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION: (
                 187,
-                {"source20_visualize_one"},
+                {"source20_visualize_one", "source20_base_common120"},
             ),
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION: (
                 188,

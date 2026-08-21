@@ -37,49 +37,42 @@ def _env() -> dict[str, str]:
         "ID187_SOURCE_CHECKPOINT": SOURCE,
         "ID187_AGENT_CONFIG": "/tmp/agent.yaml",
         "ID187_RUN_NAME": (
-            "187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_"
-            "t20_s100_preempt_retry6"
+            "189_eval_rollout_browser_k4_dp8_tp8_source20_base_common120_"
+            "t20_s100_preempt"
         ),
-        "ID187_RUN_OUT": "/tmp/id187",
+        "ID187_RUN_OUT": "/tmp/id189",
         "ID187_SEED": "2",
     }
 
 
 def _config():
     with initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
-        return compose(config_name="joint_id187_source20_visualize_one")
+        return compose(config_name="joint_id189_source20_base_common120")
 
 
-def test_id187_source20_browser_gate_requires_exact_read_only_restore() -> None:
+def test_id189_source20_base_common120_is_read_only_and_complete() -> None:
     with patch.dict(os.environ, _env(), clear=False):
         config = _config()
         _configure_joint_actor_extension(config)
+        assert config.joint_integration_gate.experiment_id == 187
+        assert config.joint_integration_gate.phase == "source20_base_common120"
         assert config.trainer.resume_mode == "resume_path"
+        assert config.trainer.val_only is True
         assert config.trainer.nnodes == 1
         assert config.trainer.n_gpus_per_node == 8
         assert list(config.trainer.joint_process_on_nodes) == [8]
-        assert config.trainer.resume_from_path == SOURCE
-        assert config.trainer.val_only is True
-        assert config.trainer.validation_rollout_browser_expected_rows == 1
+        assert config.trainer.validation_batch_journal_expected_rows == 120
+        assert config.trainer.validation_rollout_browser_expected_rows == 120
         assert config.trainer.validation_rollout_browser_capture_mcts_process is True
-        assert config.trainer.validation_rollout_browser_checkpoint_identity == SOURCE
+        assert "validation_visualization_data_source" not in config.trainer
+        assert "validation_visualization_seed" not in config.trainer
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
-        drift.trainer.resume_from_path = "/tmp/global_step_20"
-        with pytest.raises(ValueError, match="ID187.*checkpoint"):
-            _configure_joint_actor_extension(drift)
-
-        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
-        drift.trainer.validation_rollout_browser_expected_rows = 40
+        drift.trainer.validation_rollout_browser_expected_rows = 119
         with pytest.raises(ValueError, match="ID187.*browser"):
             _configure_joint_actor_extension(drift)
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
-        drift.trainer.joint_process_on_nodes = [4, 4]
-        with pytest.raises(ValueError, match="one-node Ray pool"):
-            _configure_joint_actor_extension(drift)
-
-        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
-        drift.trainer.validation_rollout_browser_capture_mcts_process = False
-        with pytest.raises(ValueError, match="ID187.*browser"):
+        drift.trainer.validation_batch_journal_expected_rows = 300
+        with pytest.raises(ValueError, match="ID187.*journal"):
             _configure_joint_actor_extension(drift)

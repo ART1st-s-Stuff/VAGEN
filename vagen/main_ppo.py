@@ -289,6 +289,9 @@ def _validate_k4_integration_gate_runtime(
     is_id187_source20 = (
         gate.implementation == K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION
     )
+    is_id187_base_common120 = (
+        is_id187_source20 and gate.phase == "source20_base_common120"
+    )
     is_id188_step0 = (
         gate.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION
     )
@@ -392,6 +395,10 @@ def _validate_k4_integration_gate_runtime(
         expected_run_prefix = "185_visualize_k4schemeb_dp8_tp8_source20_base_"
     elif is_id186_continuation:
         expected_run_prefix = "186_continue_k4schemeb_jointupdate_dp8_tp8_"
+    elif is_id187_base_common120:
+        expected_run_prefix = (
+            "189_eval_rollout_browser_k4_dp8_tp8_source20_base_common120_"
+        )
     elif is_id187_source20:
         expected_run_prefix = "187_smoke_rollout_browser_k4_dp8_tp8_source20_"
     elif is_id188_step0:
@@ -484,11 +491,17 @@ def _validate_k4_integration_gate_runtime(
             config.data.get("seed", -1)
         ) != 42184:
             raise ValueError(f"ID{experiment_id} source dataset identity mismatch")
-        is_single_visualization = is_visualization or is_id187_source20
-        expected_journal_rows = 1 if is_single_visualization else 300
+        is_single_visualization = is_visualization or (
+            is_id187_source20 and not is_id187_base_common120
+        )
+        expected_journal_rows = (
+            1 if is_single_visualization else 120 if is_id187_base_common120 else 300
+        )
         expected_journal_suffix = (
             "/visualization/validation_batch_journal"
             if is_single_visualization
+            else "/base_common120/validation_batch_journal"
+            if is_id187_base_common120
             else "/full_eval_test300/validation_batch_journal"
         )
         if (
