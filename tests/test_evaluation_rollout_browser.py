@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+import io
+import os
 from unittest.mock import patch
 import zipfile
 
@@ -10,7 +14,10 @@ from nimloth.eval.rollout_browser import (
     finalize_evaluation_browser,
     write_evaluation_browser_batch,
 )
-from vagen.ray_trainer import _build_validation_rollout_browser_artifacts
+from vagen.ray_trainer import (
+    _build_validation_rollout_browser_artifacts,
+    _pack_k4_state_trace,
+)
 
 
 def _object_array(values):
@@ -192,6 +199,31 @@ def _policy_state_with_complete_mcts_trace():
     }
 
 
+def test_k4_binary_state_transport_decodes_exact_float32() -> None:
+    policy_state = _policy_state_with_complete_mcts_trace()
+    expected = []
+    for node in policy_state["frozen_k4_planning"]["mcts_trace"]["tree_nodes"]:
+        if node["predicted_state"] is None:
+            continue
+        array = np.asarray(node["predicted_state"], dtype="<f4")
+        expected.append(array)
+        node["predicted_state"] = {
+            "schema": "nimloth_float32_tensor_base64_v1",
+            "dtype": "float32_le",
+            "shape": [16, 1024],
+            "data": base64.b64encode(array.tobytes()).decode("ascii"),
+        }
+    raw = {"policy_state": policy_state}
+    _metadata_row, process, _name, archive_bytes = _pack_k4_state_trace(
+        raw, turn_index=0
+    )
+    assert all("predicted_state" not in node for node in process["tree_nodes"])
+    with np.load(io.BytesIO(archive_bytes), allow_pickle=False) as archive:
+        np.testing.assert_array_equal(
+            archive["mcts_node_states"], np.stack(expected)
+        )
+
+
 def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
     sample = "sha256:k4"
     ledger = _ledger()
@@ -280,12 +312,20 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
         "request_id": "request",
         "generation_id": "generation",
     }
-    with patch("vagen.ray_trainer._visualization_turn_record", return_value=record):
+    with (
+        patch("vagen.ray_trainer._visualization_turn_record", return_value=record),
+        patch.dict(os.environ, {"VAGEN_ROLLOUT_BROWSER_PACK_WORKERS": "2"}),
+        patch(
+            "vagen.ray_trainer.ThreadPoolExecutor",
+            wraps=RealThreadPoolExecutor,
+        ) as executor,
+    ):
         artifact = _build_validation_rollout_browser_artifacts(
             batch,
             _metadata(sample),
             policy_family="vagen_k4_joint",
         )[0]
+    executor.assert_called_once_with(max_workers=2)
     planner = artifact.audit["turns"][0]["planner"]
     assert len(planner["candidates"]) == 100
     assert sum(row["visits"] for row in planner["candidates"]) == 100

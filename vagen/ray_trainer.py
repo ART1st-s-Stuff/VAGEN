@@ -18,11 +18,15 @@ PPO Trainer with Ray-based single controller.
 This trainer supports model-agonistic model initialization with huggingface
 """
 
+import base64
+import binascii
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
 import json
 import math
 import os
+import time
 import uuid
 from collections import defaultdict
 from copy import deepcopy
@@ -449,7 +453,28 @@ def _pack_k4_state_trace(
                 raise ValueError("K4 MCTS root must reuse current_state")
             node["state_index"] = None
             continue
-        array = np.asarray(predicted, dtype=np.float32)
+        if (
+            isinstance(predicted, dict)
+            and predicted.get("schema") == "nimloth_float32_tensor_base64_v1"
+        ):
+            if predicted.get("dtype") != "float32_le" or predicted.get(
+                "shape"
+            ) != [16, 1024]:
+                raise ValueError("K4 encoded predicted state metadata is invalid")
+            data = predicted.get("data")
+            if not isinstance(data, str):
+                raise ValueError("K4 encoded predicted state payload is invalid")
+            try:
+                decoded = base64.b64decode(data, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise ValueError(
+                    "K4 encoded predicted state is not valid base64"
+                ) from exc
+            if len(decoded) != 16 * 1024 * 4:
+                raise ValueError("K4 encoded predicted state byte length is invalid")
+            array = np.frombuffer(decoded, dtype="<f4").reshape(16, 1024)
+        else:
+            array = np.asarray(predicted, dtype=np.float32)
         if array.shape != (16, 1024) or not np.isfinite(array).all():
             raise ValueError("K4 predicted state tensor is invalid")
         node["state_index"] = len(node_states)
@@ -767,6 +792,53 @@ def _build_validation_rollout_browser_artifacts(
         groups[key].append(index)
     if set(groups) != set(trajectory_metadata):
         raise ValueError("evaluation browser turn/trajectory identities do not align")
+
+    worker_text = os.environ.get("VAGEN_ROLLOUT_BROWSER_PACK_WORKERS", "1")
+    try:
+        pack_workers = int(worker_text)
+    except ValueError as exc:
+        raise ValueError(
+            "VAGEN_ROLLOUT_BROWSER_PACK_WORKERS must be an integer"
+        ) from exc
+    if not 1 <= pack_workers <= 64:
+        raise ValueError(
+            "VAGEN_ROLLOUT_BROWSER_PACK_WORKERS must be between 1 and 64"
+        )
+    pack_inputs = []
+    for key in sorted(groups):
+        indices = sorted(
+            groups[key], key=lambda index: int(non_tensor["turn_idx"][index])
+        )
+        for turn_index, index in enumerate(indices):
+            if non_tensor.get(
+                "frozen_k4_planning_scoring", [None] * len(batch)
+            )[index] is not None:
+                raw = {
+                    name: values[index] for name, values in non_tensor.items()
+                }
+                pack_inputs.append(((key, index), raw, turn_index))
+    packed_state_traces = {}
+    if pack_inputs:
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=pack_workers) as executor:
+            futures = {
+                identity: executor.submit(
+                    _pack_k4_state_trace,
+                    raw,
+                    turn_index=turn_index,
+                )
+                for identity, raw, turn_index in pack_inputs
+            }
+            packed_state_traces = {
+                identity: future.result()
+                for identity, future in futures.items()
+            }
+        print(
+            "ROLLOUT_BROWSER_STATE_PACK_COMPLETE "
+            f"workers={pack_workers} turns={len(pack_inputs)} "
+            f"seconds={time.perf_counter() - started:.6f}"
+        )
+
     artifacts = []
     for key in sorted(groups):
         indices = sorted(groups[key], key=lambda index: int(non_tensor["turn_idx"][index]))
@@ -874,7 +946,7 @@ def _build_validation_rollout_browser_artifacts(
                     for row in record["predicted_action_sequences"]
                 ]
                 model_state, mcts_process, archive_name, archive_bytes = (
-                    _pack_k4_state_trace(raw, turn_index=turn_index)
+                    packed_state_traces[(key, index)]
                 )
                 binary_sources[archive_name] = archive_bytes
                 turn["model_state"] = model_state
