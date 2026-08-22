@@ -459,7 +459,10 @@ def _pack_k4_state_trace(
     stacked = np.stack(node_states).astype(np.float32, copy=False)
     archive_name = f"step_{turn_index:02d}_model_states.npz"
     buffer = io.BytesIO()
-    np.savez_compressed(
+    # Float32 planning states are effectively incompressible. ZIP deflate made a
+    # 40-rollout audit batch spend hours on one TaskRunner CPU while saving only
+    # a small amount of disk, so keep the same .npz contract with stored entries.
+    np.savez(
         buffer,
         latent_hidden=latent_hidden,
         current_state=current_state,

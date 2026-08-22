@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+import zipfile
 
 import numpy as np
 from PIL import Image
@@ -301,6 +302,10 @@ def test_k4_vagen_rollout_preserves_all_planner_candidates(tmp_path) -> None:
         assert state_archive["latent_hidden"].shape == (16, 2048)
         assert state_archive["current_state"].shape == (16, 1024)
         assert state_archive["mcts_node_states"].shape == (4, 16, 1024)
+    with zipfile.ZipFile(archives[0]) as archive:
+        assert {info.compress_type for info in archive.infolist()} == {
+            zipfile.ZIP_STORED
+        }
     manifest = finalize_evaluation_browser(
         root,
         evaluation={
