@@ -836,6 +836,12 @@ def _configure_joint_actor_extension(config):
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
     )
+    is_id189_base_common120 = (
+        integration_gate is not None
+        and integration_gate.implementation
+        == K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION
+        and integration_gate.phase == "source20_base_common120"
+    )
     is_browser_1x8_gate = (
         integration_gate is not None
         and integration_gate.implementation
@@ -843,6 +849,7 @@ def _configure_joint_actor_extension(config):
             K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION,
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
+        and not is_id189_base_common120
     )
     expected_topology = (
         (1, 8)
@@ -879,7 +886,9 @@ def _configure_joint_actor_extension(config):
         if process_on_nodes != [8]:
             raise ValueError("ID187/188 runtime requires one-node Ray pool [8]")
     elif process_on_nodes:
-        raise ValueError("joint_process_on_nodes is only approved for ID187/188")
+        raise ValueError(
+            "joint_process_on_nodes is only approved for ID187/188 one-node runs"
+        )
     if actor.ppo_epochs != 1:
         raise ValueError("joint training requires exactly one PPO epoch")
     if config.trainer.critic_warmup != 0:

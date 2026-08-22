@@ -38,7 +38,7 @@ def _env() -> dict[str, str]:
         "ID187_AGENT_CONFIG": "/tmp/agent.yaml",
         "ID187_RUN_NAME": (
             "189_eval_rollout_browser_k4_dp8_tp8_source20_base_common120_"
-            "t20_s100_preempt"
+            "t20_s100_normal_4x2_retry2"
         ),
         "ID187_RUN_OUT": "/tmp/id189",
         "ID187_SEED": "2",
@@ -58,14 +58,21 @@ def test_id189_source20_base_common120_is_read_only_and_complete() -> None:
         assert config.joint_integration_gate.phase == "source20_base_common120"
         assert config.trainer.resume_mode == "resume_path"
         assert config.trainer.val_only is True
-        assert config.trainer.nnodes == 1
-        assert config.trainer.n_gpus_per_node == 8
-        assert list(config.trainer.joint_process_on_nodes) == [8]
+        assert config.trainer.nnodes == 4
+        assert config.trainer.n_gpus_per_node == 2
+        assert "joint_process_on_nodes" not in config.trainer
         assert config.trainer.validation_batch_journal_expected_rows == 120
         assert config.trainer.validation_rollout_browser_expected_rows == 120
         assert config.trainer.validation_rollout_browser_capture_mcts_process is True
         assert "validation_visualization_data_source" not in config.trainer
         assert "validation_visualization_seed" not in config.trainer
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.nnodes = 1
+        drift.trainer.n_gpus_per_node = 8
+        drift.trainer.joint_process_on_nodes = [8]
+        with pytest.raises(ValueError, match="multi-node 4x2"):
+            _configure_joint_actor_extension(drift)
 
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.validation_rollout_browser_expected_rows = 119
