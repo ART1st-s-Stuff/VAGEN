@@ -295,6 +295,9 @@ def _validate_k4_integration_gate_runtime(
     is_id188_step0 = (
         gate.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION
     )
+    is_id188_base_common120 = (
+        is_id188_step0 and gate.phase == "step0_base_common120"
+    )
     is_multinode_run = (
         is_canary
         or is_continuation
@@ -401,6 +404,10 @@ def _validate_k4_integration_gate_runtime(
         )
     elif is_id187_source20:
         expected_run_prefix = "187_smoke_rollout_browser_k4_dp8_tp8_source20_"
+    elif is_id188_base_common120:
+        expected_run_prefix = (
+            "188_eval_rollout_browser_k4_dp8_tp8_step0_base_common120_"
+        )
     elif is_id188_step0:
         expected_run_prefix = "188_smoke_rollout_browser_k4_dp8_tp8_step0_"
     else:
@@ -570,15 +577,23 @@ def _validate_k4_integration_gate_runtime(
             or int(trainer.max_actor_ckpt_to_keep) != 2
         ):
             raise ValueError("ID188 checkpoint safety mismatch")
+        expected_rows = 120 if is_id188_base_common120 else 1
+        expected_journal_suffix = (
+            "/base_common120/validation_batch_journal"
+            if is_id188_base_common120
+            else "/visualization/validation_batch_journal"
+        )
         if (
-            int(trainer.get("validation_batch_journal_expected_rows", -1)) != 1
+            int(trainer.get("validation_batch_journal_expected_rows", -1))
+            != expected_rows
             or not str(
                 trainer.get("validation_batch_journal_dir", "")
-            ).endswith("/visualization/validation_batch_journal")
+            ).endswith(expected_journal_suffix)
         ):
             raise ValueError("ID188 validation batch journal mismatch")
         if (
-            int(trainer.get("validation_rollout_browser_expected_rows", -1)) != 1
+            int(trainer.get("validation_rollout_browser_expected_rows", -1))
+            != expected_rows
             or trainer.get("validation_rollout_browser_policy_family")
             != "vagen_k4_joint"
             or not str(
@@ -601,7 +616,18 @@ def _validate_k4_integration_gate_runtime(
             )
         ):
             raise ValueError("ID188 rollout browser mismatch")
-        if (
+        if is_id188_base_common120:
+            if any(
+                trainer.get(field) is not None
+                for field in (
+                    "validation_visualization_rollout_sample_id",
+                    "validation_visualization_data_source",
+                    "validation_visualization_seed",
+                    "validation_visualization_audit_dir",
+                )
+            ):
+                raise ValueError("ID188 full evaluation forbids single-rollout selector")
+        elif (
             trainer.get("validation_visualization_rollout_sample_id") is not None
             or trainer.get("validation_visualization_data_source")
             != "navigation_base_test_id188"
@@ -842,6 +868,12 @@ def _configure_joint_actor_extension(config):
         == K4_ID187_SOURCE20_BROWSER_GATE_IMPLEMENTATION
         and integration_gate.phase == "source20_base_common120"
     )
+    is_id188_base_common120 = (
+        integration_gate is not None
+        and integration_gate.implementation
+        == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION
+        and integration_gate.phase == "step0_base_common120"
+    )
     is_browser_1x8_gate = (
         integration_gate is not None
         and integration_gate.implementation
@@ -850,6 +882,7 @@ def _configure_joint_actor_extension(config):
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION,
         }
         and not is_id189_base_common120
+        and not is_id188_base_common120
     )
     expected_topology = (
         (1, 8)

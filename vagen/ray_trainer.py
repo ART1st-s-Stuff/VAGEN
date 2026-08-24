@@ -3011,6 +3011,10 @@ class RayPPOTrainer:
                 print("ID189_K4_SOURCE20_BASE_COMMON120_RESTORE_OK global_step=20")
             elif self.joint_integration_gate.phase == "step0_visualize_one":
                 print("ID188_K4_STEP0_BOOTSTRAP_OK global_step=0")
+            elif self.joint_integration_gate.phase == "step0_base_common120":
+                print(
+                    "ID188_K4_STEP0_BASE_COMMON120_BOOTSTRAP_OK global_step=0"
+                )
             elif self.joint_integration_gate.phase in {
                 "resume_20_to_30",
                 "resume_30_to_40",

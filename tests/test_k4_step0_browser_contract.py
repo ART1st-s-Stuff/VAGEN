@@ -43,6 +43,11 @@ def _config():
         return compose(config_name="joint_id188_step0_visualize_one")
 
 
+def _full_config():
+    with initialize_config_dir(version_base=None, config_dir=str(CONFIG_DIR)):
+        return compose(config_name="joint_id188_step0_base_common120")
+
+
 def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> None:
     with patch.dict(os.environ, _env(), clear=False):
         config = _config()
@@ -86,4 +91,42 @@ def test_id188_step0_browser_gate_accepts_only_frozen_val_only_bootstrap() -> No
         drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
         drift.trainer.val_only = False
         with pytest.raises(ValueError, match="ID188.*validation"):
+            _configure_joint_actor_extension(drift)
+
+
+def test_id188_step0_base_common120_gate_is_frozen_and_complete() -> None:
+    env = {
+        **_env(),
+        "ID188_RUN_NAME": (
+            "188_eval_rollout_browser_k4_dp8_tp8_step0_"
+            "base_common120_t20_s100_normal_4x2"
+        ),
+        "ID188_RUN_OUT": "/tmp/id188-bc120",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        config = _full_config()
+        training = _configure_joint_actor_extension(config)
+        assert training.initial_snapshot_source_step == 776
+        assert config.joint_integration_gate.phase == "step0_base_common120"
+        assert config.trainer.nnodes == 4
+        assert config.trainer.n_gpus_per_node == 2
+        assert config.trainer.val_before_train is True
+        assert config.trainer.val_only is True
+        assert config.trainer.resume_mode == "disable"
+        assert config.trainer.total_training_steps == 1
+        assert config.trainer.validation_batch_journal_expected_rows == 120
+        assert config.trainer.validation_rollout_browser_expected_rows == 120
+        assert config.trainer.validation_rollout_browser_capture_mcts_process is True
+        assert config.trainer.validation_rollout_browser_source_step == 776
+        assert "validation_visualization_data_source" not in config.trainer
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.validation_rollout_browser_expected_rows = 1
+        with pytest.raises(ValueError, match="ID188.*browser"):
+            _configure_joint_actor_extension(drift)
+
+        drift = OmegaConf.create(OmegaConf.to_container(config, resolve=False))
+        drift.trainer.resume_mode = "resume_path"
+        drift.trainer.resume_from_path = "/tmp/global_step_20"
+        with pytest.raises(ValueError, match="ID188.*resume"):
             _configure_joint_actor_extension(drift)

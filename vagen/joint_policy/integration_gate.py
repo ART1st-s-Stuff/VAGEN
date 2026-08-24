@@ -77,7 +77,7 @@ class JointIntegrationGate:
             ),
             K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION: (
                 188,
-                {"step0_visualize_one"},
+                {"step0_visualize_one", "step0_base_common120"},
             ),
         }
         if self.implementation not in contracts:
@@ -116,6 +116,8 @@ class JointIntegrationGate:
 
     @property
     def expected_resume_mode(self) -> str:
+        if self.implementation == K4_ID188_STEP0_BROWSER_GATE_IMPLEMENTATION:
+            return "disable"
         if self.implementation in {
             K4_ID184_CONTINUE_GATE_IMPLEMENTATION,
             K4_ID185_FULL_EVAL_GATE_IMPLEMENTATION,
