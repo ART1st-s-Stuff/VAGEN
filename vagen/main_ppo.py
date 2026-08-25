@@ -917,7 +917,10 @@ def _configure_joint_actor_extension(config):
     process_on_nodes = list(config.trainer.get("joint_process_on_nodes", []))
     if is_browser_1x8_gate:
         if process_on_nodes != [8]:
-            raise ValueError("ID187/188 runtime requires one-node Ray pool [8]")
+            raise ValueError(
+                "ID187/188 one-node runtime forbids a heterogeneous Ray pool; "
+                "expected [8]"
+            )
     elif process_on_nodes:
         raise ValueError(
             "joint_process_on_nodes is only approved for ID187/188 one-node runs"
