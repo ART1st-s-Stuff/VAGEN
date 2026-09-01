@@ -6,6 +6,10 @@ from vagen.env.navigation.env_config import NavigationEnvConfig
 from vagen.server.serial import serialize_observation
 from .service_config import NavigationServiceConfig
 from vagen.env.utils.state_reward_text_utils import service_state_reward_wrapper
+from .step60_reconstruction import (
+    STEP60_RECONSTRUCTION_MODE,
+    validate_environment_config,
+)
 
 class NavigationService(BaseService):
     """
@@ -46,6 +50,8 @@ class NavigationService(BaseService):
                 return env_id, None, f"Expected environment type 'navigation', got '{env_name}'"
             
             env_config_dict = config['env_config']
+            if env_config_dict.get("prompt_format") == STEP60_RECONSTRUCTION_MODE:
+                validate_environment_config(env_config_dict)
             env_config = NavigationEnvConfig(**env_config_dict)
             env = NavigationEnv(env_config)
             return env_id, (env, env_config), None
@@ -65,15 +71,36 @@ class NavigationService(BaseService):
                 for env_id, config in ids2configs.items()
             }
             
-            # Process results as they complete
+            # Observe every future before deciding whether the batch is valid.
+            created = []
+            failures = []
             for future in as_completed(futures):
-                env_id = futures[future]
-                env_id, result, error = future.result()
-                if error:
-                    print(f"Error creating environment {env_id}: {error}")
+                requested_id = futures[future]
+                try:
+                    env_id, result, error = future.result()
+                except Exception as exc:
+                    failures.append((requested_id, exc))
                     continue
-                
+                if error:
+                    failures.append((env_id, RuntimeError(error)))
+                    continue
                 env, env_config = result
+                created.append((env_id, env, env_config))
+
+            if failures:
+                for _env_id, env, _env_config in created:
+                    env.close()
+                for requested_id in ids2configs:
+                    for assigned_env_ids in self.device_status.values():
+                        assigned_env_ids.discard(requested_id)
+                details = "; ".join(
+                    f"{env_id}: {error}" for env_id, error in failures
+                )
+                raise RuntimeError(
+                    f"navigation environment batch creation failed: {details}"
+                )
+
+            for env_id, env, env_config in created:
                 self.environments[env_id] = env
                 self.env_configs[env_id] = env_config
     
@@ -286,4 +313,5 @@ class NavigationService(BaseService):
         for env_id in env_ids:
             self.environments.pop(env_id, None)
             self.env_configs.pop(env_id, None)
-            self.device_status.pop(env_id, None)
+            for assigned_env_ids in self.device_status.values():
+                assigned_env_ids.discard(env_id)

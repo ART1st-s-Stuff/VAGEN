@@ -16,6 +16,14 @@ from .prompt import (
     system_prompt,
 )
 from vagen.env.utils.state_reward_text_utils import env_state_reward_wrapper
+from .step60_reconstruction import (
+    STEP60_RECONSTRUCTION_MODE,
+    parse_response as parse_step60_response,
+    render_initial_prompt as render_step60_initial_prompt,
+    render_step_prompt as render_step60_step_prompt,
+    render_system_prompt as render_step60_system_prompt,
+    turn_reward as step60_turn_reward,
+)
 
 class NavigationEnv(BaseEnv):
     """Navigation environment from embodied bench. """   
@@ -92,9 +100,10 @@ class NavigationEnv(BaseEnv):
         self.step_length = self.config.step_length
         self.source_eval_compat = self.config.prompt_format == SOURCE_EVAL_MODE
         self.hligb_single_action_compat = self.config.prompt_format == HLIGB_SINGLE_ACTION_MODE
+        self.step60_reconstruction = self.config.prompt_format == STEP60_RECONSTRUCTION_MODE
         if self.source_eval_compat:
             self.action_lookup = self.SOURCE_ACTION_LOOKUP
-        elif self.hligb_single_action_compat:
+        elif self.hligb_single_action_compat or self.step60_reconstruction:
             self.action_lookup = self.HLIGB_ACTION_LOOKUP
         else:
             self.action_lookup = self.ACTION_LOOKUP
@@ -142,11 +151,19 @@ class NavigationEnv(BaseEnv):
         self.valid_actions = []
         self.reward = 0
         
-        # Store the format prompt function for later use
-        self.format_prompt_func = format_prompt[self.config.prompt_format]
-        
-        # Get the parse function based on the prompt format
-        self.parse_func = PARSE_FUNC_MAP[self.config.prompt_format]
+        # Store the format prompt function for later use.
+        self.format_prompt_func = (
+            (lambda **_kwargs: "")
+            if self.step60_reconstruction
+            else format_prompt[self.config.prompt_format]
+        )
+
+        # The reconstruction parser is isolated from every existing mode.
+        self.parse_func = (
+            parse_step60_response
+            if self.step60_reconstruction
+            else PARSE_FUNC_MAP[self.config.prompt_format]
+        )
         
     def _get_dataset_path(self, eval_set):
         """Get the path to the dataset file."""
@@ -286,9 +303,11 @@ class NavigationEnv(BaseEnv):
                     self._execute_action(action_int)
                     success, distance = self.measure_success()
                     
-                    # Update reward based on success
+                    # Update success; reconstruction computes the complete
+                    # evidence-bound turn reward after parser/action handling.
                     if success:
-                        self.reward += self.config.success_reward
+                        if not self.step60_reconstruction:
+                            self.reward += self.config.success_reward
                         done = True
                         metrics['traj_metrics']['success'] = True
                     
@@ -305,7 +324,13 @@ class NavigationEnv(BaseEnv):
                     done = True
                     break
         
-        if metrics['turn_metrics']['action_is_valid'] and rst.get("format_correct", True):
+        if self.step60_reconstruction:
+            self.reward = step60_turn_reward(
+                rst,
+                success=bool(metrics["traj_metrics"]["success"]),
+            )
+            info["is_format_rewarded"] = bool(rst.get("format_correct"))
+        elif metrics['turn_metrics']['action_is_valid'] and rst.get("format_correct", True):
             reward_key = "per_turn_format_reward" if self.source_eval_compat else "format_reward"
             self.reward += self.config.get(reward_key, 0.0)
             info["is_format_rewarded"] = True
@@ -401,8 +426,23 @@ class NavigationEnv(BaseEnv):
             img_placeholder: [convert_numpy_to_PIL(frame)]
         }
         
-        # Format the template
-        if init_obs:
+        # Format the template.
+        if self.step60_reconstruction:
+            if init_obs:
+                obs_str = render_step60_initial_prompt(
+                    observation=img_placeholder,
+                    instruction=self.episode_language_instruction,
+                )
+            else:
+                obs_str = render_step60_step_prompt(
+                    extracted_actions=self.valid_actions,
+                    env_feedback=self.info["env_feedback"],
+                    reward=self.reward,
+                    done=self.measure_success()[0],
+                    observation=img_placeholder,
+                    instruction=self.episode_language_instruction,
+                )
+        elif init_obs:
             obs_str = init_observation_template(
                 observation=img_placeholder,
                 instruction=self.episode_language_instruction,
@@ -435,6 +475,9 @@ class NavigationEnv(BaseEnv):
         Returns:
             System prompt string
         """
+        if self.step60_reconstruction:
+            return render_step60_system_prompt()
+
         # Get format prompt with examples for system prompt
         format_prompt_text = self.format_prompt_func(
             max_actions_per_step=self.config.max_actions_per_step,

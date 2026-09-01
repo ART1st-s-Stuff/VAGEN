@@ -14,12 +14,14 @@ class NavigationEnvConfig(BaseEnvConfig):
     max_actions_per_step: int = 5
     max_action_penalty: float = -0.1
     format_reward: float = 0.5
+    invalid_action_penalty: float = -0.2
     per_turn_format_reward: float = 0.0
     success_reward: float = 10.0
     example_count: int = 0
     gpu_device: int = 0
     prompt_format: str = "grounding_worldmodeling" 
-    # Supported: free_think, no_think, eval_mode, source_eval_mode, grounding, worldmodeling,
+    # Supported: free_think, no_think, eval_mode, source_eval_mode,
+    # step60_source_reconstruction, grounding, worldmodeling,
     # grounding_worldmodeling, nimloth, nimloth_wm.
     success_threshold: float = 1.5
     step_length: float = 0.5

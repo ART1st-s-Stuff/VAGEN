@@ -8,6 +8,7 @@ from vagen.env.base.base_service import BaseService
 from vagen.env.base.base_service_config import BaseServiceConfig
 import hydra
 from omegaconf import DictConfig
+from vagen.env.navigation.step60_reconstruction import service_runtime_identity
 
 class BatchEnvServer:
     """
@@ -59,6 +60,15 @@ class BatchEnvServer:
                 "active_environments": len(self.env_to_service)
             }), 200
             
+        @self.app.route('/reconstruction/identity', methods=['GET'])
+        def reconstruction_identity():
+            routes = sorted(
+                str(rule)
+                for rule in self.app.url_map.iter_rules()
+                if rule.endpoint != "static"
+            )
+            return jsonify(service_runtime_identity(service_routes=routes)), 200
+
         @self.app.route('/environments', methods=['POST'])
         def create_environments_batch():
             """Create environments endpoint - implements BaseService interface"""
@@ -250,10 +260,19 @@ class BatchEnvServer:
                 service_to_configs[env_name] = {}
             service_to_configs[env_name][env_id] = config
         
-        # Call create_environments_batch method on each service
-        for env_name, configs in service_to_configs.items():
-            service = self.services[env_name]
-            service.create_environments_batch(configs)
+        # Call each service atomically from the server's ownership view.
+        created_groups = []
+        try:
+            for env_name, configs in service_to_configs.items():
+                service = self.services[env_name]
+                service.create_environments_batch(configs)
+                created_groups.append((service, list(configs)))
+        except Exception:
+            for service, env_ids in reversed(created_groups):
+                service.close_batch(env_ids)
+            for env_id in ids2configs:
+                self.env_to_service.pop(env_id, None)
+            raise
     
     
     def _reset_batch(self, ids2seeds: Dict[str, Any]) -> Dict[str, Tuple[Any, Any]]:
