@@ -92,9 +92,13 @@ def dump_validation_batch(output_dir, env_configs, recordings) -> Path:
                'env_config': encode(info), 'recording': encode(record)}
     serialized = json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2) + '\n'
     _sync_dir(row_dir)
-    with (row_dir / 'record.json').open('x') as stream:
+    # Publish complete JSON only; concurrent shard writers scan readiness markers.
+    temporary = row_dir / '.record.json.tmp'
+    with temporary.open('x') as stream:
         stream.write(serialized)
         stream.flush()
         os.fsync(stream.fileno())
+    os.link(temporary, row_dir / 'record.json')
+    temporary.unlink()
     _sync_dir(row_dir)
     return row_dir / 'record.json'
