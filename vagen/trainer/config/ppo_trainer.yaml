@@ -190,6 +190,10 @@ trainer:
   default_local_dir: checkpoints/${trainer.project_name}/${trainer.experiment_name}
   val_before_train: True
   val_only: False
+  final_val_after_train: True
+  save_critic_checkpoint: True
+  raw_samples_to_log: 0
+  raw_samples_max_chars: 2000
 
 rollout_manager:
   max_trajectory_length: ${data.max_trajectory_length}
@@ -200,9 +204,11 @@ rollout_manager:
   use_multi_turn_reward: True # for ablation study
   use_loss_mask: True # for ablation study
   use_gae_mask: True
+  loss_mask_mode: default
   special_token_for_loss_mask: ['<|box_start|>', '<|box_end|>']
   truncation: ${data.truncation}
   base_url: http://localhost:5000
+  base_urls: null
   use_service: False
   timeout: 1200
   max_workers: 8

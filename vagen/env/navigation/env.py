@@ -95,6 +95,9 @@ class NavigationEnv(BaseEnv):
         self.total_reward = 0
         self.valid_actions = []
         self.reward = 0
+        self._last_valid_action = None
+        self._consecutive_action_count = 0
+        self._episode_action_counts = {}
         
         # Store the format prompt function for later use
         self.format_prompt_func = format_prompt[self.config.prompt_format]
@@ -183,8 +186,92 @@ class NavigationEnv(BaseEnv):
         self.total_reward = 0
         self.valid_actions = []
         self.reward = 0
+        self._last_valid_action = None
+        self._consecutive_action_count = 0
+        self._episode_action_counts = {}
         
         return self._render(init_obs=True), {}
+
+    def _compute_dense_reward(self, action_list, prev_distance, curr_distance, action_validity_error):
+        dense_reward_mode = self.config.get("dense_reward_mode", "off")
+        if dense_reward_mode not in {"anti_collapse_progress_v1", "anti_collapse_progress_v2"}:
+            return {
+                "dense_reward_total": 0.0,
+                "dense_progress_reward": 0.0,
+                "dense_repeat_action_penalty": 0.0,
+                "dense_stagnation_repeat_penalty": 0.0,
+                "dense_action_balance_penalty": 0.0,
+                "dense_invalid_action_penalty": 0.0,
+                "dense_distance_delta": 0.0,
+            }
+
+        progress_reward = 0.0
+        distance_delta = prev_distance - curr_distance
+        progress_epsilon = self.config.get("progress_epsilon", 0.01)
+        if distance_delta > progress_epsilon:
+            progress_reward = self.config.get("progress_reward", 0.02)
+        elif distance_delta < -progress_epsilon:
+            progress_reward = self.config.get("regress_penalty", -0.02)
+
+        invalid_penalty = 0.0
+        if action_validity_error != "ok" or not self.env.last_event.metadata.get("lastActionSuccess", False):
+            invalid_penalty = self.config.get("invalid_action_penalty", -0.05)
+
+        repeat_penalty = 0.0
+        stagnation_repeat_penalty = 0.0
+        action_balance_penalty = 0.0
+        if action_list and action_validity_error == "ok":
+            current_action = action_list[0].lower()
+            if current_action == self._last_valid_action:
+                self._consecutive_action_count += 1
+            else:
+                self._last_valid_action = current_action
+                self._consecutive_action_count = 1
+
+            self._episode_action_counts[current_action] = self._episode_action_counts.get(current_action, 0) + 1
+
+            repeat_start = self.config.get("repeat_action_start", 3)
+            if self._consecutive_action_count >= repeat_start:
+                repeats_over = self._consecutive_action_count - repeat_start + 1
+                repeat_penalty = self.config.get("repeat_action_penalty", -0.02) * repeats_over
+                repeat_penalty = max(repeat_penalty, self.config.get("repeat_action_penalty_cap", -0.06))
+
+            if dense_reward_mode == "anti_collapse_progress_v2":
+                stagnation_start = self.config.get("stagnation_repeat_start", repeat_start)
+                stagnation_eps = self.config.get("stagnation_delta_eps", 0.02)
+                if (
+                    self._consecutive_action_count >= stagnation_start
+                    and distance_delta <= stagnation_eps
+                ):
+                    repeats_over = self._consecutive_action_count - stagnation_start + 1
+                    stagnation_repeat_penalty = (
+                        self.config.get("stagnation_repeat_penalty", -0.02) * repeats_over
+                    )
+                    stagnation_repeat_penalty = max(
+                        stagnation_repeat_penalty,
+                        self.config.get("stagnation_repeat_penalty_cap", -0.06),
+                    )
+
+                total_actions = sum(self._episode_action_counts.values())
+                if total_actions >= self.config.get("action_balance_min_steps", 5):
+                    top_share = max(self._episode_action_counts.values()) / total_actions
+                    if top_share > self.config.get("action_top_share_penalty_threshold", 0.85):
+                        action_balance_penalty += self.config.get("action_top_share_penalty", -0.01)
+
+                    all_same_threshold = self.config.get("all_same_traj_penalty_threshold", 0.5)
+                    if len(self._episode_action_counts) == 1 and top_share > all_same_threshold:
+                        action_balance_penalty += self.config.get("all_same_traj_penalty", -0.02)
+
+        dense_total = progress_reward + repeat_penalty + stagnation_repeat_penalty + action_balance_penalty + invalid_penalty
+        return {
+            "dense_reward_total": dense_total,
+            "dense_progress_reward": progress_reward,
+            "dense_repeat_action_penalty": repeat_penalty,
+            "dense_stagnation_repeat_penalty": stagnation_repeat_penalty,
+            "dense_action_balance_penalty": action_balance_penalty,
+            "dense_invalid_action_penalty": invalid_penalty,
+            "dense_distance_delta": distance_delta,
+        }
     
     @env_state_reward_wrapper
     def step(self, action_str: str):
@@ -211,12 +298,28 @@ class NavigationEnv(BaseEnv):
         )
         
         action_list = rst['actions']
+        invalid_action_names = [
+            action for action in action_list
+            if action.lower() not in self.ACTION_LOOKUP
+        ]
+        if invalid_action_names:
+            rst["format_correct"] = False
+            rst["format_error_type"] = "invalid_action_name"
         prev_pos = self.env.last_event.metadata["agent"]["position"]
+        _, prev_distance = self.measure_success()
         
         metrics = {
             "turn_metrics": {
                 "action_is_valid": len(action_list) > 0,
                 "action_is_effective": False,
+                "format_correct": bool(rst.get("format_correct", False)),
+                "too_many_actions": bool(rst.get("too_many_actions", False)),
+                "action_count": len(action_list),
+                "action_validity_error": (
+                    "invalid_action_name"
+                    if invalid_action_names
+                    else ("ok" if action_list else "no_action")
+                ),
             },
             "traj_metrics": {
                 "success": False,
@@ -252,6 +355,7 @@ class NavigationEnv(BaseEnv):
                         break
                 else:
                     metrics['turn_metrics']['action_is_valid'] = False
+                    metrics['turn_metrics']['action_validity_error'] = "invalid_action_name"
                     break
                 
                 self._current_step += 1
@@ -272,6 +376,20 @@ class NavigationEnv(BaseEnv):
         # Update info dict
         info["metrics"] = metrics
         success, distance = self.measure_success()
+        dense_metrics = self._compute_dense_reward(
+            action_list=action_list,
+            prev_distance=prev_distance,
+            curr_distance=distance,
+            action_validity_error=metrics['turn_metrics']['action_validity_error'],
+        )
+        if (
+            self.config.get("dense_reward_mode", "off") == "off"
+            and metrics['turn_metrics']['action_validity_error'] != "ok"
+        ):
+            dense_metrics["dense_invalid_action_penalty"] = self.config.get("invalid_action_penalty", -0.05)
+            dense_metrics["dense_reward_total"] += dense_metrics["dense_invalid_action_penalty"]
+        self.reward += dense_metrics["dense_reward_total"]
+        metrics['turn_metrics'].update(dense_metrics)
         info['distance'] = distance
         info['instruction'] = self.episode_language_instruction
         info['env_step'] = self._current_step
@@ -359,6 +477,7 @@ class NavigationEnv(BaseEnv):
             obs_str = init_observation_template(
                 observation=img_placeholder,
                 instruction=self.episode_language_instruction,
+                action_word="action" if self.config.max_actions_per_step == 1 else "action(s)",
             ) + "\n" + format_prompt_text
         else:
             obs_str = action_template(
@@ -367,7 +486,8 @@ class NavigationEnv(BaseEnv):
                 reward=self.reward,
                 done=self.measure_success()[0],
                 instruction=self.episode_language_instruction,
-                env_feedback=self.info["env_feedback"]
+                env_feedback=self.info["env_feedback"],
+                action_word="action" if self.config.max_actions_per_step == 1 else "action(s)",
             ) + "\n" + format_prompt_text
         
         return {
@@ -392,7 +512,11 @@ class NavigationEnv(BaseEnv):
         )
         
     
-        return system_prompt(format=self.config.prompt_format) + '\n' + format_prompt_text
+        return system_prompt(
+            format=self.config.prompt_format,
+            max_actions_per_step=self.config.max_actions_per_step,
+            action_sep=self.config.action_sep,
+        ) + '\n' + format_prompt_text
     
     def close(self):
         """Close the environment."""

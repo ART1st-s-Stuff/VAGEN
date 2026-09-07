@@ -400,8 +400,21 @@ def process_llm_judgments(input_data: List[Dict[str, Any]], config: Optional[Dic
             "env_name": item["env_name"]
         })
     
-    # Call the request function to get LLM responses
-    llm_responses = run_gpt_request(prompts,config.api)
+    # Call the configured LLM judge provider. OpenAI remains the default
+    # to preserve the paper path; Together is an explicit runtime fallback.
+    api_config = OmegaConf.to_container(config.api, resolve=True)
+    judge_model = os.environ.get("VAGEN_JUDGE_MODEL")
+    if judge_model:
+        api_config["name"] = judge_model
+    judge_provider = os.environ.get(
+        "VAGEN_JUDGE_PROVIDER", api_config.get("provider", "openai")
+    ).lower()
+    if judge_provider == "together":
+        llm_responses = run_together_request(prompts, api_config)
+    elif judge_provider == "openai":
+        llm_responses = run_gpt_request(prompts, api_config)
+    else:
+        raise ValueError(f"Unsupported VAGEN_JUDGE_PROVIDER={judge_provider}")
     
     # Process the responses and extract scores
     results = []

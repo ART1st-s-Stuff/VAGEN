@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import time
 from typing import List, Dict, Any
@@ -99,15 +100,43 @@ def _process_batch(prompts: List[str], config) -> List[Dict[str, Any]]:
                     async with rate_limiter.semaphore:
                         await rate_limiter.wait_if_needed(total_estimated_tokens)
                         
-                        response = await async_client.completions.create(
-                            model=config.get("name", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"),
-                            prompt=prompt,
-                            temperature=config.get("temperature", 0.1),
-                            max_tokens=estimated_completion_tokens
+                        model_name = os.environ.get(
+                            "VAGEN_JUDGE_MODEL",
+                            config.get("name", "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8")
                         )
+                        max_tokens = int(os.environ.get(
+                            "VAGEN_JUDGE_MAX_TOKENS", estimated_completion_tokens
+                        ))
+                        use_chat = (
+                            config.get("endpoint", "chat") == "chat"
+                            or "gpt-oss" in model_name
+                        )
+                        if use_chat:
+                            kwargs = {
+                                "model": model_name,
+                                "messages": [{"role": "user", "content": prompt}],
+                                "temperature": config.get("temperature", 0.1),
+                                "max_tokens": max_tokens,
+                            }
+                            reasoning_effort = os.environ.get(
+                                "VAGEN_JUDGE_REASONING_EFFORT",
+                                config.get("reasoning_effort", "low" if "gpt-oss" in model_name else None)
+                            )
+                            if reasoning_effort:
+                                kwargs["reasoning_effort"] = reasoning_effort
+                            response = await async_client.chat.completions.create(**kwargs)
+                            response_text = response.choices[0].message.content or ""
+                        else:
+                            response = await async_client.completions.create(
+                                model=model_name,
+                                prompt=prompt,
+                                temperature=config.get("temperature", 0.1),
+                                max_tokens=max_tokens
+                            )
+                            response_text = response.choices[0].text
                         
                         results[index] = {
-                            "response": response.choices[0].text,
+                            "response": response_text,
                             "success": True,
                             "retries": retries,
                             "error": None

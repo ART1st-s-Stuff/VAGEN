@@ -380,11 +380,13 @@ class InferenceRolloutService(BaseRollout):
             turn_metrics = self.env_states[env_id]["metrics"]["turn_metrics"]
             for k, v in turn_metrics.items():
                 if isinstance(v, list) and v:
+                    if not all(isinstance(item, (int, float, bool)) for item in v):
+                        continue
                     # Average list values
                     metrics[f"avg_{k}"] = convert_numpy_types(sum(v) / len(v))
                     # Also keep the raw list
                     metrics[f"all_{k}"] = convert_numpy_types(v)
-                else:
+                elif isinstance(v, (int, float, bool)):
                     # Direct value
                     metrics[k] = convert_numpy_types(v)
             

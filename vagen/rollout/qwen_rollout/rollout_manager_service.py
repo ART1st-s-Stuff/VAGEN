@@ -15,7 +15,9 @@ import verl.utils.torch_functional as verl_F
 from verl.utils.dataset.rl_dataset import process_image, collate_fn
 import vagen.env
 from vagen.env import REGISTERED_ENV
-from vagen.server.client import BatchEnvClient
+from vagen.server.client import BatchEnvClient, ShardedBatchEnvClient
+from vagen.rollout.qwen_rollout.action_metrics import summarize_action_distribution
+from vagen.rollout.qwen_rollout.loss_mask_utils import prepare_response_for_loss_mask
     
 class QwenVLRolloutManagerService():
     def __init__(self,
@@ -35,7 +37,15 @@ class QwenVLRolloutManagerService():
         self.system_prompts = None # dict env_id:str
         self.env_states = None # dict
         self.batch_idx_to_env_id = None # dict
-        self.env_client = BatchEnvClient(base_url=self.config.base_url,timeout=self.config.timeout,max_workers=self.config.max_workers)
+        base_urls = self.config.get("base_urls", None)
+        if base_urls:
+            self.env_client = ShardedBatchEnvClient(
+                base_urls=base_urls,
+                timeout=self.config.timeout,
+                max_workers=self.config.max_workers,
+            )
+        else:
+            self.env_client = BatchEnvClient(base_url=self.config.base_url,timeout=self.config.timeout,max_workers=self.config.max_workers)
 
     @torch.no_grad()
     def _handle_special_tokens(self, llm_raw_response: str, prep_for_loss_mask: bool) -> str:
@@ -45,12 +55,11 @@ class QwenVLRolloutManagerService():
         """
         llm_raw_response = llm_raw_response.replace('<image>', '')
         if prep_for_loss_mask:
-            # filtering special tokens for llm_raw_response, then adding them to the beginning and end of the response for loss mask computation
-            sptk_b = self.config.special_token_for_loss_mask[0]
-            sptk_e = self.config.special_token_for_loss_mask[1]
-            llm_raw_response = llm_raw_response.replace(sptk_b, '')
-            llm_raw_response = llm_raw_response.replace(sptk_e, '')
-            llm_raw_response = sptk_b + llm_raw_response + sptk_e
+            llm_raw_response = prepare_response_for_loss_mask(
+                llm_raw_response,
+                special_tokens=self.config.special_token_for_loss_mask,
+                mode=self.config.get("loss_mask_mode", "default"),
+            )
         return llm_raw_response
     
     @torch.no_grad()
@@ -637,11 +646,12 @@ class QwenVLRolloutManagerService():
         """
         batch_list = []
         reward_rst=self.env_client.compute_reward_batch(list(self.envs.keys()))
+        update_window_size = self.config.get("update_window_size", None)
         for env_id in self.envs.keys():
             row_dict = self._generate_input_for_uptate(
                 recording=self.recorder[env_id],
                 step=self.env_states[env_id]['step'],
-                window_size=None,
+                window_size=update_window_size,
             )
             step_reward_sum= row_dict['step_reward_sum']
     
@@ -682,18 +692,20 @@ class QwenVLRolloutManagerService():
             }
             
             turn_metrics={
-                k: sum(v)/step if step != 0 else 0 for k, v in self.env_states[env_id]['metrics']['turn_metrics'].items()
+                k: sum(v)/step
+                for k, v in self.env_states[env_id]['metrics']['turn_metrics'].items()
+                if step != 0 and all(isinstance(item, (int, float, bool)) for item in v)
             }
             traj_metrics=self.env_states[env_id]['metrics']['traj_metrics']
             metrics.update(turn_metrics)
             metrics.update(traj_metrics)
+            metrics.update(summarize_action_distribution(record))
             env_info.append({
                 "env_id": env_id,
                 "config_id": config_id,
                 "output_str": output_rst['prompt'],
                 "image_data": image,
                 "metrics": metrics,
+                "history": record,
             })
         return env_info
-            
-            

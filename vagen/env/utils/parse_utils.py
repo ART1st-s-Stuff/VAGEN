@@ -3,6 +3,23 @@ from typing import Dict, List
 import json
 
 
+def _parse_actions(action_content: str, action_sep=',', max_actions=3):
+    actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
+    too_many_actions = max_actions is not None and len(actions) > max_actions
+    return actions, too_many_actions
+
+
+def _format_error_type(tags_matched: bool, format_correct: bool, action_content: str, actions: List[str], too_many_actions: bool) -> str:
+    if format_correct:
+        return "ok"
+    if not tags_matched:
+        return "missing_or_malformed_tags"
+    if too_many_actions:
+        return "too_many_actions"
+    if action_content is not None and not action_content.strip():
+        return "empty_answer"
+    return "missing_or_malformed_tags"
+
 
 def parse_freethink(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
     """
@@ -26,6 +43,7 @@ def parse_freethink(response: str, special_token_list=None, action_sep=',', max_
     extraction_pattern = r'<think>(.*?)</think>\s*<answer>(.*?)</answer>'
     match = re.search(extraction_pattern, response, re.DOTALL)
     format_correct = strict_match is not None
+    too_many_actions = False
     
     if not strict_match:
         think_content, action_content, actions = "", "", []
@@ -35,10 +53,8 @@ def parse_freethink(response: str, special_token_list=None, action_sep=',', max_
             for special_token in special_token_list: # remove all special tokens in responses to forbid confusion in training
                 action_content = action_content.replace(special_token, "").strip()
                 think_content = think_content.replace(special_token, "").strip()
-        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
-        if len(actions) > max_actions:
-            actions = actions[:max_actions] #Only the first MAX_ACTIONS actions are kept in the rollout.
-            action_content = (" " + action_sep + " ").join(actions)
+        actions, too_many_actions = _parse_actions(action_content, action_sep, max_actions)
+        format_correct = format_correct and bool(actions) and not too_many_actions
 
     llm_response = "<think>" + think_content.strip() + "</think>" + "<answer>" + action_content.strip() + "</answer>"
     return {
@@ -47,7 +63,10 @@ def parse_freethink(response: str, special_token_list=None, action_sep=',', max_
         "think_content": think_content,
         "action_content": action_content,
         "actions": actions,
-        "format_correct": format_correct
+        "format_correct": format_correct,
+        "format_error_type": _format_error_type(strict_match is not None, format_correct, action_content, actions, too_many_actions),
+        "too_many_actions": too_many_actions,
+        "action_count": len(actions),
     }
 
 def parse_no_think(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
@@ -67,6 +86,7 @@ def parse_no_think(response: str, special_token_list=None, action_sep=',', max_a
     strict_pattern = r'^\s*<answer>(.*?)</answer>\s*$'
     strict_match = re.match(strict_pattern, response.strip(), re.DOTALL)
     format_correct = strict_match is not None
+    too_many_actions = False
     
     # Pattern to extract content from answer tag
     extraction_pattern = r'<answer>(.*?)</answer>'
@@ -81,10 +101,8 @@ def parse_no_think(response: str, special_token_list=None, action_sep=',', max_a
         if special_token_list is not None:
             for special_token in special_token_list:
                 action_content = action_content.replace(special_token, "").strip()
-        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
-        if len(actions) > max_actions:
-            actions = actions[:max_actions]
-            action_content = (" " + action_sep + " ").join(actions)
+        actions, too_many_actions = _parse_actions(action_content, action_sep, max_actions)
+        format_correct = format_correct and bool(actions) and not too_many_actions
 
     llm_response = "<answer>" + action_content.strip() + "</answer>"
     return {
@@ -93,7 +111,10 @@ def parse_no_think(response: str, special_token_list=None, action_sep=',', max_a
         "think_content": think_content,
         "action_content": action_content,
         "actions": actions,
-        "format_correct": format_correct
+        "format_correct": format_correct,
+        "format_error_type": _format_error_type(strict_match is not None, format_correct, action_content, actions, too_many_actions),
+        "too_many_actions": too_many_actions,
+        "action_count": len(actions),
     }
 
 def parse_grounding(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
@@ -115,6 +136,7 @@ def parse_grounding(response: str, special_token_list=None, action_sep=',', max_
     strict_pattern = r'^\s*<think>\s*<observation>(.*?)</observation>\s*<reasoning>(.*?)</reasoning>\s*</think>\s*<answer>(.*?)</answer>\s*$'
     strict_match = re.match(strict_pattern, response.strip(), re.DOTALL)
     format_correct = strict_match is not None
+    too_many_actions = False
     
     # Pattern to extract content from tags
     extraction_pattern = r'<think>\s*<observation>(.*?)</observation>\s*<reasoning>(.*?)</reasoning>\s*</think>\s*<answer>(.*?)</answer>'
@@ -136,10 +158,8 @@ def parse_grounding(response: str, special_token_list=None, action_sep=',', max_
                 action_content = action_content.replace(special_token, "").strip()
                 think_content = think_content.replace(special_token, "").strip()
                 
-        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
-        if len(actions) > max_actions:
-            actions = actions[:max_actions]
-            action_content = (" " + action_sep + " ").join(actions)
+        actions, too_many_actions = _parse_actions(action_content, action_sep, max_actions)
+        format_correct = format_correct and bool(actions) and not too_many_actions
     
     # Reconstruct the cleaned llm_response
     llm_response = "<think>" + think_content.strip() + "</think>" + "<answer>" + action_content.strip() + "</answer>"
@@ -152,7 +172,10 @@ def parse_grounding(response: str, special_token_list=None, action_sep=',', max_
         "reasoning_content": reasoning_content,
         "action_content": action_content,
         "actions": actions,
-        "format_correct": format_correct
+        "format_correct": format_correct,
+        "format_error_type": _format_error_type(strict_match is not None, format_correct, action_content, actions, too_many_actions),
+        "too_many_actions": too_many_actions,
+        "action_count": len(actions),
     }
 
 def parse_worldmodeling(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
@@ -174,6 +197,7 @@ def parse_worldmodeling(response: str, special_token_list=None, action_sep=',', 
     strict_pattern = r'^\s*<think>\s*<reasoning>(.*?)</reasoning>\s*<prediction>(.*?)</prediction>\s*</think>\s*<answer>(.*?)</answer>\s*$'
     strict_match = re.match(strict_pattern, response.strip(), re.DOTALL)
     format_correct = strict_match is not None
+    too_many_actions = False
     
     # Pattern to extract content from tags
     extraction_pattern = r'<think>\s*<reasoning>(.*?)</reasoning>\s*<prediction>(.*?)</prediction>\s*</think>\s*<answer>(.*?)</answer>'
@@ -195,10 +219,8 @@ def parse_worldmodeling(response: str, special_token_list=None, action_sep=',', 
                 action_content = action_content.replace(special_token, "").strip()
                 think_content = think_content.replace(special_token, "").strip()
                 
-        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
-        if len(actions) > max_actions:
-            actions = actions[:max_actions]
-            action_content = (" " + action_sep + " ").join(actions)
+        actions, too_many_actions = _parse_actions(action_content, action_sep, max_actions)
+        format_correct = format_correct and bool(actions) and not too_many_actions
     
     # Reconstruct the cleaned llm_response
     llm_response = "<think>" + think_content.strip() + "</think>" + "<answer>" + action_content.strip() + "</answer>"
@@ -211,7 +233,10 @@ def parse_worldmodeling(response: str, special_token_list=None, action_sep=',', 
         "prediction_content": prediction_content,
         "action_content": action_content,
         "actions": actions,
-        "format_correct": format_correct
+        "format_correct": format_correct,
+        "format_error_type": _format_error_type(strict_match is not None, format_correct, action_content, actions, too_many_actions),
+        "too_many_actions": too_many_actions,
+        "action_count": len(actions),
     }
 
 def parse_grounding_worldmodeling(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
@@ -234,6 +259,7 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
     strict_pattern = r'^\s*<think>\s*<observation>(.*?)</observation>\s*<reasoning>(.*?)</reasoning>\s*<prediction>(.*?)</prediction>\s*</think>\s*<answer>(.*?)</answer>\s*$'
     strict_match = re.match(strict_pattern, response.strip(), re.DOTALL)
     format_correct = strict_match is not None
+    too_many_actions = False
     
     # Pattern to extract content from tags
     extraction_pattern = r'<think>\s*<observation>(.*?)</observation>\s*<reasoning>(.*?)</reasoning>\s*<prediction>(.*?)</prediction>\s*</think>\s*<answer>(.*?)</answer>'
@@ -257,10 +283,8 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
                 action_content = action_content.replace(special_token, "").strip()
                 think_content = think_content.replace(special_token, "").strip()
                 
-        actions = [action.strip() for action in action_content.split(action_sep) if action.strip()]
-        if len(actions) > max_actions:
-            actions = actions[:max_actions]
-            action_content = (" " + action_sep + " ").join(actions)
+        actions, too_many_actions = _parse_actions(action_content, action_sep, max_actions)
+        format_correct = format_correct and bool(actions) and not too_many_actions
     
     # Reconstruct the cleaned llm_response
     llm_response = "<think>" + think_content.strip() + "</think>" + "<answer>" + action_content.strip() + "</answer>"
@@ -274,7 +298,10 @@ def parse_grounding_worldmodeling(response: str, special_token_list=None, action
         "think_content": think_content,
         "action_content": action_content,
         "actions": actions,
-        "format_correct": format_correct
+        "format_correct": format_correct,
+        "format_error_type": _format_error_type(strict_match is not None, format_correct, action_content, actions, too_many_actions),
+        "too_many_actions": too_many_actions,
+        "action_count": len(actions),
     }
     
 PARSE_FUNC_MAP = {

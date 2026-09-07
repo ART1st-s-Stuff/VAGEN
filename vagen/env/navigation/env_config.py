@@ -27,6 +27,25 @@ class NavigationEnvConfig(BaseEnvConfig):
     grounding_reward_weight: float = 0.5
     worldmodeling_reward_weight: float = 0.5
 
+    # Lightweight shaping for single-action anti-collapse experiments.
+    dense_reward_mode: str = "off"
+    progress_reward: float = 0.02
+    regress_penalty: float = -0.02
+    progress_epsilon: float = 0.01
+    repeat_action_penalty: float = -0.02
+    repeat_action_start: int = 3
+    repeat_action_penalty_cap: float = -0.06
+    invalid_action_penalty: float = -0.05
+    stagnation_repeat_penalty: float = -0.02
+    stagnation_repeat_start: int = 3
+    stagnation_repeat_penalty_cap: float = -0.06
+    stagnation_delta_eps: float = 0.02
+    action_balance_min_steps: int = 5
+    action_top_share_penalty_threshold: float = 0.85
+    action_top_share_penalty: float = -0.01
+    all_same_traj_penalty_threshold: float = 0.5
+    all_same_traj_penalty: float = -0.02
+
     def config_id(self) -> str:
         """Generate a unique identifier for this configuration."""
         id_fields = ["eval_set","render_mode", "max_actions_per_step"]

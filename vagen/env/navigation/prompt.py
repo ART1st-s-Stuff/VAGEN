@@ -4,35 +4,75 @@ FORMAT_CONFIGS = {
     "free_think": {
         "description": "You should first give your thought process, and then your answer.",
         "format": "<think>...</think><answer>...</answer>",
-        "example": """<think>I can see from the sight the target object is right in the top left of me, I will move forward, then move left to access it.</think><answer>moveahead{action_sep}moveahead{action_sep}moveahead{action_sep}moveleft{action_sep}moveleft</answer>"""
+        "example": """<think>I can see from the sight the target object is right in the top left of me, I will move forward, then move left to access it.</think><answer>moveahead{action_sep}moveahead{action_sep}moveahead{action_sep}moveleft{action_sep}moveleft</answer>""",
+        "single_action_example": """<think>I can see the target area ahead, so I should move one step closer.</think><answer>moveahead</answer>"""
     },
     "no_think": {
         "description": "You should provide only your answer.",
         "format": "<answer>...</answer>",
-        "example": """<answer>moveahead{action_sep}moveahead{action_sep}moveahead{action_sep}moveleft{action_sep}moveleft</answer>"""
+        "example": """<answer>moveahead{action_sep}moveahead{action_sep}moveahead{action_sep}moveleft{action_sep}moveleft</answer>""",
+        "single_action_example": """<answer>moveahead</answer>"""
     },
     "grounding": {
         "description": "You should first give your thought process with your observation and reasoning, and finally your answer.\nThe observation should be described in detail about what you see in the environment.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning></think><answer>...</answer>",
-        "example": """<think><observation>I am in a living room. There is a couch to my left, a TV in front of me, and a doorway to the kitchen on my right. The target object, a vase, appears to be on a shelf near the kitchen doorway.</observation><reasoning>I need to move toward the kitchen doorway to reach the vase. I'll move forward to get closer to the center of the room, then turn right and move toward the kitchen.</reasoning></think><answer>moveahead{action_sep}moveahead{action_sep}rotateright{action_sep}moveahead{action_sep}moveahead</answer>"""
+        "example": """<think><observation>I am in a living room. There is a couch to my left, a TV in front of me, and a doorway to the kitchen on my right. The target object, a vase, appears to be on a shelf near the kitchen doorway.</observation><reasoning>I need to move toward the kitchen doorway to reach the vase. I'll move forward to get closer to the center of the room, then turn right and move toward the kitchen.</reasoning></think><answer>moveahead{action_sep}moveahead{action_sep}rotateright{action_sep}moveahead{action_sep}moveahead</answer>""",
+        "single_action_example": """<think><observation>The target object appears ahead and slightly to the right.</observation><reasoning>I should move one step forward to get closer while keeping the target in view.</reasoning></think><answer>moveahead</answer>"""
     },
     "worldmodeling": {
         "description": "You should first give your thought process with reasoning and prediction of next state,  then your answer.\nThe prediction should describe what you expect to see after your actions are executed.",
         "format": "<think><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
-        "example": """<think><reasoning>I can see the kitchen doorway to my right, and I need to go there to find the refrigerator. I'll turn right and move forward.</reasoning><prediction>I am now in the kitchen doorway. In front of me is the kitchen counter with a sink. To the left I can see a refrigerator against the wall. There's a kitchen island in the center of the room.</prediction></think><answer>rotateright{action_sep}moveahead{action_sep}moveahead</answer>"""
+        "example": """<think><reasoning>I can see the kitchen doorway to my right, and I need to go there to find the refrigerator. I'll turn right and move forward.</reasoning><prediction>I am now in the kitchen doorway. In front of me is the kitchen counter with a sink. To the left I can see a refrigerator against the wall. There's a kitchen island in the center of the room.</prediction></think><answer>rotateright{action_sep}moveahead{action_sep}moveahead</answer>""",
+        "single_action_example": """<think><reasoning>The target is not centered yet, so I should rotate once before moving.</reasoning><prediction>After turning, the target area should be closer to the center of my view.</prediction></think><answer>rotateright</answer>"""
     },
     "grounding_worldmodeling": {
         "description": "You should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.",
         "format": "<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
-        "example": """<think><observation>I am at the entrance of a bedroom. There is a bed to the left, a desk with a lamp on the right, and a closet straight ahead. The target object, a book, appears to be on the desk.</observation><reasoning>I need to move toward the desk to reach the book. I'll turn right and move forward.</reasoning><prediction>I am now standing in front of the desk. The desk has a lamp, a computer, and several books on it. The target book is within reach on the right side of the desk.</prediction></think><answer>rotateright{action_sep}moveahead{action_sep}moveahead</answer>"""
+        "example": """<think><observation>I am at the entrance of a bedroom. There is a bed to the left, a desk with a lamp on the right, and a closet straight ahead. The target object, a book, appears to be on the desk.</observation><reasoning>I need to move toward the desk to reach the book. I'll turn right and move forward.</reasoning><prediction>I am now standing in front of the desk. The desk has a lamp, a computer, and several books on it. The target book is within reach on the right side of the desk.</prediction></think><answer>rotateright{action_sep}moveahead{action_sep}moveahead</answer>""",
+        "single_action_example": """<think><observation>The target object is ahead but slightly off center.</observation><reasoning>I should take one forward step to reduce the distance.</reasoning><prediction>After moving forward, the target should appear larger and closer.</prediction></think><answer>moveahead</answer>"""
     }
 }
+
+VALID_ACTION_LIST = "moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown"
+FORBIDDEN_ACTION_LIST = "stay, stop, end, done, terminate, wait, noop"
 
 # system_prompt function as per your second code block (robot navigation)
 def system_prompt(**kwargs):
     example = "" # Default empty example
     # Internally uses kwargs.get("format"), as in your original code
     selected_format = kwargs.get("format", "default")
+    max_actions_per_step = kwargs.get("max_actions_per_step", 5)
+    single_action = max_actions_per_step == 1
+
+    if single_action:
+        return f"""You are a home robot and perform navigation tasks according to instructions.
+Actions you can take: {VALID_ACTION_LIST}.
+moveahead: Move forward by some distance
+moveback: Move backward by some distance
+moveright: Move rightward by some distance
+moveleft: Move leftward by some distance
+rotateright: Rotate to the right by 90 degrees
+rotateleft: Rotate to the left by 90 degrees
+lookup: Tilt the camera upward by 30 degrees
+lookdown: Tilt the camera downward by 30 degrees
+Rewards:
+Format correct only when the answer is exactly one valid action name.
+Achieve the human instruction: +10.0
+Invalid action names receive negative feedback.
+The instruction will be provided with each observation. Look at the image carefully and navigate to complete the instruction.
+Hints:
+1. You must take exactly one action in each response.
+2. Your whole response must strictly match this format and nothing else:
+<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>one_action</answer>
+3. Do not write anything before <think> or after </answer>.
+4. The answer must be exactly one of these lowercase action names: {VALID_ACTION_LIST}.
+For example:
+<think><observation>The target area is ahead.</observation><reasoning>I should move one step closer.</reasoning><prediction>The target should appear closer.</prediction></think><answer>moveahead</answer>
+5. Do not use commas, numbering, bullet points, or natural-language action names inside <answer>.
+6. There is no {FORBIDDEN_ACTION_LIST} action. Never output those words.
+7. If you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.
+9. The words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.
+8. If you seem to be stuck, you can lookdown to see if there is any object above or below you, or rotate to inspect what is behind you."""
 
     if selected_format in ["free_think", "default"]:
         example=f"""Example:
@@ -133,8 +173,9 @@ rotateleft: Rotate to the left by 90 degrees
 lookup: Tilt the camera upward by 30 degrees
 lookdown: Tilt the camera downward by 30 degrees
 Rewards:
-Format correct: +0.5
+Format correct only when the answer uses valid action names.
 Achieve the human instruction: +10.0
+Invalid action names receive negative feedback.
 The instruction will be provided with each observation. Look at the image carefully and navigate to complete the instruction.
 Hints:
 1. You can take multiple actions at a time, in most cases, if you find the target object is far away from you, you can call moveahead, moveleft and move right multiple times.
@@ -145,14 +186,16 @@ Hints:
 def init_observation_template(**kwargs):
     observation = kwargs.get("observation", "No observation provided.")
     instruction = kwargs.get("instruction", "No instruction provided.")
+    action_word = kwargs.get("action_word", "action(s)")
     return f"""[Initial Observation]:
 {observation}
 Human Instruction: {instruction}
-Decide your next action(s)."""
+Decide your next {action_word}."""
 
 def action_template(**kwargs):
     observation = kwargs.get("observation", "No observation provided.")
     instruction = kwargs.get("instruction", "No instruction provided.")
+    action_word = kwargs.get("action_word", "action(s)")
     valid_action = kwargs.get("valid_action", "No valid action provided.")
     env_feedback = kwargs.get("env_feedback", "No environment feedback provided.")
     reward = kwargs.get("reward", "No reward provided.")
@@ -164,7 +207,7 @@ done: {done}
 After that, the observation is:
 {observation}
 Human Instruction: {instruction}
-Decide your next action(s)."""
+Decide your next {action_word}."""
 
 # format_prompt_generator function, similar to your first (FrozenLake) example
 def format_prompt_generator(format_type):
@@ -193,7 +236,16 @@ def format_prompt_generator(format_type):
             raise ValueError(f"Unknown format_type: {format_type}")
         config = FORMAT_CONFIGS[format_type]
         
-        base_prompt = f"""You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.
+        if max_actions_per_step == 1:
+            base_prompt = f"""You must take exactly one action at a time.
+The action must be exactly one of these lowercase action names: {VALID_ACTION_LIST}.
+There is no {FORBIDDEN_ACTION_LIST} action. Never output those words.
+If you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.
+The words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.
+Do not output more than one action or separate actions with '{action_sep}'.
+{config["description"]}"""
+        else:
+            base_prompt = f"""You can take up to {max_actions_per_step} action(s) at a time, separated by '{action_sep}'.
 {config["description"]}"""
         
         if "additional_info" in config: # In case it's added to FORMAT_CONFIGS later
@@ -205,7 +257,8 @@ Your response should be in the format of:
         
         if add_example:
             # The 'e.g.' is already part of the example string in this FORMAT_CONFIGS
-            example_text = config["example"].format(action_sep=action_sep)
+            example_key = "single_action_example" if max_actions_per_step == 1 else "example"
+            example_text = config[example_key].format(action_sep=action_sep)
             return base_prompt + '\n' + f"e.g. {example_text}"
         
         return base_prompt

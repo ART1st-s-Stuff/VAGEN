@@ -128,3 +128,32 @@ temp/
 benchmark_results/
 env_benchmark_results/
 results/
+
+# VAGEN Navigation reproduction artifacts
+exps/
+rollouts/
+rollout_data/
+validation/
+artifacts/
+runs/**/checkpoints/
+runs/**/*.parquet
+runs/**/*.pt
+runs/**/*.pth
+runs/**/*.ckpt
+runs/**/*.safetensors
+runs/**/*.bin
+runs/**/*.png
+runs/**/*.jpg
+runs/**/*.jpeg
+runs/**/*.mp4
+*.safetensors
+*.pth
+
+# Keep lightweight reproduction summaries trackable.
+!runs/
+!runs/**/*.md
+!runs/**/*.json
+!runs/**/.gitkeep
+
+# Local sync logs stay local unless manually forced.
+logs/

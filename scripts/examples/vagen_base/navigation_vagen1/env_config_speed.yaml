@@ -1,0 +1,23 @@
+env1:
+    env_name: navigation
+    env_config:
+        render_mode: vision
+        prompt_format: grounding_worldmodeling
+        use_state_reward: false
+        eval_set: base
+        max_actions_per_step: 1
+        format_reward: 0.1
+    train_size: 128
+    test_size: 4
+
+env2:
+    env_name: navigation
+    env_config:
+        render_mode: vision
+        prompt_format: grounding_worldmodeling
+        use_state_reward: false
+        eval_set: common_sense
+        max_actions_per_step: 1
+        format_reward: 0.1
+    train_size: 128
+    test_size: 4

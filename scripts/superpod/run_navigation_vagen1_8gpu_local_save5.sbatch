@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=vagen-nav-vagen1-8g-local
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --qos=normal_qos
+#SBATCH --gres=gpu:8
+#SBATCH --exclude=dgx-26,dgx-27,dgx-32,dgx-35,dgx-37,dgx-40
+#SBATCH --cpus-per-task=128
+#SBATCH --mem=768G
+#SBATCH --time=24:00:00
+#SBATCH --output=/project/peilab/hligb/vagen-navigation/logs/navigation-vagen1-8gpu-native-%j.out
+#SBATCH --error=/project/peilab/hligb/vagen-navigation/logs/navigation-vagen1-8gpu-native-%j.err
+
+set -euo pipefail
+
+export VAGEN_REPO=${VAGEN_REPO:-/home/hligb/test_lu/VAGEN-navigation-repro}
+export VAGEN_ARTIFACT_ROOT=${VAGEN_ARTIFACT_ROOT:-/project/peilab/hligb/vagen-navigation}
+
+# Keep per-job runtime state off /project. Ray treats /project as over 95% full
+# and may fail object spilling even when user-visible free space remains.
+export VAGEN_NODE_LOCAL_ROOT=${VAGEN_NODE_LOCAL_ROOT:-/tmp/${USER:-hligb}/vagen-navigation/${SLURM_JOB_ID:-manual}}
+export VAGEN_AI2THOR_HOME=${VAGEN_LOCAL_AI2THOR_HOME:-$VAGEN_NODE_LOCAL_ROOT/ai2thor-home}
+export RAY_TMPDIR=$VAGEN_NODE_LOCAL_ROOT/ray
+export TMPDIR=$VAGEN_NODE_LOCAL_ROOT/tmp
+export TRITON_CACHE_DIR=$VAGEN_NODE_LOCAL_ROOT/triton-cache
+export TORCHINDUCTOR_CACHE_DIR=$VAGEN_NODE_LOCAL_ROOT/torchinductor-cache
+mkdir -p "$VAGEN_AI2THOR_HOME" "$RAY_TMPDIR" "$TMPDIR" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+echo "local8 runtime dirs: VAGEN_NODE_LOCAL_ROOT=$VAGEN_NODE_LOCAL_ROOT RAY_TMPDIR=$RAY_TMPDIR TMPDIR=$TMPDIR"
+
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}
+export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-8}
+export ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE=${ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE:-4}
+export SERVER_NAVIGATION_DEVICES=${SERVER_NAVIGATION_DEVICES:-0,1,2,3,4,5,6,7}
+export SERVER_NAVIGATION_MAX_WORKERS=${SERVER_NAVIGATION_MAX_WORKERS:-2}
+export SERVER_RENDER_PROBE_AI2THOR=${SERVER_RENDER_PROBE_AI2THOR:-1}
+
+export VAGEN1_VARIANT=${VAGEN1_VARIANT:-manual}
+export RUN_STAMP=${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}
+export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-navigation_vagen1_native_8gpu_20260806}
+export WANDB_TAGS=${WANDB_TAGS:-vagen,navigation,vagen1,step1,native,8gpu,no-dense}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-navigation_vagen1_native_8gpu_${RUN_STAMP}}
+export WANDB_NAME=${WANDB_NAME:-$EXPERIMENT_NAME}
+
+export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-300}
+export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-32}
+export PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-16}
+export ROLLOUT_MINI_BATCH_SIZE=${ROLLOUT_MINI_BATCH_SIZE:-1}
+export SAVE_FREQ=${SAVE_FREQ:-5}
+export TEST_FREQ=${TEST_FREQ:-20}
+export VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-False}
+export FINAL_VAL_AFTER_TRAIN=${FINAL_VAL_AFTER_TRAIN:-True}
+export RAW_SAMPLES_TO_LOG=${RAW_SAMPLES_TO_LOG:-0}
+export RAW_SAMPLES_MAX_CHARS=${RAW_SAMPLES_MAX_CHARS:-2000}
+export REMOVE_PREVIOUS_CKPT_IN_SAVE=${REMOVE_PREVIOUS_CKPT_IN_SAVE:-False}
+export FORCE_GEN_DATA=${FORCE_GEN_DATA:-1}
+export VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-1}
+
+export SERVER_USE_STATE_REWARD=${SERVER_USE_STATE_REWARD:-False}
+export SERVER_PREWARM_AI2THOR=${SERVER_PREWARM_AI2THOR:-0}
+
+export ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.35}
+export ROLLOUT_LIMIT_MM_PER_PROMPT=${ROLLOUT_LIMIT_MM_PER_PROMPT:-6}
+export ROLLOUT_ENABLE_CHUNKED_PREFILL=${ROLLOUT_ENABLE_CHUNKED_PREFILL:-False}
+export ROLLOUT_ENFORCE_EAGER=${ROLLOUT_ENFORCE_EAGER:-True}
+export ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-False}
+export ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}
+export ROLLOUT_TIMEOUT=${ROLLOUT_TIMEOUT:-1200}
+
+export MAX_TURNS=${MAX_TURNS:-20}
+export ROLLOUT_WINDOW_SIZE=${ROLLOUT_WINDOW_SIZE:-5}
+export UPDATE_WINDOW_SIZE=${UPDATE_WINDOW_SIZE:-5}
+export MAX_TRAJECTORY_LENGTH=${MAX_TRAJECTORY_LENGTH:-16000}
+export ROLLOUT_MAX_TRAJECTORY_LENGTH=${ROLLOUT_MAX_TRAJECTORY_LENGTH:-6144}
+export FORMAT_REWARD=${FORMAT_REWARD:-0.02}
+export LOSS_MASK_MODE=${LOSS_MASK_MODE:-default}
+export ENV_CONFIG_PATH=${ENV_CONFIG_PATH:-$VAGEN_REPO/scripts/examples/vagen_base/navigation_vagen1/env_config.yaml}
+export VAGEN_RUN_LOG=${VAGEN_RUN_LOG:-$VAGEN_ARTIFACT_ROOT/logs/$EXPERIMENT_NAME.log}
+
+bash "$VAGEN_REPO/scripts/superpod/run_navigation_vagen1_4gpu.sbatch"

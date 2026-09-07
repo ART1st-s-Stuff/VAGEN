@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=vagen-nav-vagen1-4g
+#SBATCH --account=peilab
+#SBATCH --partition=normal
+#SBATCH --qos=normal_qos
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=384G
+#SBATCH --time=24:00:00
+#SBATCH --output=/project/peilab/hligb/vagen-navigation/logs/navigation-vagen1-4gpu-%j.out
+#SBATCH --error=/project/peilab/hligb/vagen-navigation/logs/navigation-vagen1-4gpu-%j.err
+
+set -euo pipefail
+
+export VAGEN_REPO=${VAGEN_REPO:-/home/hligb/test_lu/VAGEN-navigation-repro}
+export VAGEN_ARTIFACT_ROOT=${VAGEN_ARTIFACT_ROOT:-/project/peilab/hligb/vagen-navigation}
+source "$VAGEN_REPO/scripts/superpod/prepare_project_storage.sh"
+
+# Keep volatile per-job runtime state on node-local storage. Checkpoints, logs,
+# W&B, and datasets still remain under VAGEN_ARTIFACT_ROOT on /project.
+export VAGEN_NODE_LOCAL_ROOT=${VAGEN_NODE_LOCAL_ROOT:-/tmp/${USER:-hligb}/vagen-navigation/${SLURM_JOB_ID:-manual}}
+export VAGEN_AI2THOR_HOME=${VAGEN_LOCAL_AI2THOR_HOME:-$VAGEN_NODE_LOCAL_ROOT/ai2thor-home}
+export RAY_TMPDIR=$VAGEN_NODE_LOCAL_ROOT/ray
+export TMPDIR=$VAGEN_NODE_LOCAL_ROOT/tmp
+export TRITON_CACHE_DIR=$VAGEN_NODE_LOCAL_ROOT/triton-cache
+export TORCHINDUCTOR_CACHE_DIR=$VAGEN_NODE_LOCAL_ROOT/torchinductor-cache
+mkdir -p "$VAGEN_AI2THOR_HOME" "$RAY_TMPDIR" "$TMPDIR" "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+echo "local4 runtime dirs: VAGEN_NODE_LOCAL_ROOT=$VAGEN_NODE_LOCAL_ROOT RAY_TMPDIR=$RAY_TMPDIR TMPDIR=$TMPDIR"
+
+export SERVER_PORT=${SERVER_PORT:-$((5000 + ${SLURM_JOB_ID:-0} % 1000))}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-XFORMERS}
+export PYTHONHASHSEED=${PYTHONHASHSEED:-0}
+export WANDB_MODE=${WANDB_MODE:-online}
+export VAGEN1_VARIANT=${VAGEN1_VARIANT:-manual}
+export WANDB_RUN_GROUP=${WANDB_RUN_GROUP:-navigation_vagen1_20260722}
+export WANDB_TAGS=${WANDB_TAGS:-vagen,navigation,vagen1,single-action,step1,4gpu}
+export SERVER_USE_STATE_REWARD=${SERVER_USE_STATE_REWARD:-False}
+export SERVER_PREWARM_AI2THOR=${SERVER_PREWARM_AI2THOR:-0}
+export SERVER_RENDER_PROBE_AI2THOR=${SERVER_RENDER_PROBE_AI2THOR:-1}
+export SERVER_NAVIGATION_MAX_WORKERS=${SERVER_NAVIGATION_MAX_WORKERS:-1}
+export SERVER_NAVIGATION_DEVICES=${SERVER_NAVIGATION_DEVICES:-0,1,2,3}
+export RUN_STAMP=${RUN_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}
+export EXPERIMENT_NAME=${EXPERIMENT_NAME:-navigation_vagen1_${VAGEN1_VARIANT}_4gpu_${RUN_STAMP}}
+export WANDB_NAME=${WANDB_NAME:-$EXPERIMENT_NAME}
+export FORCE_GEN_DATA=${FORCE_GEN_DATA:-1}
+export TOTAL_TRAINING_STEPS=${TOTAL_TRAINING_STEPS:-300}
+export TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-128}
+export VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-1}
+export PPO_MINI_BATCH_SIZE=${PPO_MINI_BATCH_SIZE:-32}
+export N_GPUS_PER_NODE=${N_GPUS_PER_NODE:-4}
+export ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE=${ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE:-4}
+export ROLLOUT_GPU_MEMORY_UTILIZATION=${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.4}
+export ROLLOUT_MINI_BATCH_SIZE=${ROLLOUT_MINI_BATCH_SIZE:-1}
+export ROLLOUT_TIMEOUT=${ROLLOUT_TIMEOUT:-1200}
+export ROLLOUT_LIMIT_MM_PER_PROMPT=${ROLLOUT_LIMIT_MM_PER_PROMPT:-8}
+export ROLLOUT_ENABLE_CHUNKED_PREFILL=${ROLLOUT_ENABLE_CHUNKED_PREFILL:-False}
+export ROLLOUT_ENFORCE_EAGER=${ROLLOUT_ENFORCE_EAGER:-False}
+export ROLLOUT_FREE_CACHE_ENGINE=${ROLLOUT_FREE_CACHE_ENGINE:-False}
+export ROLLOUT_MAX_NUM_BATCHED_TOKENS=${ROLLOUT_MAX_NUM_BATCHED_TOKENS:-8192}
+export MAX_TURNS=${MAX_TURNS:-20}
+export ROLLOUT_WINDOW_SIZE=${ROLLOUT_WINDOW_SIZE:-5}
+export UPDATE_WINDOW_SIZE=${UPDATE_WINDOW_SIZE:-5}
+export MAX_TRAJECTORY_LENGTH=${MAX_TRAJECTORY_LENGTH:-16000}
+export ROLLOUT_MAX_TRAJECTORY_LENGTH=${ROLLOUT_MAX_TRAJECTORY_LENGTH:-5000}
+export FORMAT_REWARD=${FORMAT_REWARD:-0.02}
+export LOSS_MASK_MODE=${LOSS_MASK_MODE:-default}
+export VAL_BEFORE_TRAIN=${VAL_BEFORE_TRAIN:-False}
+export FINAL_VAL_AFTER_TRAIN=${FINAL_VAL_AFTER_TRAIN:-True}
+export RAW_SAMPLES_TO_LOG=${RAW_SAMPLES_TO_LOG:-0}
+export RAW_SAMPLES_MAX_CHARS=${RAW_SAMPLES_MAX_CHARS:-2000}
+export SAVE_FREQ=${SAVE_FREQ:-20}
+export TEST_FREQ=${TEST_FREQ:-20}
+export REMOVE_PREVIOUS_CKPT_IN_SAVE=${REMOVE_PREVIOUS_CKPT_IN_SAVE:-False}
+export ENV_CONFIG_PATH=${ENV_CONFIG_PATH:-$VAGEN_REPO/scripts/examples/vagen_base/navigation_vagen1/env_config.yaml}
+export VAGEN_RUN_LOG=${VAGEN_RUN_LOG:-$VAGEN_LOG_ROOT/$EXPERIMENT_NAME.log}
+
+if [ "$VAGEN1_VARIANT" != "manual" ]; then
+  source "$VAGEN_REPO/scripts/superpod/configure_navigation_vagen1_variant.sh"
+fi
+
+source "$VAGEN_REPO/scripts/superpod/load_modules.sh"
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate "${VAGEN_CONDA_ENV:-vagen_nav}"
+source "$VAGEN_REPO/scripts/superpod/configure_vulkan_env.sh"
+source "$VAGEN_REPO/scripts/superpod/patch_verl_lightweight_checkpoint.sh"
+
+cd "$VAGEN_REPO"
+export VAGEN_GIT_COMMIT=${VAGEN_GIT_COMMIT:-$(git rev-parse HEAD)}
+source scripts/superpod/start_local_server.sh
+copy_vagen_node_local_logs() {
+  local status=$?
+  local dest="$VAGEN_ARTIFACT_ROOT/logs/node-local-${EXPERIMENT_NAME}-${SLURM_JOB_ID:-manual}"
+  mkdir -p "$dest"
+  if [ -d "${RAY_TMPDIR:-}" ]; then
+    cp -a "$RAY_TMPDIR" "$dest/ray" 2>/dev/null || true
+  fi
+  if [ -d "${VAGEN_NODE_LOCAL_ROOT:-}" ]; then
+    find "$VAGEN_NODE_LOCAL_ROOT" -maxdepth 2 -type f \( -name '*.log' -o -name '*.out' -o -name '*.err' \) \
+      -exec cp --parents {} "$dest" \; 2>/dev/null || true
+  fi
+  echo "copied node-local diagnostics to $dest"
+  return "$status"
+}
+cleanup_navigation_vagen1_job() {
+  local status=$?
+  copy_vagen_node_local_logs || true
+  cleanup_vagen_server || true
+  exit "$status"
+}
+trap cleanup_navigation_vagen1_job EXIT
+bash scripts/examples/vagen_base/navigation_vagen1/run.sh
+bash scripts/superpod/write_run_summary.sh "$EXPERIMENT_NAME" \
+  "VAGEN_GIT_COMMIT=$VAGEN_GIT_COMMIT VAGEN1_VARIANT=$VAGEN1_VARIANT WANDB_MODE=$WANDB_MODE EXPERIMENT_NAME=$EXPERIMENT_NAME N_GPUS_PER_NODE=$N_GPUS_PER_NODE TOTAL_TRAINING_STEPS=$TOTAL_TRAINING_STEPS SAVE_FREQ=$SAVE_FREQ TEST_FREQ=$TEST_FREQ VAL_BEFORE_TRAIN=$VAL_BEFORE_TRAIN FINAL_VAL_AFTER_TRAIN=$FINAL_VAL_AFTER_TRAIN RAW_SAMPLES_TO_LOG=$RAW_SAMPLES_TO_LOG RAW_SAMPLES_MAX_CHARS=$RAW_SAMPLES_MAX_CHARS SERVER_NAVIGATION_MAX_WORKERS=$SERVER_NAVIGATION_MAX_WORKERS ROLLOUT_MINI_BATCH_SIZE=$ROLLOUT_MINI_BATCH_SIZE ROLLOUT_GPU_MEMORY_UTILIZATION=$ROLLOUT_GPU_MEMORY_UTILIZATION ROLLOUT_LIMIT_MM_PER_PROMPT=$ROLLOUT_LIMIT_MM_PER_PROMPT ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE=$ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE ROLLOUT_ENFORCE_EAGER=$ROLLOUT_ENFORCE_EAGER ROLLOUT_ENABLE_CHUNKED_PREFILL=$ROLLOUT_ENABLE_CHUNKED_PREFILL ROLLOUT_FREE_CACHE_ENGINE=$ROLLOUT_FREE_CACHE_ENGINE ROLLOUT_MAX_NUM_BATCHED_TOKENS=$ROLLOUT_MAX_NUM_BATCHED_TOKENS FORMAT_REWARD=$FORMAT_REWARD LOSS_MASK_MODE=$LOSS_MASK_MODE SAVE_CRITIC_CKPT=${SAVE_CRITIC_CKPT:-True} SAVE_OPTIMIZER_CKPT=${SAVE_OPTIMIZER_CKPT:-True} SERVER_PREWARM_AI2THOR=$SERVER_PREWARM_AI2THOR SERVER_RENDER_PROBE_AI2THOR=$SERVER_RENDER_PROBE_AI2THOR MAX_TURNS=$MAX_TURNS ROLLOUT_WINDOW_SIZE=$ROLLOUT_WINDOW_SIZE UPDATE_WINDOW_SIZE=$UPDATE_WINDOW_SIZE MAX_TRAJECTORY_LENGTH=$MAX_TRAJECTORY_LENGTH ROLLOUT_MAX_TRAJECTORY_LENGTH=$ROLLOUT_MAX_TRAJECTORY_LENGTH ENV_CONFIG_PATH=$ENV_CONFIG_PATH bash scripts/examples/vagen_base/navigation_vagen1/run.sh"

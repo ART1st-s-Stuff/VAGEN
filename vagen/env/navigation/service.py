@@ -286,4 +286,5 @@ class NavigationService(BaseService):
         for env_id in env_ids:
             self.environments.pop(env_id, None)
             self.env_configs.pop(env_id, None)
-            self.device_status.pop(env_id, None)
+            for env_ids_on_device in self.device_status.values():
+                env_ids_on_device.discard(env_id)

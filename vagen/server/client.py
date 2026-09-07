@@ -1,4 +1,6 @@
 from typing import Dict, List, Tuple, Optional, Any, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import requests
 import time
 from vagen.server.serial import deserialize_observation, deserialize_step_result
@@ -258,6 +260,145 @@ class BatchEnvClient:
         Args:
             env_id: Environment ID
         """
+        self.close_batch([env_id])
+
+
+class ShardedBatchEnvClient:
+    """
+    Batch environment client that shards environment IDs across multiple servers.
+    The same env_id is always routed to the same server for its full lifecycle.
+    """
+
+    def __init__(self, base_urls: Union[str, List[str]], timeout: int = 600, max_workers: int = 10):
+        if isinstance(base_urls, str):
+            parsed_urls = [url.strip() for url in base_urls.split(",") if url.strip()]
+        else:
+            parsed_urls = [str(url).strip() for url in base_urls if str(url).strip()]
+        if not parsed_urls:
+            raise ValueError("ShardedBatchEnvClient requires at least one base URL")
+
+        self.base_urls = [url.rstrip("/") for url in parsed_urls]
+        self.timeout = timeout
+        self.max_workers = max(1, min(int(max_workers), len(self.base_urls)))
+        self.clients = [
+            BatchEnvClient(base_url=base_url, timeout=timeout, max_workers=max_workers)
+            for base_url in self.base_urls
+        ]
+        self.env_configs = {}
+        self.env_to_client_idx = {}
+
+    def _client_index_for_env_id(self, env_id: Any) -> int:
+        if env_id in self.env_to_client_idx:
+            return self.env_to_client_idx[env_id]
+        digest = hashlib.md5(str(env_id).encode("utf-8")).hexdigest()
+        client_idx = int(digest, 16) % len(self.clients)
+        self.env_to_client_idx[env_id] = client_idx
+        return client_idx
+
+    def _group_mapping(self, env_mapping: Dict[Any, Any]) -> Dict[int, Dict[Any, Any]]:
+        grouped = {}
+        for env_id, value in env_mapping.items():
+            client_idx = self._client_index_for_env_id(env_id)
+            grouped.setdefault(client_idx, {})[env_id] = value
+        return grouped
+
+    def _group_env_ids(self, env_ids: List[str]) -> Dict[int, List[str]]:
+        grouped = {}
+        for env_id in env_ids:
+            client_idx = self._client_index_for_env_id(env_id)
+            grouped.setdefault(client_idx, []).append(env_id)
+        return grouped
+
+    def _run_grouped_mapping(self, grouped: Dict[int, Dict[Any, Any]], method_name: str) -> Dict[str, Any]:
+        merged = {}
+        if not grouped:
+            return merged
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(grouped))) as executor:
+            futures = {
+                executor.submit(getattr(self.clients[client_idx], method_name), payload): client_idx
+                for client_idx, payload in grouped.items()
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if isinstance(result, dict):
+                    merged.update(result)
+        return merged
+
+    def _run_grouped_env_ids(self, grouped: Dict[int, List[str]], method_name: str) -> Dict[str, Any]:
+        merged = {}
+        if not grouped:
+            return merged
+        with ThreadPoolExecutor(max_workers=min(self.max_workers, len(grouped))) as executor:
+            futures = {
+                executor.submit(getattr(self.clients[client_idx], method_name), env_ids): client_idx
+                for client_idx, env_ids in grouped.items()
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if isinstance(result, dict):
+                    merged.update(result)
+        return merged
+
+    def check_server_health(self) -> Dict[str, Any]:
+        servers = []
+        ok = True
+        for base_url, client in zip(self.base_urls, self.clients):
+            health = client.check_server_health()
+            health["base_url"] = base_url
+            servers.append(health)
+            ok = ok and health.get("status") == "ok"
+        return {"status": "ok" if ok else "error", "servers": servers}
+
+    def wait_for_server(self, max_retries: int = 10, retry_delay: float = 1.0) -> bool:
+        return all(
+            client.wait_for_server(max_retries=max_retries, retry_delay=retry_delay)
+            for client in self.clients
+        )
+
+    def create_environments_batch(self, ids2configs: Dict[Any, Any]) -> None:
+        grouped = self._group_mapping(ids2configs)
+        self._run_grouped_mapping(grouped, "create_environments_batch")
+        for env_id, config in ids2configs.items():
+            self.env_configs[env_id] = config
+
+    def reset_batch(self, ids2seeds: Dict[str, Any]) -> Dict[str, Tuple[Dict, Dict]]:
+        return self._run_grouped_mapping(self._group_mapping(ids2seeds), "reset_batch")
+
+    def step_batch(self, ids2actions: Dict[str, str]) -> Dict[str, Tuple[Dict, float, bool, Dict]]:
+        return self._run_grouped_mapping(self._group_mapping(ids2actions), "step_batch")
+
+    def compute_reward_batch(self, env_ids: List[str]) -> Dict[str, float]:
+        return self._run_grouped_env_ids(self._group_env_ids(env_ids), "compute_reward_batch")
+
+    def get_system_prompts_batch(self, env_ids: List[str]) -> Dict[str, str]:
+        return self._run_grouped_env_ids(self._group_env_ids(env_ids), "get_system_prompts_batch")
+
+    def close_batch(self, env_ids: Optional[List[str]] = None) -> None:
+        if env_ids is None:
+            env_ids = list(self.env_configs.keys())
+        grouped = self._group_env_ids(env_ids)
+        self._run_grouped_env_ids(grouped, "close_batch")
+        for env_id in env_ids:
+            self.env_configs.pop(env_id, None)
+            self.env_to_client_idx.pop(env_id, None)
+
+    def reset(self, env_id: str, seed: Any = None) -> Tuple[Dict, Dict]:
+        results = self.reset_batch({env_id: seed})
+        return results.get(env_id, ({}, {"error": "Reset failed"}))
+
+    def step(self, env_id: str, action: str) -> Tuple[Dict, float, bool, Dict]:
+        results = self.step_batch({env_id: action})
+        return results.get(env_id, ({}, 0.0, True, {"error": "Step failed"}))
+
+    def compute_reward(self, env_id: str) -> float:
+        results = self.compute_reward_batch([env_id])
+        return results.get(env_id, 0.0)
+
+    def get_system_prompt(self, env_id: str) -> str:
+        results = self.get_system_prompts_batch([env_id])
+        return results.get(env_id, "")
+
+    def close(self, env_id: str) -> None:
         self.close_batch([env_id])
 
 

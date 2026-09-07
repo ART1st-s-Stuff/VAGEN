@@ -15,6 +15,8 @@ import verl.utils.torch_functional as verl_F
 from verl.utils.dataset.rl_dataset import process_image, collate_fn
 import vagen.env
 from vagen.env import REGISTERED_ENV
+from vagen.rollout.qwen_rollout.action_metrics import summarize_action_distribution
+from vagen.rollout.qwen_rollout.loss_mask_utils import prepare_response_for_loss_mask
 
     
 class QwenVLRolloutManager():
@@ -41,12 +43,11 @@ class QwenVLRolloutManager():
         """
         llm_raw_response = llm_raw_response.replace('<image>', '')
         if prep_for_loss_mask:
-            # filtering special tokens for llm_raw_response, then adding them to the beginning and end of the response for loss mask computation
-            sptk_b = self.config.special_token_for_loss_mask[0]
-            sptk_e = self.config.special_token_for_loss_mask[1]
-            llm_raw_response = llm_raw_response.replace(sptk_b, '')
-            llm_raw_response = llm_raw_response.replace(sptk_e, '')
-            llm_raw_response = sptk_b + llm_raw_response + sptk_e
+            llm_raw_response = prepare_response_for_loss_mask(
+                llm_raw_response,
+                special_tokens=self.config.special_token_for_loss_mask,
+                mode=self.config.get("loss_mask_mode", "default"),
+            )
         return llm_raw_response
     
     @torch.no_grad()
@@ -619,11 +620,12 @@ class QwenVLRolloutManager():
             batch (DataProto): batch of final trajectory of all environments
         """
         batch_list = []
+        update_window_size = self.config.get("update_window_size", None)
         for env_id in self.envs.keys():
             row_dict = self._generate_input_for_uptate(
                 recording=self.recorder[env_id],
                 step=self.env_states[env_id]['step'],
-                window_size=None,
+                window_size=update_window_size,
             )
             step_reward_sum= row_dict['step_reward_sum']
             last_reward=self.envs[env_id].compute_reward()
@@ -662,18 +664,20 @@ class QwenVLRolloutManager():
             }
             
             turn_metrics={
-                k: sum(v)/step if step != 0 else 0 for k, v in self.env_states[env_id]['metrics']['turn_metrics'].items()
+                k: sum(v)/step
+                for k, v in self.env_states[env_id]['metrics']['turn_metrics'].items()
+                if step != 0 and all(isinstance(item, (int, float, bool)) for item in v)
             }
             traj_metrics=self.env_states[env_id]['metrics']['traj_metrics']
             metrics.update(turn_metrics)
             metrics.update(traj_metrics)
+            metrics.update(summarize_action_distribution(record))
             env_info.append({
                 "env_id": env_id,
                 "config_id": config_id,
                 "output_str": output_rst['prompt'],
                 "image_data": image,
                 "metrics": metrics,
+                "history": record,
             })
         return env_info
-            
-            

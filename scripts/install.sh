@@ -18,8 +18,8 @@ pip install 'matplotlib'
 pip install 'flask'
 
 
-echo "Installing flash-attn with no build isolation..."
-pip install flash-attn==2.7.4.post1
+echo "Installing flash-attn with no build isolation and no wheel cache..."
+pip install --no-build-isolation --no-cache-dir flash-attn==2.7.4.post1
 
 echo "Installing vagen package..."
 pip install -e .

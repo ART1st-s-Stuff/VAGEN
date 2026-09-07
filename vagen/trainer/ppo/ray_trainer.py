@@ -42,6 +42,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from vagen.rollout.qwen_rollout.rollout_manager import QwenVLRolloutManager
 from vagen.rollout.qwen_rollout.rollout_manager_service import QwenVLRolloutManagerService
+from vagen.rollout.qwen_rollout.raw_sample_utils import collect_raw_response_samples
 WorkerType = Type[Worker]
 
 
@@ -754,6 +755,81 @@ class RayPPOTrainer(object):
         # Update reference and log
         wandb.log({"val/generations": new_table}, step=self.global_steps)
         self.validation_table = new_table
+
+    def _maybe_log_raw_samples(self, log_rst: List[Dict[str, Any]], mode: str):
+        samples_to_log = self.config.trainer.get("raw_samples_to_log", 0)
+        if samples_to_log == 0:
+            return
+
+        max_chars = self.config.trainer.get("raw_samples_max_chars", 2000)
+        samples = collect_raw_response_samples(log_rst, limit=samples_to_log, max_chars=max_chars)
+        if not samples:
+            return
+
+        for sample in samples:
+            print(
+                "[RAW_SAMPLE] "
+                f"mode={mode} step={self.global_steps} env_id={sample['env_id']} turn={sample['turn']} "
+                f"format_correct={sample['format_correct']} format_error_type={sample['format_error_type']} "
+                f"action_is_valid={sample['action_is_valid']} action_validity_error={sample['action_validity_error']} "
+                f"actions={sample['actions']} raw_response={sample['raw_response']!r}",
+                flush=True,
+            )
+
+        if 'wandb' not in self.config.trainer.logger:
+            return
+
+        import wandb
+
+        columns = [
+            "step",
+            "mode",
+            "env_id",
+            "config_id",
+            "turn",
+            "raw_response",
+            "llm_response",
+            "think_content",
+            "action_content",
+            "actions",
+            "format_correct",
+            "format_error_type",
+            "too_many_actions",
+            "action_is_valid",
+            "action_validity_error",
+            "reward",
+            "done",
+            "instruction",
+        ]
+        table_attr = f"{mode}_raw_sample_table"
+        existing_table = getattr(self, table_attr, None)
+        new_table = wandb.Table(
+            columns=columns,
+            data=existing_table.data if existing_table is not None else [],
+        )
+        for sample in samples:
+            new_table.add_data(
+                self.global_steps,
+                mode,
+                sample["env_id"],
+                sample["config_id"],
+                sample["turn"],
+                sample["raw_response"],
+                sample["llm_response"],
+                sample["think_content"],
+                sample["action_content"],
+                sample["actions"],
+                sample["format_correct"],
+                sample["format_error_type"],
+                sample["too_many_actions"],
+                sample["action_is_valid"],
+                sample["action_validity_error"],
+                sample["reward"],
+                sample["done"],
+                sample["instruction"],
+            )
+        wandb.log({f"{mode}/raw_samples": new_table}, step=self.global_steps)
+        setattr(self, table_attr, new_table)
     
     def _validate(self):
         print(f"[DEBUG] validation at global step {self.global_steps} begins")
@@ -802,9 +878,14 @@ class RayPPOTrainer(object):
             self.test_rollout_manager.reset(env_configs)
             self.test_rollout_manager.rollout_loop()
             micro_validation_rst = self.test_rollout_manager.recording_to_log() # data source == inputs in our current setting, outputs=whole trjecotry
+            original_output_dir = self.config.trainer.get("original_validation_output_dir", None)
+            if original_output_dir:
+                from vagen.utils.original_validation_dump import dump_validation_batch
+                dump_validation_batch(original_output_dir, env_configs, micro_validation_rst)
             validation_rst.extend(micro_validation_rst)
         
         self._maybe_log_val_generations_to_wandb(validation_rst)
+        self._maybe_log_raw_samples(validation_rst, mode="val")
         metric_dict = self.log_rst_to_metrics_dict(validation_rst,mode='val')
         print(f"[DEBUG] validation at global step {self.global_steps} ends")
         return metric_dict
@@ -814,13 +895,17 @@ class RayPPOTrainer(object):
         
         
         metrics_by_config_id = defaultdict(dict)  # a dict of dict of list
+        all_metrics_by_name = defaultdict(list)
         
         for item in rst:
             for k,v in item["metrics"].items():
                 if k not in metrics_by_config_id[item["config_id"]]:
                     metrics_by_config_id[item["config_id"]][k] = []
                 metrics_by_config_id[item["config_id"]][k].append(v)
+                all_metrics_by_name[k].append(v)
         
+        for k, v in all_metrics_by_name.items():
+            metric_dict[f'{mode}/{k}'] = np.mean(v)
         
         for config_id, metrics in metrics_by_config_id.items():
             for k,v in metrics.items():
@@ -909,7 +994,7 @@ class RayPPOTrainer(object):
                                               self.global_steps,
                                               remove_previous_ckpt=self.config.trainer.remove_previous_ckpt_in_save)
 
-        if self.use_critic:
+        if self.use_critic and self.config.trainer.get('save_critic_checkpoint', True):
             critic_local_path = os.path.join(local_global_step_folder, 'critic')
             critic_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
                 self.config.trainer.default_hdfs_dir, f'global_step_{self.global_steps}', 'critic')
@@ -917,6 +1002,9 @@ class RayPPOTrainer(object):
                                            critic_remote_path,
                                            self.global_steps,
                                            remove_previous_ckpt=self.config.trainer.remove_previous_ckpt_in_save)
+        elif self.use_critic:
+            print(f"Skipping critic checkpoint at global_step_{self.global_steps} because "
+                  "trainer.save_critic_checkpoint=False")
 
         # save dataloader
         dataloader_local_path = os.path.join(local_global_step_folder, 'data.pt')
@@ -1127,6 +1215,7 @@ class RayPPOTrainer(object):
                         final_gen_batch_output, rst=self._process_in_mini_batches(batch, rollout_manager, mini_batch_size) 
                         train_metrics=self.log_rst_to_metrics_dict(rst=rst,mode='train')
                         metrics.update(train_metrics)
+                        self._maybe_log_raw_samples(rst, mode="train")
                     print(f"[DEBUG] step {self.global_steps} rollout ends")
                     batch = batch.union(final_gen_batch_output)
 
@@ -1207,17 +1296,18 @@ class RayPPOTrainer(object):
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
 
-                    # validate
+                    if self.config.trainer.save_freq > 0 and \
+                            self.global_steps % self.config.trainer.save_freq == 0:
+                        with _timer('save_checkpoint', timing_raw):
+                            self._save_checkpoint()
+
+                    # validate after checkpointing so eval-time rollout/vLLM failures do not lose
+                    # the checkpoint for the same global step.
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and \
                         self.global_steps % self.config.trainer.test_freq == 0:
                         with _timer('testing', timing_raw):
                             val_metrics: dict = self._validate()
                         metrics.update(val_metrics)
-
-                    if self.config.trainer.save_freq > 0 and \
-                            self.global_steps % self.config.trainer.save_freq == 0:
-                        with _timer('save_checkpoint', timing_raw):
-                            self._save_checkpoint()
 
                 # collect metrics
                 metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
@@ -1231,7 +1321,7 @@ class RayPPOTrainer(object):
                 if self.global_steps >= self.total_training_steps:
 
                     # perform validation after training
-                    if self.val_reward_fn is not None:
+                    if self.val_reward_fn is not None and self.config.trainer.get('final_val_after_train', True):
                         val_metrics = self._validate()
                         pprint(f'Final validation metrics: {val_metrics}')
                         logger.log(data=val_metrics, step=self.global_steps)

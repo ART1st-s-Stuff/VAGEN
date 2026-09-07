@@ -17,6 +17,7 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 from vagen.trainer.ppo.ray_trainer import RayPPOTrainer
 from vagen.utils.compute_score import compute_score
 
+import os
 import ray
 import hydra
 
@@ -28,8 +29,32 @@ def main(config):
 
 def run_ppo(config, compute_score=None):
     if not ray.is_initialized():
-        # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        worker_env = {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}
+        # Explicit propagation is required for separate editable source worktrees.
+        for key in (
+            'PATH', 'PYTHONPATH', 'VAGEN_DIR', 'VERL_DIR', 'HF_HOME',
+            'TRANSFORMERS_CACHE', 'TORCH_HOME', 'VLLM_HOST_IP',
+            'NCCL_SOCKET_IFNAME', 'GLOO_SOCKET_IFNAME', 'NCCL_IB_DISABLE',
+            'CUDA_DEVICE_ORDER', 'PYTHONDONTWRITEBYTECODE', 'VLLM_USE_V1',
+            'VLLM_ATTENTION_BACKEND', 'ORIGINAL_VALIDATION_RUNTIME_DIR',
+            'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_DIR', 'XDG_CACHE_HOME',
+            'TORCH_EXTENSIONS_DIR', 'VLLM_USE_FLASHINFER_SAMPLER',
+        ):
+            if key in os.environ:
+                worker_env[key] = os.environ[key]
+        runtime_env = {'env_vars': worker_env}
+        ray_address = os.environ.get("RAY_INIT_ADDRESS") or os.environ.get("RAY_ADDRESS")
+        if ray_address:
+            print(f"[DEBUG] ray.init(address={ray_address!r})")
+            ray.init(address=ray_address, runtime_env=runtime_env)
+        else:
+            # this is for local ray cluster
+            ray_kwargs = {"runtime_env": runtime_env}
+            ray_tmpdir = os.environ.get("RAY_TMPDIR")
+            if ray_tmpdir:
+                print(f"[DEBUG] ray.init(_temp_dir={ray_tmpdir!r})")
+                ray_kwargs["_temp_dir"] = ray_tmpdir
+            ray.init(**ray_kwargs)
 
     ray.get(main_task.remote(config, compute_score))
 
